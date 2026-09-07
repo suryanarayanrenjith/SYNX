@@ -1,0 +1,19 @@
+[package]
+name = "synx"
+version = "1.0.0"
+edition = "2021"
+description = "SYNX Synthwave eXtreme Racing"
+authors = ["SYNX"]
+default-run = "synx"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "synx"
+path = "src/main.rs"

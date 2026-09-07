@@ -1,0 +1,83 @@
+# SYNX — how git should treat what is in here.
+#
+# WHY THIS FILE EXISTS
+#
+# The working tree arrived with mixed line endings: about half the JavaScript
+# and half the Rust was CRLF and the rest LF, with no pattern to it beyond
+# which editor happened to touch a file last. That is invisible until two
+# people work on the same file, at which point one commit rewrites every line
+# of it and the diff is useless for review.
+#
+# So endings are normalised in the repository and left to the platform in the
+# working tree. `text=auto eol=lf` means: decide text vs binary by content,
+# store text with LF, and check it out as LF everywhere. Windows tooling -
+# Node, cargo, rustc, every editor in current use - reads LF perfectly well,
+# and the alternative (`eol=crlf`) would corrupt the shell scripts.
+#
+# NOTE FOR THE FIRST COMMIT: normalisation applies when a file is next staged.
+# If the tree is already committed with mixed endings, run
+#
+#     git add --renormalize .
+#
+# once, and commit the result on its own so the noise is in one commit rather
+# than smeared through the next ten.
+
+* text=auto eol=lf
+
+# ------------------------------------------------------------------ code ---
+*.rs      text eol=lf diff=rust
+*.js      text eol=lf
+*.mjs     text eol=lf
+*.json    text eol=lf
+*.html    text eol=lf diff=html
+*.css     text eol=lf diff=css
+*.md      text eol=lf
+*.toml    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.sh      text eol=lf
+
+# --------------------------------------------------------------- binary ----
+# Declared explicitly rather than left to content detection. A false "text"
+# guess on any of these rewrites bytes on checkout, and the failure mode is a
+# game that will not start - the pack and the scene are not recoverable from a
+# corrupted copy, and neither is the compiled core.
+*.pak     binary
+*.bin     binary
+*.wasm    binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.webp    binary
+*.mp3     binary
+*.ogg     binary
+*.wav     binary
+*.ttf     binary
+*.otf     binary
+*.woff    binary
+*.woff2   binary
+
+# ------------------------------------------------------------------ lfs ----
+# web/data/synx.pak is 56 MB and web/data/scene.bin is 11 MB. Both are tracked
+# on purpose - the game does not start without them - and the pack is past the
+# 50 MB point where GitHub starts warning and near the 100 MB point where it
+# refuses the push outright.
+#
+# BEFORE THE FIRST PUSH to a GitHub remote, install Git LFS and run:
+#
+#     git lfs install
+#     git lfs track "web/data/*.pak" "web/data/*.bin"
+#     git add .gitattributes
+#
+# which appends the filter lines below this comment. Doing it AFTER a push
+# means rewriting history, so it is worth the two minutes now. A host with no
+# file-size limit needs none of this.
+
+# ------------------------------------------------------------- linguist ----
+# The pack and the scene are assets, not source; without this they dominate
+# the language statistics and the repository is reported as "Other".
+web/data/*      linguist-vendored
+web/wasm/*      linguist-vendored
+Cargo.lock      linguist-generated

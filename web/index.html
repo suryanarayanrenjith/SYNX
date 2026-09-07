@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>SYNX — Synthwave eXtreme Racing</title>
+<meta name="description" content="SYNX - a neon racer on a Rust simulation core, with volumetric lighting, screen-space reflections and a full four-wheel physics model.">
+<meta name="theme-color" content="#12002b">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="stylesheet" href="css/style.css?v=rust-1">
+</head>
+<body>
+<div id="stage">
+  <canvas id="glCanvas"></canvas>
+  <canvas id="hudCanvas"></canvas>
+  <div id="synxCursor" aria-hidden="true"><i></i><svg viewBox="0 0 32 32" focusable="false"><path class="synx-cursor-body" d="M4 3 26 14 16 18 12 29Z"/><path class="synx-cursor-core" d="M6.5 5.7 20.8 13.6 15.2 15.9 11.9 24.7Z"/></svg></div>
+
+  <div id="touch" class="hidden">
+    <button id="tLeft"  class="tbtn tl" type="button">&#9664;</button>
+    <button id="tRight" class="tbtn tr" type="button">&#9654;</button>
+    <button id="tBrake" class="tbtn tb" type="button">BRK</button>
+    <button id="tGas"   class="tbtn tg" type="button">GAS</button>
+    <button id="tBoost" class="tbtn tbo" type="button">BOOST</button>
+    <button id="tStart" class="tbtn ts" type="button">OK</button>
+  </div>
+
+  <div id="cine5" aria-hidden="true">
+    <div class="cine5-bar cine5-top"></div>
+    <div class="cine5-bar cine5-bottom"></div>
+    <div id="cine5Speed"></div>
+    <div id="cine5Flash"></div>
+    <div id="cine5Copy">
+      <small id="cine5Kicker"></small>
+      <b id="cine5Title" class="synx-chrome"></b>
+      <span id="cine5Actor"></span>
+    </div>
+    <div id="cine5Telemetry" class="synx-cut" aria-hidden="true">
+      <small id="cine5TelemetryTitle"></small>
+      <div id="cine5TelemetryBody"></div>
+    </div>
+    <div id="cine5BossCard" aria-hidden="true">
+      <small>AURORA EXPERIMENTAL VEHICLE</small>
+      <strong>R-IX</strong>
+      <b>RAPTOR</b>
+      <i>MOMENTUM IS A WEAPON</i>
+    </div>
+    <div id="cine5Qte" aria-hidden="true">
+      <div id="cine5Prompt"></div>
+      <div id="cine5Hint"></div>
+      <div id="cine5Meter"><i id="cine5MeterFill"></i></div>
+      <div id="cine5Timer"></div>
+    </div>
+  </div>
+
+  <div id="storyRoot" aria-live="polite" aria-hidden="true">
+    <div id="storyLetterbox" aria-hidden="true">
+      <i class="story-bar story-bar-top"></i>
+      <i class="story-bar story-bar-bottom"></i>
+    </div>
+    <div id="storyFade"></div>
+
+    <div id="storyTitleCard" class="story-layer" aria-hidden="true">
+      <small id="storyKicker"></small>
+      <b id="storyTitle" class="synx-chrome"></b>
+      <span id="storySubtitle"></span>
+    </div>
+
+    <div id="storyRadio" class="story-layer synx-cut" aria-hidden="true">
+      <img id="storyRadioAvatar" data-src="sprites/SYNX_Grid_Unknown.png" alt="SYNX Grid">
+      <div><small id="storyRadioName">SYNX GRID</small><p id="storyRadioText"></p></div>
+    </div>
+
+    <section id="storyDialogue" class="story-layer" aria-hidden="true">
+      <div class="story-dialogue-shell synx-cut">
+        <div class="story-copy">
+          <p id="storyText"></p>
+          <div class="story-dialogue-meta">
+            <span>ENTER / SPACE</span>
+            <i class="story-wave" aria-hidden="true"></i>
+            <i id="storyContinue" aria-hidden="true"></i>
+          </div>
+        </div>
+      </div>
+      <figure class="story-portrait-wrap"><img id="storyPortrait" alt=""></figure>
+      <div id="storyNameplate" class="synx-cut"><span id="storyNameplateName"></span><i id="storyNameplateRole"></i></div>
+    </section>
+
+    <aside id="storyCompact" class="story-layer synx-cut" aria-hidden="true">
+      <img id="storyCompactPortrait" alt="">
+      <div><small id="storyCompactName"></small><p id="storyCompactText"></p></div>
+      <i id="storyCompactTimer"></i>
+    </aside>
+
+    <section id="storyBattle" class="story-layer synx-crt" aria-hidden="true">
+      <div class="battle-grid" aria-hidden="true"></div>
+      <article class="battle-card battle-player">
+        <img id="battlePlayerImage" data-src="sprites/PlayerBattleCard.jpeg" alt="Player battle card">
+      </article>
+      <div class="battle-versus">
+        <small id="battleChapter"></small>
+        <b class="synx-chrome">VS</b>
+        <strong id="battleRivalName"></strong>
+        <em id="battleTrack"></em>
+        <u id="battleBrief"></u>
+      </div>
+      <article class="battle-card battle-rival">
+        <img id="battleRivalImage" alt="Rival battle card">
+      </article>
+    </section>
+
+    <section id="storyHub" class="story-layer synx-crt" aria-hidden="true">
+      <div class="story-hub-panel synx-cut">
+        <header class="story-hub-head">
+          <div>
+            <small>SYNX GRID // STORY MODE</small>
+            <h1 class="synx-chrome">WELCOME TO THE NIGHT</h1>
+            <p id="storyHubStatus"></p>
+          </div>
+          <div class="story-hub-dossier">
+            <div><span>GRID RATING</span><b id="storyHubRating">UNRANKED</b></div>
+            <div><span>CHAPTERS</span><b id="storyHubCleared">0 / 7</b></div>
+            <div><span>DRIVER LINK</span><b id="storyHubLink">LOCKED</b></div>
+          </div>
+        </header>
+        <div class="story-hub-body">
+          <div id="storyChapterList"></div>
+          <div id="storyHubActions"></div>
+        </div>
+        <footer><span><b>ARROWS</b> SELECT</span><span><b>ENTER</b> CONFIRM</span><span><b>ESC</b> TITLE</span></footer>
+      </div>
+    </section>
+
+    <section id="storyContinuePrompt" class="story-layer" aria-hidden="true">
+      <div class="story-continue-panel synx-cut">
+        <small>STORY LINK // CHAPTER COMPLETE</small>
+        <h2 class="synx-chrome">CONTINUE?</h2>
+        <p id="storyContinueNext"></p>
+        <div class="story-continue-actions">
+          <button id="storyContinueYes" class="synx-cut" type="button"><small>KEEP DRIVING</small><b>YES</b></button>
+          <button id="storyContinueNo" class="synx-cut" type="button"><small>RETURN TO STORY HUB</small><b>NO</b></button>
+        </div>
+        <footer>LEFT / RIGHT &mdash; SELECT&nbsp;&nbsp;&nbsp;&nbsp;ENTER &mdash; CONFIRM</footer>
+      </div>
+    </section>
+
+    <div id="storyTutorial" class="story-layer synx-cut" aria-hidden="true">
+      <small id="storyTutorialKicker">DRIVER LINK</small>
+      <b id="storyTutorialText"></b>
+      <i><span id="storyTutorialFill"></span></i>
+    </div>
+
+    <div id="storyWaypoint" class="story-layer synx-cut" aria-hidden="true">
+      <small id="storyWaypointKicker">ROUTE LOCKED</small>
+      <b id="storyWaypointTitle">VECTOR RUN</b>
+      <span id="storyWaypointDistance">3.8 KM</span>
+    </div>
+
+    <div id="storyRaceMeta" class="story-layer synx-cut" aria-hidden="true">
+      <small id="storyRaceChapter"></small>
+      <b id="storyRaceTrack"></b>
+      <span id="storyRaceRival"></span>
+      <ol id="storyStandings" aria-label="Live race standings"></ol>
+    </div>
+  </div>
+
+  <!-- THE DRIVER TERMINAL. What is behind START: the campaign, and the open
+       route that unlocks when the campaign is finished. -->
+  <div id="modeSelectRoot" aria-hidden="true">
+    <section id="modeSelect" class="synx-crt">
+      <div class="mode-panel synx-cut">
+        <header class="mode-head">
+          <div>
+            <small>SYNX GRID // DRIVER TERMINAL</small>
+            <h1 class="synx-chrome">SELECT MODE</h1>
+            <p id="modeStatus"></p>
+          </div>
+          <div class="mode-dossier">
+            <div><span>GRID RATING</span><b id="modeRating">UNRANKED</b></div>
+            <div><span>CHAPTERS</span><b id="modeCleared">0 / 7</b></div>
+            <div><span>OPEN ROUTE</span><b id="modeOpen">LOCKED</b></div>
+          </div>
+        </header>
+        <div id="modeCards"></div>
+        <!-- A way out that can be CLICKED. Every other screen in the build has
+             one; this had the key hint and nothing to press, so a player on a
+             pad or a mouse had no way back to the title at all. -->
+        <footer class="panel-foot">
+          <button type="button" id="modeBack" class="ui-back synx-cut">
+            <span aria-hidden="true">&#8592;</span><b>BACK TO TITLE</b>
+          </button>
+          <div class="panel-hints"><span><b>ARROWS</b> SELECT</span><span><b>ENTER</b> CONFIRM</span><span><b>ESC</b> BACK</span></div>
+        </footer>
+      </div>
+    </section>
+  </div>
+
+  <!-- FREE ROAM. The open-route screen: one continuous drive down the whole
+       centreline, reached from the driver terminal above. -->
+  <div id="freeRoamRoot" aria-hidden="true">
+    <section id="freeRoam" class="synx-crt">
+      <div class="freeroam-panel synx-cut">
+        <header class="freeroam-head">
+          <div>
+            <small>SYNX GRID // OPEN ROUTE</small>
+            <h1 class="synx-chrome">FREE ROAM</h1>
+            <p id="freeRoamStatus"></p>
+          </div>
+          <div class="freeroam-dossier">
+            <div><span>ONE ROAD</span><b id="freeRoamLength">--</b></div>
+            <div><span>REGIONS</span><b id="freeRoamCount">--</b></div>
+            <div><span>BEST TOUR</span><b id="freeRoamBest">--:--</b></div>
+          </div>
+        </header>
+        <div class="freeroam-body">
+          <div id="freeRoamRoutes"></div>
+          <div id="freeRoamActions"></div>
+        </div>
+        <footer class="panel-foot">
+          <button type="button" id="freeRoamBack" class="ui-back synx-cut">
+            <span aria-hidden="true">&#8592;</span><b>BACK</b>
+          </button>
+          <div class="panel-hints" id="freeRoamHints"><span><b>ARROWS</b> SELECT</span><span><b>ENTER</b> DRIVE</span><span><b>ESC</b> BACK</span></div>
+        </footer>
+      </div>
+    </section>
+  </div>
+
+  <!-- MULTIPLAYER. The third door behind START: four cars on any of the seven
+       routes, over a link to the grid. js/net.js owns the socket and the
+       session; js/multiplayer.js owns this screen and the race. -->
+  <div id="multiplayerRoot" aria-hidden="true">
+    <section id="multiplayer" class="synx-crt">
+      <div class="mp-panel synx-cut">
+        <header class="mp-head">
+          <div>
+            <small>SYNX GRID // NETWORK LINK</small>
+            <h1 class="synx-chrome">MULTIPLAYER</h1>
+            <p id="mpStatus"></p>
+          </div>
+          <div class="mp-dossier">
+            <div><span>DRIVER</span><b id="mpName">&mdash;</b></div>
+            <div><span>LINK</span><b id="mpLink">OFFLINE</b></div>
+            <div><span>PING</span><b id="mpPing">--</b></div>
+          </div>
+        </header>
+        <div class="mp-body">
+          <div id="mpMain"></div>
+          <div id="mpSide"></div>
+        </div>
+        <footer class="panel-foot">
+          <button type="button" id="mpBack" class="ui-back synx-cut">
+            <span aria-hidden="true">&#8592;</span><b>BACK</b>
+          </button>
+          <div class="panel-hints" id="mpHints"></div>
+        </footer>
+      </div>
+    </section>
+
+    <!-- Asked once, on the first multiplayer session. The name is shown to the
+         other three cars and to nothing else. -->
+    <div id="mpNameRoot" aria-hidden="true">
+      <div class="mp-name-panel synx-cut">
+        <small>SYNX GRID // DRIVER REGISTRATION</small>
+        <b class="synx-chrome">WHO IS DRIVING?</b>
+        <input id="mpNameInput" type="text" maxlength="16" autocomplete="off" spellcheck="false"
+               placeholder="DRIVER NAME" aria-label="Driver name">
+        <i id="mpNameHint">2 to 16 characters</i>
+        <button id="mpNameOk" class="synx-cut" type="button"><small>REGISTER WITH THE GRID</small><b>CONFIRM</b></button>
+      </div>
+    </div>
+
+  </div>
+
+    <!-- ASKING FOR ONE THING.
+         Replaces window.prompt(), which is not a small cosmetic difference: a
+         browser prompt is an unstyled operating-system box that steals focus,
+         cannot be driven by the pad, ignores the game's own key handling and
+         looks like the game has crashed into a website. This is the same
+         panel language as everything else, takes Enter and Escape, and can be
+         driven without a mouse. -->
+    <div id="mpDialogRoot" aria-hidden="true">
+      <div class="mp-dialog synx-cut" role="dialog" aria-modal="true" aria-labelledby="mpDialogTitle">
+        <small id="mpDialogKicker">SYNX GRID</small>
+        <b id="mpDialogTitle" class="synx-chrome">CONFIRM</b>
+        <p id="mpDialogBody"></p>
+        <input id="mpDialogInput" type="text" autocomplete="off" spellcheck="false" aria-label="Value">
+        <!-- A list of ways out, when the question is "which" rather than
+             "yes or no". The race menu is the one that needs it. -->
+        <div id="mpDialogChoices" hidden></div>
+        <i id="mpDialogHint"></i>
+        <div class="mp-dialog-actions">
+          <button id="mpDialogOk" class="synx-cut" type="button"><small>ENTER</small><b>CONFIRM</b></button>
+          <button id="mpDialogCancel" class="synx-cut" type="button"><small>ESC</small><b>CANCEL</b></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- What the grid just said. Transient, stacked, and out of the way of the
+         columns - the log used to live in the side column and pushed the
+         actions around every time the server mentioned anything. -->
+    <div id="mpToasts" aria-live="polite"></div>
+
+
+  <!-- The standings, while driving. Right flank above y 0.22, the column
+       Chapters 6 and 7 leave clear. -->
+  <aside id="mpHud" aria-hidden="true">
+    <div class="mp-hud-panel synx-cut">
+      <small id="mpHudBanner"></small>
+      <ol id="mpHudRows" aria-label="Live standings"></ol>
+    </div>
+  </aside>
+
+  <div id="mpResultsRoot" aria-hidden="true">
+    <div class="mp-results-panel synx-cut">
+      <small>SYNX GRID // RACE COMPLETE</small>
+      <b id="mpResultsTitle" class="synx-chrome">RACE OVER</b>
+      <p id="mpResultsNote"></p>
+      <!-- The top three, as a podium. The ordered list below still carries
+           everybody; this is the two seconds of it that people came for. -->
+      <div id="mpPodium" hidden></div>
+      <p id="mpVerdict"></p>
+      <ol id="mpResultsRows"></ol>
+      <div class="mp-results-actions">
+        <button id="mpResultsAgain" class="synx-cut" type="button"><small>BACK TO THE ROOM</small><b>RACE AGAIN</b></button>
+        <button id="mpResultsLeave" class="synx-cut" type="button"><small>LEAVE THE ROOM</small><b>LOBBY</b></button>
+      </div>
+      <footer>ENTER &mdash; RACE AGAIN&nbsp;&nbsp;&nbsp;&nbsp;ESC &mdash; LOBBY</footer>
+    </div>
+  </div>
+
+  <div id="forge6" aria-live="polite" aria-hidden="true">
+    <aside id="forge6Objective" class="synx-cut">
+      <small id="forge6Phase">AURORA FORGE // TRIAL 01</small>
+      <b id="forge6ObjectiveText">LIGHTNING CRASH</b>
+      <span id="forge6Rule">ARC STRIKES 0 / 3</span>
+      <div id="forge6Strikes" aria-hidden="true"><i></i><i></i><i></i></div>
+    </aside>
+    <section id="forge6Round" class="synx-cut">
+      <small id="forge6RoundKicker">AURORA MOTORWORKS // CLOSED COURSE</small>
+      <b id="forge6RoundTitle">LIGHTNING CRASH</b>
+      <p id="forge6RoundCopy">THREAD THE LIVE WALLS. THREE STRIKES ENDS THE TEST.</p>
+    </section>
+    <section id="forge6Math" class="synx-cut" aria-hidden="true">
+      <small>COGNITION PRESS // PRESS 1–4</small>
+      <b id="forge6Question">99 × 6 = ?</b>
+      <div id="forge6Answers"></div>
+      <i><span id="forge6MathTime"></span></i>
+    </section>
+    <section id="forge6Skill" class="synx-cut" aria-hidden="true">
+      <img data-src="sprites/Player_raceMode.jpeg" alt="raceMode driver link">
+      <div>
+        <small>AURORA DRIVER LINK // ABILITY ACQUIRED</small>
+        <b>raceMode</b>
+        <strong>R — SYNCHRONIZE</strong>
+        <p>30 SEC ACTIVE&nbsp;&nbsp;·&nbsp;&nbsp;70 SEC COOLDOWN<br>BLUE RESERVE&nbsp;&nbsp;·&nbsp;&nbsp;+50% BOOST VELOCITY</p>
+        <p class="forge6-swap">ENGINE REBUILD&nbsp;&nbsp;·&nbsp;&nbsp;200 MPH CEILING</p>
+      </div>
+    </section>
+    <div id="forge6Fatal">
+      <small>AURORA SAFETY LOCK</small><b>TRIAL FAILED</b><span id="forge6FatalReason"></span>
+    </div>
+  </div>
+
+  <div id="pred7" aria-live="polite" aria-hidden="true">
+    <div id="pred7Lock" aria-hidden="true"></div>
+    <aside id="pred7Objective" class="synx-cut">
+      <small id="pred7Phase">CHAPTER 07 // NEON HORIZON</small>
+      <b id="pred7ObjectiveText">BEAT THE R-IX</b>
+      <span id="pred7Rule">NEON HORIZON // 30.0 KM</span>
+    </aside>
+    <aside id="pred7Event" class="synx-cut" role="status" aria-hidden="true">
+      <small id="pred7EventKicker">ROUTE EVENT</small>
+      <b id="pred7EventText">SYSTEM READY</b>
+    </aside>
+    <aside id="pred7Checkpoint" class="synx-cut" aria-hidden="true">CHECKPOINT // NEON GATE</aside>
+    <span id="pred7Live" class="sr-only" aria-live="assertive"></span>
+  </div>
+
+  <div id="fatal" class="hidden">
+    <div class="panel"><h3>Unable to start</h3><p id="fatalMsg"></p></div>
+  </div>
+</div>
+
+<!-- The simulation core is Rust compiled to WebAssembly; js/wasm.js is the
+     seam that keeps NR.Track, NR.Vehicle and NR.Driver looking exactly as they
+     did to everything below it. It must load before anything that constructs
+     one, which is everything from js/game.js down. -->
+<!-- The settings schema comes first: the options screen and the launcher are
+     two renderers for the same list of rows, and both read it. -->
+<script src="js/settings.js?v=rust-1"></script>
+<!-- The controller. Loaded before the game, which holds the only instance. -->
+<script src="js/gamepad.js?v=rust-1"></script>
+<script src="js/pak.js?v=rust-1"></script>
+<script src="js/gl.js?v=rust-1"></script>
+<script src="js/wasm.js?v=rust-1"></script>
+<script src="data/game_data.js?v=rust-1"></script>
+<script src="js/scene.js?v=rust-1"></script>
+<script src="js/autosave.js?v=rust-1"></script>
+<script src="js/damage.js?v=rust-1"></script>
+<script src="js/glass.js?v=rust-1"></script>
+<script src="js/fx.js?v=rust-1"></script>
+<script src="js/audio.js?v=rust-1"></script>
+<script src="js/hud.js?v=rust-1"></script>
+<script src="js/game.js?v=rust-1"></script>
+<script src="js/story.js?v=rust-1"></script>
+<script src="js/chapters.js?v=rust-1"></script>
+<script src="js/freeroam.js?v=rust-1"></script>
+<script src="js/modeselect.js?v=rust-1"></script>
+<script src="js/net.js?v=rust-1"></script>
+<script src="js/multiplayer.js?v=rust-1"></script>
+<script src="js/host.js?v=rust-1"></script>
+<script src="js/main.js?v=rust-1"></script>
+</body>
+</html>

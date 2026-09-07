@@ -1,0 +1,464 @@
+/* SYNX — the launcher.
+ *
+ * The screen in front of the game: display, renderer, graphics and audio, set
+ * before the window exists because three of them cannot honestly be set after
+ * it does (see src-tauri/src/launcher.rs).
+ *
+ * WHY THIS FILE DUPLICATES THE TOKENS
+ *
+ * The palette, the type scale and the two motion curves below are copied from
+ * css/style.css rather than imported from it. That is deliberate: style.css is
+ * three and a half thousand lines of IN-GAME interface - the pause card, the
+ * story hub, the multiplayer lobby - and none of it is on this screen. Loading
+ * it to draw a dialogue would mean parsing all of it, and the launcher's whole
+ * job is to be up instantly on a machine that may be about to tell us it
+ * cannot render.
+ *
+ * The duplication is a dozen custom properties and it is one-directional:
+ * style.css is the original, this is the copy, and if they ever disagree the
+ * game is right. Anything more than tokens belongs in one file or the other,
+ * not both.
+ */
+
+/* The typeface, straight off disk. See the note in launcher.html: the game
+   installs these from the asset pack, which this screen must not wait for. */
+@font-face {
+  font-family: "Orbitron";
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url("../fonts/Orbitron-600.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Orbitron";
+  font-style: normal;
+  font-weight: 900;
+  font-display: block;
+  src: url("../fonts/Orbitron-900.ttf") format("truetype");
+}
+
+:root {
+  --pink: #ff2e88;
+  --cyan: #39e6ff;
+  --amber: #ffb400;
+  --violet: #8b5cf6;
+  --bg: #05000f;
+
+  --ink-key: rgba(238, 246, 255, .96);
+  --ink-body: rgba(206, 228, 255, .82);
+  --ink-mute: rgba(176, 204, 240, .60);
+  --ink-faint: rgba(150, 180, 222, .38);
+
+  /* One curve for what responds to the player, one for what arrives on its
+     own, at three speeds. Same values as the game, for the same reason: two
+     things appearing side by side at different rates read as one being slow. */
+  --ease: cubic-bezier(.22, .72, .18, 1);
+  --ease-out: cubic-bezier(.16, .86, .25, 1);
+  --t-fast: 120ms;
+  --t-base: 200ms;
+  --t-slow: 420ms;
+
+  --font: "Orbitron", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --glass: rgba(10, 2, 26, .82);
+  --glass-hi: rgba(19, 6, 44, .92);
+  --cut: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink-key);
+  font-family: var(--font);
+  /* A launcher is a dialogue, not a document. Nothing here is text to select
+     and nothing is a drag handle, and a webview that lets you rubber-band a
+     selection across a game's front end looks like a web page in a window -
+     which is the one impression this screen exists to avoid. */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------------ sky --
+   The game's own horizon, in CSS. See the note in launcher.html: this screen
+   must not create a GPU context, because the player who most needs it is the
+   one whose driver cannot give them one. */
+#sky { position: fixed; inset: 0; overflow: hidden; z-index: 0; }
+#sky::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 88% at 50% 78%, rgba(255, 46, 136, .20), transparent 60%),
+    linear-gradient(180deg, #0a0326 0%, #17053a 42%, #3d0b47 68%, #120329 100%);
+}
+#sky .sun {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: min(52vh, 420px);
+  aspect-ratio: 1;
+  margin-left: calc(min(52vh, 420px) / -2);
+  border-radius: 50%;
+  background:
+    repeating-linear-gradient(180deg, transparent 0 8px, rgba(10, 2, 26, .92) 8px 13px),
+    linear-gradient(180deg, #ffd977 0%, #ff9a3c 38%, #ff2e88 78%, #b3186b 100%);
+  filter: blur(.3px) drop-shadow(0 0 70px rgba(255, 90, 150, .42));
+  opacity: .92;
+}
+/* The deck. A perspective grid rather than a flat one - the horizon is the
+   subject of the whole game and a square grid says "web page". */
+#sky .grid {
+  position: absolute;
+  left: -50%;
+  right: -50%;
+  top: 58%;
+  bottom: -20%;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 78px, rgba(57, 230, 255, .30) 78px 80px),
+    repeating-linear-gradient(0deg, transparent 0 54px, rgba(255, 46, 136, .26) 54px 56px);
+  transform: perspective(340px) rotateX(74deg);
+  transform-origin: 50% 0;
+  opacity: .55;
+  animation: deck 3.4s linear infinite;
+}
+@keyframes deck { to { background-position: 0 56px, 0 56px; } }
+#sky .haze {
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, .17) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at 50% 50%, transparent 34%, rgba(2, 0, 10, .70) 100%);
+}
+@media (prefers-reduced-motion: reduce) {
+  #sky .grid { animation: none; }
+}
+
+/* ---------------------------------------------------------------- shell -- */
+#shell {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  gap: clamp(10px, 1.6vh, 18px);
+  height: 100%;
+  padding: clamp(18px, 3vh, 30px) clamp(22px, 3.4vw, 44px) clamp(14px, 2vh, 22px);
+  /* The whole screen arrives once, on the game's slow curve, rather than each
+     band animating separately - four staggered entrances for a dialogue is
+     the interface drawing attention to itself. */
+  animation: shell-in var(--t-slow) var(--ease-out) both;
+}
+@keyframes shell-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ----------------------------------------------------------------- head -- */
+#head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.brand h1 {
+  margin: 0;
+  font: 900 clamp(38px, 6.2vw, 74px)/.92 var(--font);
+  letter-spacing: -.045em;
+}
+/* Lifted verbatim from the game's title treatment so the two screens are
+   plainly the same product. */
+.synx-chrome {
+  background:
+    repeating-linear-gradient(0deg, transparent 0 .112em, rgba(0,0,0,.46) .112em .136em),
+    linear-gradient(180deg, #ffffff 0%, #c8b8ff 30%, #5b3fb8 47%, #2a1650 50%, #ffd977 53%, #ff5fb0 72%, #7a1f6b 100%);
+  background-size: 100% 1.06em;
+  background-repeat: repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-stroke: .5px rgba(255,255,255,.55);
+  filter: drop-shadow(0 0 18px rgba(255,46,136,.34)) drop-shadow(0 2px 0 rgba(0,0,0,.8));
+}
+.tag {
+  margin: 8px 0 0;
+  color: var(--cyan);
+  font: 800 clamp(8px, .95vw, 11px)/1 var(--font);
+  letter-spacing: .34em;
+  text-shadow: 0 0 12px rgba(57, 230, 255, .55);
+}
+.build {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 3px 12px;
+  text-align: right;
+  align-items: baseline;
+}
+.build span { color: var(--ink-faint); font: 700 8px/1.5 var(--font); letter-spacing: .18em; }
+.build b { color: var(--ink-body); font: 700 9.5px/1.5 var(--font); letter-spacing: .08em; }
+
+/* ----------------------------------------------------------------- tabs -- */
+#tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.tab {
+  appearance: none;
+  border: 0;
+  padding: 10px 18px;
+  background: rgba(10, 14, 30, .5);
+  color: var(--ink-mute);
+  font: 900 9.5px/1 var(--font);
+  letter-spacing: .18em;
+  cursor: pointer;
+  clip-path: polygon(9px 0, 100% 0, 100% 100%, 0 100%, 0 9px);
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.tab:hover { color: var(--ink-body); background: rgba(57, 230, 255, .08); }
+.tab[aria-selected="true"] {
+  color: #0a0018;
+  background: linear-gradient(180deg, var(--cyan), #12b6d8);
+  text-shadow: none;
+}
+.tab:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------- panel -- */
+.synx-cut {
+  position: relative;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.030) 0 1px, transparent 1px 4px),
+    linear-gradient(150deg, var(--glass-hi), var(--glass) 62%);
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+}
+.synx-cut::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  padding: 1px;
+  background: linear-gradient(150deg, var(--edge, var(--cyan)), rgba(139,92,246,.42) 55%, var(--edge, var(--cyan)));
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  filter: drop-shadow(0 0 7px var(--edge, var(--cyan)));
+  opacity: .86;
+}
+
+#panel {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  padding: clamp(14px, 2.2vh, 22px) clamp(16px, 2vw, 26px);
+  --cut: 18px;
+}
+#rows {
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--violet) transparent;
+}
+#rows::-webkit-scrollbar { width: 8px; }
+#rows::-webkit-scrollbar-track { background: rgba(139,92,246,.10); border-radius: 4px; }
+#rows::-webkit-scrollbar-thumb { background: rgba(139,92,246,.62); border-radius: 4px; }
+#rows::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
+
+/* A group header, so a column of fourteen rows is a screen to be used rather
+   than a list to be read. */
+.grp {
+  display: block;
+  margin: 14px 0 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(139, 92, 246, .28);
+  color: var(--cyan);
+  font: 800 8.5px/1 var(--font);
+  letter-spacing: .26em;
+}
+.grp:first-child { margin-top: 0; }
+
+/* ----------------------------------------------------------------- rows -- */
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  /* Tight, because the graphics page is twelve rows and a launcher that
+     scrolls to reach the preset is a launcher that hides it. */
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.row:hover, .row.on {
+  background: linear-gradient(90deg, rgba(57, 230, 255, .10), transparent 72%);
+  border-left-color: var(--cyan);
+}
+.row:focus-visible { outline: 0; background: linear-gradient(90deg, rgba(255,180,0,.12), transparent 72%); border-left-color: var(--amber); }
+.row .lbl { display: block; color: var(--ink-key); font: 700 11px/1.25 var(--font); letter-spacing: .12em; }
+.row .sub { display: block; margin-top: 4px; color: var(--ink-faint); font: 500 9px/1.35 var(--font); letter-spacing: .04em; }
+
+/* The value, and the two arrows that change it. The arrows are real buttons
+   rather than decoration on a click-anywhere row: a value with two directions
+   needs two targets, and a row that only cycles forward makes the last option
+   eleven clicks away from the first. */
+.val { display: flex; align-items: center; gap: 4px; }
+.val button {
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  background: rgba(139, 92, 246, .16);
+  color: var(--ink-body);
+  font: 700 12px/1 var(--font);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.val button:hover { background: var(--cyan); color: #06121a; }
+.val button:disabled { opacity: .22; cursor: default; background: rgba(139,92,246,.10); }
+.val button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+.val .txt {
+  min-width: 152px;
+  text-align: center;
+  color: var(--amber);
+  font: 900 11px/1 var(--font);
+  letter-spacing: .1em;
+  text-shadow: 0 0 14px rgba(255, 180, 0, .40);
+}
+.row.is-off .val .txt { color: var(--ink-faint); text-shadow: none; }
+
+/* A row that cannot be used right now - the window size while BORDERLESS is
+   selected - is shown and disabled rather than hidden. A control that vanishes
+   makes the player wonder what they did; one that greys out and says why is
+   answering the question before it is asked. */
+.row.dim { opacity: .40; pointer-events: none; }
+
+/* ---------------------------------------------------------------- hint --- */
+#hint {
+  margin: 12px 0 0;
+  padding-top: 11px;
+  border-top: 1px solid rgba(139, 92, 246, .24);
+  min-height: 2.9em;
+  color: var(--ink-mute);
+  font: 500 10px/1.5 var(--font);
+  letter-spacing: .03em;
+}
+
+/* ---------------------------------------------------------------- foot --- */
+#foot { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+/* The footer legend. A line of keys, not a control - see launcher.html. */
+#legend { margin: 0; color: var(--ink-faint); font: 700 8.5px/1.5 var(--font); letter-spacing: .16em; }
+#legend b { color: var(--ink-mute); font-weight: 900; }
+
+.acts { display: flex; gap: 10px; align-items: center; }
+.ui-btn {
+  appearance: none;
+  border: 0;
+  padding: 13px 24px;
+  --cut: 10px;
+  --edge: rgba(139, 92, 246, .5);
+  background: rgba(10, 14, 30, .55);
+  color: var(--ink-body);
+  font: 900 10px/1 var(--font);
+  letter-spacing: .18em;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.ui-btn:hover, .ui-btn:focus-visible {
+  --edge: var(--cyan);
+  background: rgba(57, 230, 255, .10);
+  color: var(--ink-key);
+  box-shadow: 0 0 22px rgba(57, 230, 255, .18);
+  outline: none;
+}
+/* PLAY is the only thing on this screen anyone came here to press. */
+.ui-btn.primary {
+  --edge: var(--pink);
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 40px;
+  background: linear-gradient(120deg, rgba(255, 46, 136, .26), rgba(139, 92, 246, .20));
+  color: var(--ink-key);
+}
+.ui-btn.primary b { font: 900 13px/1 var(--font); letter-spacing: .24em; }
+.ui-btn.primary span { color: var(--amber); font-size: 14px; transition: transform var(--t-fast) var(--ease); }
+.ui-btn.primary:hover, .ui-btn.primary:focus-visible {
+  --edge: var(--amber);
+  background: linear-gradient(120deg, rgba(255, 46, 136, .42), rgba(139, 92, 246, .30));
+  box-shadow: 0 0 34px rgba(255, 46, 136, .34);
+}
+/* The arrow moves, not the button: a control that jumps under the cursor is a
+   control that gets mis-clicked. */
+.ui-btn.primary:hover span, .ui-btn.primary:focus-visible span { transform: translateX(4px); }
+.ui-btn[disabled] { opacity: .45; pointer-events: none; }
+
+#note {
+  margin: 0;
+  min-height: 1.2em;
+  color: var(--amber);
+  font: 700 8.5px/1.3 var(--font);
+  letter-spacing: .12em;
+}
+#note.err { color: #ff5a78; }
+
+@media (max-width: 940px) {
+  .build { display: none; }
+  .val .txt { min-width: 116px; }
+}
+
+/* --------------------------------------------------------------- alert ----
+   The band that appears when a previous run left a report behind, or this one
+   could not do something it needed to.
+
+   It is HIDDEN by default and that is the whole design: a diagnostics panel
+   that is always on screen is a panel the player stops reading, so the one
+   time it carries the answer it has already been trained away. It appears
+   only when there is something to say. */
+#alert {
+  padding: 12px 16px;
+  background: linear-gradient(150deg, rgba(60, 8, 20, .92), rgba(30, 4, 12, .88));
+  box-shadow: inset 0 0 0 1px rgba(255, 90, 120, .55);
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  animation: shell-in var(--t-base) var(--ease-out) both;
+}
+.alert-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.alert-head b {
+  color: #ff8ba0;
+  font: 900 10px/1.3 var(--font);
+  letter-spacing: .18em;
+}
+/* The path is the single most useful thing on this band, so it is selectable
+   even though nothing else on the screen is - a player asked for their log is
+   a player who needs to copy where it is. */
+#alertPath {
+  color: var(--ink-mute);
+  font: 500 9px/1.3 var(--font);
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+  text-align: right;
+  word-break: break-all;
+}
+#alert p {
+  margin: 8px 0 10px;
+  color: var(--ink-body);
+  font: 500 10px/1.5 var(--font);
+}
+.alert-acts { display: flex; gap: 8px; }
+.alert-acts .ui-btn { padding: 8px 16px; font-size: 8.5px; --edge: rgba(255, 90, 120, .6); }
+
+/* The one-line machine summary under the footer. Always present, because it
+   costs a line and it is the first question anyone asks about a bug report. */
+#diag {
+  margin: 0;
+  min-height: 1.1em;
+  color: var(--ink-faint);
+  font: 500 8px/1.3 var(--font);
+  letter-spacing: .06em;
+  user-select: text;
+  -webkit-user-select: text;
+}

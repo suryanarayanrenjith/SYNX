@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/synx-core", "crates/synx-net", "src-tauri"]
+
+# crates/synx-net is the multiplayer wire format: the quantisation and the byte
+# layout, and nothing else. The server is deployed from its own repository and
+# compiles the same crate, so this is a vendored copy rather than a second
+# implementation - the two are kept honest by the protocol number in the
+# handshake, which the client checks before it opens a socket. Bumping the
+# format means bumping that number on both sides.
+
+# The WASM core is built for wasm32-unknown-unknown and shipped inside the
+# host binary, so it is tuned for size-aware speed rather than for debug
+# symbols: opt-level 3, one codegen unit and fat LTO let the tyre solver and
+# the mesh emitters inline into their hot loops.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Dependencies stay optimised even in a debug build. Without this a debug run
+# of the host drags an unoptimised WebView/graphics stack behind it and the
+# first-run experience is nothing like the shipped one.
+[profile.dev.package."*"]
+opt-level = 2

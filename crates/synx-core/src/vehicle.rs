@@ -1,0 +1,1576 @@
+//! Four-wheel vehicle simulation, ported from `js/vehicle.js`.
+//!
+//! This is a real car, not a bicycle with a paint job: four independent
+//! suspension corners, per-wheel angular velocity, Pacejka-shaped tyres with
+//! relaxation length combined through a friction ellipse, and collisions
+//! resolved as impulses at the contact corner. Everything is SI, and the
+//! solver runs at a fixed 240 Hz so a stiff tyre model stays stable.
+//!
+//! # Porting notes
+//!
+//! Two JavaScript behaviours are load-bearing and are reproduced deliberately
+//! rather than replaced with the idiomatic Rust:
+//!
+//!   * `Math.sign(0)` is `0`, while Rust's `f64::signum(0.0)` is `1.0`. The
+//!     rolling-resistance and reverse terms both feed on that zero, so
+//!     `math::sign` is used throughout and `signum` never is.
+//!   * Reads of possibly-unset fields (`this.surfaceGrip === undefined ? 1 :
+//!     ...`) become plain defaults on construction, because the struct cannot
+//!     be partially initialised.
+//!
+//! The world is not in metres. The art and the physics were authored to
+//! different scales and a world unit is about 0.733 m; the solver works in
+//! world units and every speed it *reports* is converted through
+//! [`UNIT_METRES`].
+
+use crate::math::{clamp, damp, sign};
+use crate::track::{Projection, Track};
+
+pub const UNIT_METRES: f64 = 0.733;
+
+// --- geometry / mass -------------------------------------------------------
+const MASS: f64 = 1400.0;
+const WHEELBASE: f64 = 3.716;
+const TRACK_WIDTH: f64 = 2.21;
+const FRONT_WEIGHT: f64 = 0.45;
+const CG_HEIGHT: f64 = 0.44;
+const WHEEL_RADIUS: f64 = 0.45;
+const WHEEL_INERTIA: f64 = 1.45;
+const HALF_LENGTH: f64 = 2.45;
+const HALF_WIDTH: f64 = 1.06;
+
+// --- suspension ------------------------------------------------------------
+const SPRING_F: f64 = 38000.0;
+const SPRING_R: f64 = 34000.0;
+const DAMP_BUMP_F: f64 = 2900.0;
+const DAMP_BUMP_R: f64 = 2650.0;
+const DAMP_REB_F: f64 = 4100.0;
+const DAMP_REB_R: f64 = 3700.0;
+const ARB_F: f64 = 14000.0;
+const ARB_R: f64 = 8000.0;
+const TRAVEL: f64 = 0.16;
+
+// --- engine ----------------------------------------------------------------
+const IDLE_RPM: f64 = 950.0;
+const REDLINE: f64 = 8000.0;
+const TORQUE_PEAK: f64 = 560.0;
+const DRIVE_EFF: f64 = 0.92;
+const RATIOS: [f64; 7] = [16.5, 11.6, 9.0, 7.2, 6.0, 5.2, 4.68];
+const SHIFT_UP: f64 = 7550.0;
+const SHIFT_DOWN: f64 = 4100.0;
+const SHIFT_TIME: f64 = 0.12;
+const SHIFT_HOLD: f64 = 0.42;
+const SHIFT_MARGIN: f64 = 300.0;
+const TOP_SPEED: f64 = 290.0 / 3.6;
+const BOOST_THRUST: f64 = 7600.0;
+const BOOST_TOP: f64 = 1.34;
+/// The Forge engine swap: 144 mph base, 200 mph hard ceiling.
+const SWAP_TOP: f64 = 88.0;
+const SWAP_CAP: f64 = 122.0;
+const SWAP_POWER: f64 = 1.20;
+const BOOST_BURN: f64 = 0.28;
+const BOOST_FILL: f64 = 1.6 / 12.0;
+const BOOST_ARM: f64 = 0.34;
+const REVERSE_TORQUE: f64 = 1500.0;
+const REVERSE_ARM: f64 = 0.30;
+const GEARS: usize = 7;
+
+// --- brakes / resistance ---------------------------------------------------
+const BRAKE_TORQUE: f64 = 4200.0;
+const ABS_SLIP: f64 = 0.13;
+const ENGINE_BRAKE: f64 = 26.0;
+const DRAG: f64 = 0.4592;
+/// How much more drag a completely wrecked body carries, as a fraction of the
+/// clean car's. See `Vehicle::damage`.
+const DAMAGE_DRAG: f64 = 0.42;
+/// ...and how much of the reheat's thrust it costs.
+const DAMAGE_BOOST: f64 = 0.22;
+const ROLL_RESIST: f64 = 0.014;
+const DOWNFORCE: f64 = 0.62;
+
+// --- tyres -----------------------------------------------------------------
+const LAT_STIFF: f64 = 8.6;
+const LAT_SHAPE: f64 = 1.55;
+const LONG_STIFF: f64 = 16.0;
+const LONG_SHAPE: f64 = 1.62;
+const GRIP_FRONT: f64 = 2.62;
+const GRIP_REAR: f64 = 2.92;
+const LOAD_SENS: f64 = 0.22;
+const RELAX_LAT: f64 = 0.42;
+const RELAX_LONG: f64 = 0.28;
+const OFFROAD_GRIP: f64 = 0.44;
+const OFFROAD_DRAG: f64 = 5200.0;
+const OFFROAD_DRAG_SPEED: f64 = 9.0;
+const BACKTRACK: f64 = 55.0;
+
+// --- steering --------------------------------------------------------------
+const MAX_STEER: f64 = 30.0 * core::f64::consts::PI / 180.0;
+const STEER_RATE: f64 = 3.6;
+const STEER_RETURN: f64 = 2.6;
+const ACKERMANN: f64 = 0.55;
+const STEER_TARGET_G: f64 = 2.05;
+const YAW_DAMP: f64 = 2.3;
+
+// --- the drift -------------------------------------------------------------
+const DRIFT_ANGLE: f64 = 0.66;
+const DRIFT_MIN_SPEED: f64 = 11.0;
+const DRIFT_BETA_P: f64 = 2.1;
+const DRIFT_AUTHORITY: f64 = 18.0;
+const DRIFT_RATE_UP: f64 = 7.0;
+const DRIFT_RATE_DOWN: f64 = 2.4;
+const DRIFT_KICK_TIME: f64 = 0.34;
+const DRIFT_KICK_BRAKE: f64 = 2600.0;
+const DRIFT_KICK_GRIP: f64 = 0.66;
+const DRIFT_REAR_GRIP: f64 = 0.88;
+const DRIFT_PUSH: f64 = 9000.0;
+const SPIN_LIMIT: f64 = 0.46;
+const SPIN_MARGIN: f64 = 0.30;
+const SPIN_AUTHORITY: f64 = 6.0;
+const SPIN_RECOVER: f64 = 1.15;
+
+// --- collision -------------------------------------------------------------
+const WALL_RESTITUTION: f64 = 0.34;
+const WALL_FRICTION: f64 = 0.55;
+const WALL_STUN: f64 = 0.55;
+
+const FIXED_DT: f64 = 1.0 / 240.0;
+const MAX_STEPS: usize = 24;
+
+const G: f64 = 9.81;
+const A_ARM: f64 = WHEELBASE * (1.0 - FRONT_WEIGHT);
+const B_ARM: f64 = WHEELBASE * FRONT_WEIGHT;
+const YAW_I: f64 = MASS * A_ARM * B_ARM;
+const PITCH_I: f64 = MASS * 0.29 * WHEELBASE * WHEELBASE;
+const ROLL_I: f64 = MASS * 0.30 * TRACK_WIDTH * TRACK_WIDTH;
+const TARGET_LAT: f64 = STEER_TARGET_G * G / UNIT_METRES;
+const RPM_PER_RAD: f64 = 60.0 / (2.0 * core::f64::consts::PI);
+const HW: f64 = TRACK_WIDTH * 0.5;
+
+/// The four wheels in body axes (`l` forward, `w` right), FL FR RL RR.
+struct WheelCfg {
+    l: f64,
+    w: f64,
+    front: bool,
+}
+const WHEELS: [WheelCfg; 4] = [
+    WheelCfg { l: A_ARM, w: -HW, front: true },
+    WheelCfg { l: A_ARM, w: HW, front: true },
+    WheelCfg { l: -B_ARM, w: -HW, front: false },
+    WheelCfg { l: -B_ARM, w: HW, front: false },
+];
+
+#[inline(always)]
+fn magic(slip: f64, stiff: f64, shape: f64) -> f64 {
+    (shape * (stiff * slip).atan()).sin()
+}
+
+/// Crank torque. Rises hard off idle, plateaus, then falls to the limiter.
+#[inline]
+fn engine_torque(rpm: f64) -> f64 {
+    let x = clamp(rpm, IDLE_RPM, REDLINE) / REDLINE;
+    TORQUE_PEAK * (0.45 + 1.45 * x - 1.02 * x * x)
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct Wheel {
+    pub omega: f64,
+    pub load: f64,
+    pub slip_angle: f64,
+    pub slip_ratio: f64,
+    pub fy: f64,
+    pub fx: f64,
+    pub contact: bool,
+}
+
+/// The six inputs a driver produces, human or otherwise.
+#[derive(Clone, Copy, Default)]
+pub struct Input {
+    pub steer: f64,
+    pub throttle: f64,
+    pub brake: f64,
+    pub boost: bool,
+    pub ebrake: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HitKind {
+    None,
+    Wall,
+    Car,
+}
+
+impl Default for HitKind {
+    fn default() -> Self {
+        HitKind::None
+    }
+}
+
+#[derive(Clone)]
+pub struct Vehicle {
+    // pose
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub yaw: f64,
+    pub road_y: f64,
+    pub road_pitch: f64,
+    pub lift: f64,
+
+    // body-frame velocity
+    pub v_long: f64,
+    pub v_lat: f64,
+    pub yaw_rate: f64,
+    pub vx: f64,
+    pub vz: f64,
+    pub speed: f64,
+
+    // steering
+    pub steer: f64,
+    pub steer_visual: f64,
+    pub counter_steering: bool,
+
+    // drift
+    pub drifting: bool,
+    pub drift_amount: f64,
+    pub drift_hold: f64,
+    pub drift_kick: f64,
+    pub drift_angle: f64,
+    pub drift_dir: f64,
+    pub drift_throttle: f64,
+    pub scrape: f64,
+    pub body_slip: f64,
+    pub slip_front: f64,
+    pub slip_rear: f64,
+    pub wheel_slip: f64,
+    pub wheel_spin_fx: f64,
+    /// Accumulated REAR axle angle, in radians. The renderer turns the rear
+    /// wheels by this, so a wheel that is spinning up under power turns faster
+    /// than the car is travelling and one that is locked stops dead.
+    pub wheel_spin: f64,
+    /// ...and the front axle, which is a different number whenever it matters:
+    /// under braking the fronts lock while the rears still turn, and under
+    /// power the rears light up while the fronts only roll. One accumulator
+    /// for both axles renders both of those as the same wheel.
+    pub wheel_spin_front: f64,
+
+    // drivetrain
+    pub boost: f64,
+    pub boosting: bool,
+    pub boost_locked: bool,
+    pub gear: usize,
+    pub rpm: f64,
+    pub engine_rpm: f64,
+    pub shift_timer: f64,
+    pub shift_hold: f64,
+    pub shift_flash: f64,
+    pub engine_load: f64,
+    pub reverse_arm: f64,
+    pub engine_top: f64,
+    pub speed_cap: f64,
+    pub engine_power: f64,
+    pub race_mode_multiplier: f64,
+    pub power_scale: f64,
+
+    // road relationship
+    pub s_track: f64,
+    pub max_s: f64,
+    pub min_s: f64,
+    pub lateral: f64,
+    pub offroad: bool,
+    pub wrong_way: f64,
+    pub beached: f64,
+    pub surface_grip: f64,
+    pub grip_scale: f64,
+    pub surface_drag: f64,
+    /* HOW BENT THE BODY IS, 0 intact .. 1 wrecked.
+     *
+     * Written by the presentation layer (js/damage.js counts the dents) and
+     * read by exactly two things below: the drag, and the boost.
+     *
+     * IT IS NOT A HEALTH BAR. Nothing here can stop the car, nothing here
+     * scales grip or steering, and at zero it changes nothing at all - the
+     * differential harness drives with it at its default and the trace is
+     * unchanged. What a caved-in nose and a torn-off diffuser actually cost is
+     * AERODYNAMICS, and aerodynamics is a term that only matters at speed:
+     * a wrecked car pulls away from a corner exactly as well as a clean one
+     * and simply cannot hold the same top end. That is the right shape for a
+     * racing penalty, because it punishes the player where they were winning
+     * rather than where they were already struggling. */
+    pub damage: f64,
+
+    // body on its springs
+    pub heave: f64,
+    pub heave_v: f64,
+    pub pitch: f64,
+    pub pitch_v: f64,
+    pub roll: f64,
+    pub roll_v: f64,
+    pub body_y: f64,
+    pub accel_long: f64,
+    pub accel_lat: f64,
+
+    pub w: [Wheel; 4],
+
+    // contact bookkeeping
+    pub crash_cooldown: f64,
+    pub last_hit: bool,
+    pub last_hit_kind: HitKind,
+    pub braking: f64,
+    pub impact: f64,
+    pub impact_speed: f64,
+    pub stun: f64,
+    pub contact_timer: f64,
+
+    accum: f64,
+}
+
+impl Default for Vehicle {
+    fn default() -> Self {
+        Vehicle {
+            x: 0.0, y: 0.0, z: 0.0, yaw: 0.0, road_y: 0.0, road_pitch: 0.0, lift: 0.0,
+            v_long: 0.0, v_lat: 0.0, yaw_rate: 0.0, vx: 0.0, vz: 0.0, speed: 0.0,
+            steer: 0.0, steer_visual: 0.0, counter_steering: false,
+            drifting: false, drift_amount: 0.0, drift_hold: 0.0, drift_kick: 0.0,
+            drift_angle: 0.0, drift_dir: 0.0, drift_throttle: 0.0, scrape: 0.0,
+            body_slip: 0.0, slip_front: 0.0, slip_rear: 0.0, wheel_slip: 0.0,
+            wheel_spin_fx: 0.0, wheel_spin: 0.0, wheel_spin_front: 0.0,
+            boost: 1.0, boosting: false, boost_locked: false, gear: 1,
+            rpm: 0.0, engine_rpm: IDLE_RPM, shift_timer: 0.0, shift_hold: 0.0,
+            shift_flash: 0.0, engine_load: 0.0, reverse_arm: 0.0,
+            engine_top: TOP_SPEED, speed_cap: f64::INFINITY, engine_power: 1.0,
+            race_mode_multiplier: 1.0, power_scale: 1.0,
+            s_track: 0.0, max_s: 0.0, min_s: 0.0, lateral: 0.0, offroad: false,
+            wrong_way: 0.0, beached: 0.0, surface_grip: 1.0, grip_scale: 1.0, surface_drag: 0.0,
+            damage: 0.0,
+            heave: 0.0, heave_v: 0.0, pitch: 0.0, pitch_v: 0.0, roll: 0.0, roll_v: 0.0,
+            body_y: 0.0, accel_long: 0.0, accel_lat: 0.0,
+            w: [Wheel::default(); 4],
+            crash_cooldown: 0.0, last_hit: false, last_hit_kind: HitKind::None,
+            braking: 0.0, impact: 0.0, impact_speed: 0.0, stun: 0.0, contact_timer: 0.0,
+            accum: 0.0,
+        }
+    }
+}
+
+impl Vehicle {
+    pub fn new(track: &Track, lift: f64) -> Self {
+        let mut v = Vehicle::with_lift(lift);
+        v.reset(track, 0.0, 0.0);
+        v
+    }
+
+    /// A car that has not been placed on a road yet. Used by the ABI, which
+    /// creates the grid before the course has necessarily finished building.
+    pub fn with_lift(lift: f64) -> Self {
+        Vehicle { lift, ..Default::default() }
+    }
+
+    /// Put the car on the track at arc length `s`, `lateral` units off centre.
+    ///
+    /// Everything that remembers where the car has *been* is reset with it, or
+    /// a rewind puts the car back at the checkpoint with the road behind it
+    /// still walled off at wherever it got to.
+    pub fn reset(&mut self, track: &Track, s: f64, lateral: f64) {
+        let p = track.at(s);
+        let rx = p.yaw.cos();
+        let rz = -p.yaw.sin();
+        self.x = p.x + rx * lateral;
+        self.road_y = p.y;
+        self.y = self.road_y + self.lift;
+        self.z = p.z + rz * lateral;
+        self.yaw = p.yaw;
+        self.s_track = s;
+        self.max_s = s;
+        self.min_s = s - 2.0;
+        self.lateral = lateral;
+
+        let pa = track.at(s - 6.0);
+        let pb = track.at(s + 6.0);
+        self.road_pitch = -((pb.y - pa.y).atan2(12.0));
+
+        self.v_long = 0.0;
+        self.v_lat = 0.0;
+        self.yaw_rate = 0.0;
+        self.vx = 0.0;
+        self.vz = 0.0;
+        self.speed = 0.0;
+        self.steer = 0.0;
+        self.steer_visual = 0.0;
+        self.counter_steering = false;
+        self.drifting = false;
+        self.drift_amount = 0.0;
+        self.drift_hold = 0.0;
+        self.drift_kick = 0.0;
+        self.drift_angle = 0.0;
+        self.drift_dir = 0.0;
+        self.drift_throttle = 0.0;
+        self.scrape = 0.0;
+        self.body_slip = 0.0;
+        self.slip_front = 0.0;
+        self.slip_rear = 0.0;
+        self.wheel_slip = 0.0;
+        self.wheel_spin_fx = 0.0;
+        self.wheel_spin = 0.0;
+        self.wheel_spin_front = 0.0;
+        self.boost = 1.0;
+        self.boosting = false;
+        self.boost_locked = false;
+        self.gear = 1;
+        self.rpm = 0.0;
+        self.engine_rpm = IDLE_RPM;
+        self.shift_timer = 0.0;
+        self.shift_hold = 0.0;
+        self.shift_flash = 0.0;
+        self.engine_load = 0.0;
+        self.reverse_arm = 0.0;
+        self.offroad = false;
+        self.wrong_way = 0.0;
+        self.beached = 0.0;
+        self.surface_grip = 1.0;
+        self.grip_scale = 1.0;
+        self.surface_drag = 0.0;
+        self.damage = 0.0;
+        self.heave = 0.0;
+        self.heave_v = 0.0;
+        self.pitch = 0.0;
+        self.pitch_v = 0.0;
+        self.roll = 0.0;
+        self.roll_v = 0.0;
+        self.body_y = 0.0;
+        self.accel_long = 0.0;
+        self.accel_lat = 0.0;
+        for i in 0..4 {
+            let k = &WHEELS[i];
+            self.w[i] = Wheel {
+                omega: 0.0,
+                load: MASS * G * (if k.front { FRONT_WEIGHT } else { 1.0 - FRONT_WEIGHT }) * 0.5,
+                slip_angle: 0.0,
+                slip_ratio: 0.0,
+                fy: 0.0,
+                fx: 0.0,
+                contact: true,
+            };
+        }
+        self.crash_cooldown = 0.0;
+        self.last_hit = false;
+        self.last_hit_kind = HitKind::None;
+        self.braking = 0.0;
+        self.impact = 0.0;
+        self.impact_speed = 0.0;
+        self.stun = 0.0;
+        self.contact_timer = 0.0;
+        self.race_mode_multiplier = 1.0;
+        self.power_scale = 1.0;
+        self.accum = 0.0;
+    }
+
+    /// The ceiling this car is allowed to reach right now, in world units/s.
+    #[inline]
+    pub fn ceiling(&self) -> f64 {
+        self.speed_cap.min(
+            self.engine_top
+                * (if self.boosting { BOOST_TOP } else { 1.0 })
+                * self.race_mode_multiplier.max(1.0),
+        )
+    }
+
+    /// Fit an engine. `swap` is the Forge rebuild; anything else is stock.
+    pub fn fit_engine(&mut self, swap: bool) {
+        if swap {
+            self.engine_top = SWAP_TOP;
+            self.speed_cap = SWAP_CAP;
+            self.engine_power = SWAP_POWER;
+        } else {
+            self.engine_top = TOP_SPEED;
+            self.speed_cap = f64::INFINITY;
+            self.engine_power = 1.0;
+        }
+    }
+
+    #[inline]
+    pub fn speed_ms(&self) -> f64 {
+        self.speed * UNIT_METRES
+    }
+    #[inline]
+    pub fn speed_kmh(&self) -> f64 {
+        self.speed_ms() * 3.6
+    }
+    #[inline]
+    pub fn speed_mph(&self) -> f64 {
+        self.speed_ms() * 2.23694
+    }
+
+    pub fn update(&mut self, track: &Track, dt: f64, input: Input, active: bool) {
+        let throttle = if active { input.throttle } else { 0.0 };
+        let brake_in = if active { input.brake } else { 0.0 };
+        let steer_in = if active { input.steer } else { 0.0 };
+        let ebrake = active && input.ebrake;
+
+        // ---- boost -------------------------------------------------------
+        // The reservoir latches when it is emptied and unlatches only when
+        // there is a real charge in it again: `boost > 0.02` on its own is not
+        // a gate, because the refill puts that much back a tenth of a second
+        // later and a held key then boosts continuously off an empty bar.
+        if self.boost <= 0.015 {
+            self.boost_locked = true;
+        } else if self.boost >= BOOST_ARM {
+            self.boost_locked = false;
+        }
+        let want_boost =
+            active && input.boost && !self.boost_locked && self.boost > 0.015 && self.speed > 2.0;
+        self.boosting = want_boost;
+        if want_boost {
+            self.boost = (self.boost - BOOST_BURN * dt).max(0.0);
+        } else {
+            self.boost = (self.boost + BOOST_FILL * dt).min(1.0);
+        }
+
+        // Reverse has to be asked for; holding the brake through a corner must
+        // not flip into reverse the instant the car stops.
+        if brake_in > 0.01 && self.v_long.abs() < 0.6 {
+            self.reverse_arm += dt;
+        } else if brake_in <= 0.01 {
+            self.reverse_arm = 0.0;
+        }
+
+        // ---- steering ----------------------------------------------------
+        // The speed-sensitive limit is a driver aid for turn-in. Applying it
+        // to opposite lock as well is what made a slide unrecoverable, so when
+        // the input opposes the way the car is already travelling - the
+        // definition of catching a slide - it gets the full mechanical lock.
+        let v2 = (self.v_long * self.v_long).max(1.0);
+        let aided = MAX_STEER.min(WHEELBASE * TARGET_LAT / v2);
+        let catching = self.body_slip.abs() > 0.07 && steer_in * self.body_slip > 0.0;
+        let blend = if catching {
+            (1.0f64).min((self.body_slip.abs() - 0.07) / 0.12)
+        } else {
+            0.0
+        };
+        let lock = aided + (MAX_STEER - aided) * blend;
+        self.counter_steering = blend > 0.02;
+        let want_steer = steer_in * lock;
+        let rate = if steer_in.abs() < 0.02 { STEER_RETURN } else { STEER_RATE };
+        let max_delta = rate * dt;
+        self.steer += clamp(want_steer - self.steer, -max_delta, max_delta);
+        self.steer_visual = damp(self.steer_visual, steer_in, 9.0, dt);
+        self.engine_load = damp(
+            self.engine_load,
+            throttle * (if self.boosting { 1.4 } else { 1.0 }),
+            6.0,
+            dt,
+        );
+        self.shift_flash = (self.shift_flash - dt * 3.0).max(0.0);
+
+        // ---- where we are on the road ------------------------------------
+        let proj = track.project(self.x, self.z, self.s_track);
+        self.s_track = proj.s_exact;
+        self.lateral = proj.lateral;
+        // The road behind is a wall. The start line already is one; `max_s` is
+        // the furthest the player has got, and they may give up `BACKTRACK` of
+        // it - enough to reverse out of a barrier and get pointed the right
+        // way - and no more.
+        if self.s_track > self.max_s {
+            self.max_s = self.s_track;
+        }
+        let floor_s = self.min_s.max(self.max_s - BACKTRACK);
+        if active && self.s_track < floor_s {
+            let back = floor_s - self.s_track;
+            self.x += proj.yaw.sin() * back;
+            self.z += proj.yaw.cos() * back;
+            self.s_track = floor_s;
+            self.lateral = proj.lateral;
+            if self.v_long < 0.0 {
+                self.v_long *= 0.2;
+            }
+        }
+        // Ninety degrees is sideways and happens in every slide; past a
+        // hundred and twenty the car is genuinely facing the wrong way.
+        let head = crate::math::ang_diff(self.yaw, proj.yaw).abs();
+        if active && head > 2.09 && self.speed > 4.0 {
+            self.wrong_way += dt;
+        } else {
+            self.wrong_way = (self.wrong_way - dt * 2.5).max(0.0);
+        }
+        // A hand's width of tolerance, so brushing the wall is a scrape rather
+        // than an OFF ROAD card and a grip penalty.
+        self.offroad = proj.lateral.abs() > track.half_width + 0.35;
+        if self.offroad && self.speed < 3.0 && active {
+            self.beached += dt;
+        } else {
+            self.beached = (self.beached - dt * 3.0).max(0.0);
+        }
+        if self.beached > 1.1 {
+            let back = -sign(if proj.lateral == 0.0 { 1.0 } else { proj.lateral });
+            let rx = proj.yaw.cos();
+            let rz = -proj.yaw.sin();
+            self.x += rx * back * 3.4 * dt;
+            self.z += rz * back * 3.4 * dt;
+        }
+
+        // ---- the drift, asked for once a frame ---------------------------
+        // SPACE engages the slide controller, fully; how far the wheel is
+        // turned into the corner sets how deep a slide is asked for.
+        // Conflating engagement with depth is what made a half-turn produce no
+        // slide at all - it scaled the angle *and* the authority to hold it.
+        let fast = self.speed > DRIFT_MIN_SPEED;
+        let steer_mag = (1.0f64).min(steer_in.abs());
+        let asked: f64 = if ebrake && fast && steer_mag > 0.10 { 1.0 } else { 0.0 };
+        // natural oversteer: already sideways, on the power, and not from a hit
+        let natural = if fast
+            && !ebrake
+            && throttle > 0.45
+            && self.contact_timer <= 0.0
+            && self.body_slip.abs() > 0.22
+            && steer_mag > 0.25
+        {
+            0.72
+        } else {
+            0.0
+        };
+        let want = asked.max(natural);
+        let d_rate = if want > self.drift_hold { DRIFT_RATE_UP } else { DRIFT_RATE_DOWN };
+        let was_held = self.drift_hold;
+        self.drift_hold += (want - self.drift_hold) * (1.0f64).min(d_rate * dt);
+        if self.drift_hold < 0.02 {
+            self.drift_hold = 0.0;
+        }
+        // the rear has to let go once, at the start, and then be given back
+        if was_held < 0.08 && self.drift_hold >= 0.08 && asked > 0.0 {
+            self.drift_kick = DRIFT_KICK_TIME;
+        }
+        self.drift_kick = (self.drift_kick - dt).max(0.0);
+        // Negative slip is a right-hand slide. Steering left asks for the
+        // mirror of it, which is what lets a slide be flicked the other way
+        // without ever finding opposite lock.
+        self.drift_angle = -sign(steer_in) * DRIFT_ANGLE * steer_mag * self.drift_hold;
+        self.drift_dir = if self.drift_hold > 0.05 { -sign(self.drift_angle) } else { 0.0 };
+        self.drift_throttle = throttle;
+
+        // ---- fixed-rate solve --------------------------------------------
+        self.accum += dt;
+        let mut steps = (self.accum / FIXED_DT).floor() as usize;
+        if steps > MAX_STEPS {
+            // the tab was hidden or the frame stalled: drop the time rather
+            // than spiral trying to catch up with it
+            steps = MAX_STEPS;
+            self.accum = 0.0;
+        } else {
+            self.accum -= steps as f64 * FIXED_DT;
+        }
+        let h = FIXED_DT;
+        for _ in 0..steps {
+            self.step(h, throttle, brake_in);
+            let sf = self.yaw.sin();
+            let cf = self.yaw.cos();
+            self.x += (sf * self.v_long + cf * self.v_lat) * h;
+            self.z += (cf * self.v_long - sf * self.v_lat) * h;
+        }
+
+        let fx = self.yaw.sin();
+        let fz = self.yaw.cos();
+        self.vx = fx * self.v_long + fz * self.v_lat;
+        self.vz = fz * self.v_long - fx * self.v_lat;
+        self.speed = self.vx.hypot(self.vz);
+        /* The two axles, kept apart, and kept small.
+
+           A tour is a hundred and twenty-seven kilometres, and at eighty units
+           a second a 0.45-unit wheel turns about 178 radians every second - so
+           an accumulator that is never wrapped reaches seven figures inside
+           half an hour, and a float that large has no precision left in the
+           fractional part the renderer actually uses. Wrapped to a turn, it
+           stays exact for as long as the run lasts. */
+        let tau = core::f64::consts::TAU;
+        self.wheel_spin = (self.wheel_spin + (self.w[2].omega + self.w[3].omega) * 0.5 * dt) % tau;
+        self.wheel_spin_front =
+            (self.wheel_spin_front + (self.w[0].omega + self.w[1].omega) * 0.5 * dt) % tau;
+
+        // ---- what the rest of the game reads -----------------------------
+        self.slip_front = (self.w[0].slip_angle + self.w[1].slip_angle) * 0.5;
+        self.slip_rear = (self.w[2].slip_angle + self.w[3].slip_angle) * 0.5;
+        self.wheel_slip = clamp(
+            (self.w[2].slip_ratio.abs() + self.w[3].slip_ratio.abs()) * 0.5 - 0.06,
+            0.0,
+            1.0,
+        );
+        // Wheelspin, and only wheelspin: a driven wheel turning faster than
+        // the road is smoke off the line, one turning slower is being braked,
+        // and a magnitude cannot tell those apart. This reads the sign.
+        self.wheel_spin_fx = clamp(
+            (self.w[2].slip_ratio.max(0.0) + self.w[3].slip_ratio.max(0.0)) * 0.5 - 0.08,
+            0.0,
+            1.0,
+        );
+        // A drift is the car travelling sideways - the body slip angle.
+        // Reading it off the rear tyres flags a straight-line stop as a drift.
+        self.body_slip = self.v_lat.atan2((1.0f64).max(self.v_long.abs()));
+        let beta = self.body_slip.abs();
+        // Being shoved sideways is not a drift: a barrier scrape or a bump
+        // spikes the body slip for a moment, and without this the HUD calls it
+        // a drift and the scoring pays out for having been hit.
+        self.contact_timer = (self.contact_timer - dt).max(0.0);
+        let clean = self.speed > 8.0 && self.contact_timer <= 0.0;
+        self.drifting = clean && beta > 0.18;
+        let carrying = clamp((beta - 0.10) / 0.30, 0.0, 1.0);
+        self.drift_amount = damp(
+            self.drift_amount,
+            carrying.max(self.drift_hold * 0.35 * if beta > 0.12 { 1.0 } else { 0.0 })
+                * if clean { 1.0 } else { 0.0 },
+            9.0,
+            dt,
+        );
+        self.scrape = (self.scrape - dt * 2.0).max(0.0);
+
+        self.collide(track, &proj, dt);
+        self.gearbox(dt, throttle);
+
+        // Brake lamps come on when the pedal is doing something. The engine
+        // braking of a lifted throttle does not count.
+        let want_brake = if brake_in > 0.02 && self.v_long > 0.4 { brake_in } else { 0.0 };
+        self.braking = damp(
+            self.braking,
+            want_brake.max(if ebrake { 1.0 } else { 0.0 }),
+            22.0,
+            dt,
+        );
+        self.impact = (self.impact - dt * 2.6).max(0.0);
+        self.stun = (self.stun - dt).max(0.0);
+
+        // the renderer reads the sprung body, not the chassis
+        self.body_y = clamp(self.heave, -0.18, 0.18);
+        let road_pose = track.at(self.s_track);
+        let road_back = track.at(self.s_track - 6.0);
+        let road_ahead = track.at(self.s_track + 6.0);
+        self.road_y = road_pose.y;
+        self.road_pitch = -((road_ahead.y - road_back.y).atan2(12.0));
+        self.y = self.road_y + self.lift + self.body_y;
+    }
+
+    /// Pick a gear from road speed.
+    ///
+    /// The schedule deliberately does *not* read the driven wheels: a spinning
+    /// wheel turns at whatever the engine will turn it, so pinned against a
+    /// barrier with the throttle down the old box saw redline, upshifted, saw
+    /// it again, and rowed itself into seventh at a standstill. The tacho still
+    /// reads the real wheels, because a burnout should scream.
+    fn gearbox(&mut self, dt: f64, throttle: f64) {
+        let wheel_omega = (self.w[2].omega + self.w[3].omega) * 0.5;
+        let refr = self.v_long.abs() / WHEEL_RADIUS;
+        let at = |g: usize| refr * RATIOS[g - 1] * RPM_PER_RAD;
+
+        if self.shift_timer > 0.0 {
+            self.shift_timer -= dt;
+        }
+        self.shift_hold = (self.shift_hold - dt).max(0.0);
+
+        // A cutscene can put a car on the road at ninety units a second in
+        // first. A box that is more than one gear out is simply in the wrong
+        // gear, so it takes the right one rather than rowing up through six.
+        let mut ideal = GEARS;
+        for gi in 1..=GEARS {
+            if at(gi) <= SHIFT_UP {
+                ideal = gi;
+                break;
+            }
+        }
+        if (ideal as i64 - self.gear as i64).abs() >= 2 {
+            self.gear = ideal;
+            self.shift_timer = SHIFT_TIME * 0.5;
+            self.shift_hold = SHIFT_HOLD;
+        } else if self.shift_timer <= 0.0 && self.shift_hold <= 0.0 {
+            if self.gear < GEARS
+                && at(self.gear) > SHIFT_UP
+                && at(self.gear + 1) > SHIFT_DOWN + SHIFT_MARGIN
+            {
+                // up, and only if the revs land above the downshift point in
+                // the gear being taken - otherwise it shifts straight back
+                self.gear += 1;
+                self.shift_timer = SHIFT_TIME;
+                self.shift_flash = 1.0;
+                self.shift_hold = SHIFT_HOLD;
+            } else if self.gear > 1
+                && at(self.gear) < SHIFT_DOWN
+                && at(self.gear - 1) < SHIFT_UP - SHIFT_MARGIN
+            {
+                self.gear -= 1;
+                self.shift_timer = SHIFT_TIME * 0.6;
+                self.shift_flash = 0.55;
+                self.shift_hold = SHIFT_HOLD;
+            } else if throttle > 0.85
+                && self.gear > 1
+                && at(self.gear) < SHIFT_UP * 0.60
+                && at(self.gear - 1) < REDLINE * 0.94
+            {
+                // kickdown: throttle buried, engine nowhere near the torque
+                self.gear -= 1;
+                self.shift_timer = SHIFT_TIME * 0.7;
+                self.shift_flash = 0.8;
+                self.shift_hold = SHIFT_HOLD;
+            }
+        }
+
+        let mut rpm = wheel_omega.abs() * RATIOS[self.gear - 1] * RPM_PER_RAD;
+        // off the line the clutch is slipping, so the engine is not tied to
+        // the wheels yet and sits up near where the torque is
+        let launch = clamp(1.0 - self.v_long.abs() / 6.0, 0.0, 1.0);
+        rpm = rpm.max(IDLE_RPM + launch * throttle * 4200.0);
+        self.engine_rpm = clamp(rpm, IDLE_RPM, REDLINE);
+        self.rpm = clamp((self.engine_rpm - IDLE_RPM) / (REDLINE - IDLE_RPM), 0.0, 1.0);
+    }
+
+    /// One fixed sub-step: suspension, tyres, body, wheels.
+    fn step(&mut self, h: f64, throttle: f64, brake_in: f64) {
+        let m = MASS;
+        let (u, v, r) = (self.v_long, self.v_lat, self.yaw_rate);
+        let abs_u = u.abs();
+        let rr = WHEEL_RADIUS;
+
+        // ---- suspension ---------------------------------------------------
+        // Each corner's spring is compressed by however far the body has moved
+        // down over it, and the force that comes back IS the tyre's vertical
+        // load - so load transfer is an outcome of the body moving rather than
+        // a formula applied on top of it.
+        let aero = DOWNFORCE * u * u;
+        let mut sum_f = 0.0;
+        let mut pitch_m = 0.0;
+        let mut roll_m = 0.0;
+        let mut comp = [0.0f64; 4];
+        for i in 0..4 {
+            let k = &WHEELS[i];
+            let k_s = if k.front { SPRING_F } else { SPRING_R };
+            let static_load = m * G * (if k.front { FRONT_WEIGHT } else { 1.0 - FRONT_WEIGHT }) * 0.5;
+            let s0 = static_load / k_s;
+            let zi = self.heave + k.l * self.pitch + k.w * self.roll;
+            let vi = self.heave_v + k.l * self.pitch_v + k.w * self.roll_v;
+            let x = clamp(s0 - zi, 0.0, TRAVEL * 2.0);
+            comp[i] = x;
+            let rate_up = -vi;
+            let c_d = if rate_up > 0.0 {
+                if k.front { DAMP_BUMP_F } else { DAMP_BUMP_R }
+            } else if k.front {
+                DAMP_REB_F
+            } else {
+                DAMP_REB_R
+            };
+            let spring = k_s * x + c_d * rate_up;
+            // aero pushes the whole car down and is not carried by the
+            // springs' static travel, so it goes straight to the contact load
+            let load = spring
+                + aero * (if k.front { FRONT_WEIGHT } else { 1.0 - FRONT_WEIGHT }) * 0.5;
+            self.w[i].load = load.max(0.0);
+            self.w[i].contact = self.w[i].load > 1.0;
+            sum_f += spring;
+            pitch_m += k.l * spring;
+            roll_m += k.w * spring;
+        }
+        // Anti-roll bars: a torsion bar pushes back on whichever side is
+        // compressed further, so the compressed side gains load. Adding it to
+        // the lighter side inverts the whole distribution and the car leans
+        // out of the bend.
+        let arb_f = ARB_F * (comp[0] - comp[1]);
+        let arb_r = ARB_R * (comp[2] - comp[3]);
+        self.w[0].load = (self.w[0].load + arb_f).max(0.0);
+        self.w[1].load = (self.w[1].load - arb_f).max(0.0);
+        self.w[2].load = (self.w[2].load + arb_r).max(0.0);
+        self.w[3].load = (self.w[3].load - arb_r).max(0.0);
+        roll_m += (-HW) * arb_f + HW * (-arb_f) + (-HW) * arb_r + HW * (-arb_r);
+
+        // ---- tyres --------------------------------------------------------
+        // Slip angle and slip ratio per wheel, both passed through a relaxation
+        // length so a force builds over the distance the tyre rolls. The floor
+        // keeps a launch responsive: dividing a lag distance by road speed at a
+        // standing start gives a half-second time constant, and the tyre cannot
+        // build a force before the car has already gone.
+        let relax_lat = abs_u.max(4.0) / RELAX_LAT;
+        let relax_long = abs_u.max(4.0) / RELAX_LONG;
+        let stun = if self.stun > 0.0 { 1.0 - 0.3 * (self.stun / WALL_STUN) } else { 1.0 };
+
+        // Ackermann: the inner wheel turns more tightly than the outer one
+        let steer_l = self.steer * if self.steer > 0.0 { 1.0 } else { 1.0 + ACKERMANN * self.steer.abs() };
+        let steer_r = self.steer * if self.steer < 0.0 { 1.0 } else { 1.0 + ACKERMANN * self.steer.abs() };
+
+        let mut total_load = 0.0;
+        for i in 0..4 {
+            total_load += self.w[i].load;
+        }
+        total_load = total_load.max(1.0);
+
+        let mut fx_total = 0.0;
+        let mut fy_total = 0.0;
+        let mut yaw_m = 0.0;
+
+        // Engine speed is read here, not once a frame: evaluating it in the
+        // frame loop left it eight sub-steps stale at 30 fps, which is a
+        // torque difference, and is why the model used to reach two different
+        // speeds depending on the refresh rate.
+        let ratio = RATIOS[self.gear - 1];
+        let wheel_omega = (self.w[2].omega + self.w[3].omega) * 0.5;
+        let launch = clamp(1.0 - abs_u / 6.0, 0.0, 1.0);
+        let rpm_now = clamp(
+            (wheel_omega.abs() * ratio * RPM_PER_RAD).max(IDLE_RPM + launch * throttle * 4200.0),
+            IDLE_RPM,
+            REDLINE,
+        );
+        let top_now = self.ceiling();
+        let mut drive_torque = 0.0;
+        if throttle > 0.01 && u < top_now && self.shift_timer <= 0.0 {
+            drive_torque = engine_torque(rpm_now)
+                * ratio
+                * DRIVE_EFF
+                * throttle
+                * self.engine_power
+                * self.power_scale.max(1.0);
+        }
+        let mut reverse = 0.0;
+        if brake_in > 0.01 && self.reverse_arm >= REVERSE_ARM && u < 0.5 {
+            reverse = -REVERSE_TORQUE * brake_in;
+        }
+        let eng_brake = if throttle < 0.01 && abs_u > 0.5 {
+            ENGINE_BRAKE * (self.engine_rpm / 1000.0) * RATIOS[self.gear - 1]
+        } else {
+            0.0
+        };
+
+        for i in 0..4 {
+            let k = &WHEELS[i];
+            // velocity of this contact patch, in body axes
+            let vxw = u - r * k.w;
+            let vyw = v + r * k.l;
+            let delta = if k.front {
+                if k.w < 0.0 { steer_l } else { steer_r }
+            } else {
+                0.0
+            };
+
+            let ss_angle = vyw.atan2(vxw.abs().max(2.2))
+                - delta * sign(if vxw == 0.0 { 1.0 } else { vxw });
+            self.w[i].slip_angle += (ss_angle - self.w[i].slip_angle) * (1.0f64).min(relax_lat * h);
+
+            let vroll = vxw * delta.cos() + vyw * delta.sin();
+            let ss_ratio = (self.w[i].omega * rr - vroll) / vroll.abs().max(2.0);
+            self.w[i].slip_ratio += (ss_ratio - self.w[i].slip_ratio) * (1.0f64).min(relax_long * h);
+
+            // grip at this wheel's own load
+            let static_load = m * G * (if k.front { FRONT_WEIGHT } else { 1.0 - FRONT_WEIGHT }) * 0.5;
+            let mut mu = (if k.front { GRIP_FRONT } else { GRIP_REAR }) * stun;
+            mu *= clamp(self.surface_grip, 0.18, 1.08);
+            mu *= clamp(self.grip_scale, 1.0, 2.2);
+            mu *= 1.0 - LOAD_SENS * (self.w[i].load / static_load.max(1.0) - 1.0);
+            if self.offroad {
+                mu = mu.min(OFFROAD_GRIP);
+            }
+            // The rear lets go hard for the third of a second it takes to
+            // start the slide, then gets most of its grip back. Holding it at
+            // half grip for the whole drift is what turned the handbrake into
+            // a brake: the car went sideways and simply stopped.
+            if !k.front && self.drift_hold > 0.02 {
+                mu *= if self.drift_kick > 0.0 { DRIFT_KICK_GRIP } else { DRIFT_REAR_GRIP };
+            }
+            mu = mu.max(0.15);
+
+            let mut fy = -mu * self.w[i].load * magic(self.w[i].slip_angle, LAT_STIFF, LAT_SHAPE);
+            let mut fx = mu * self.w[i].load * magic(self.w[i].slip_ratio, LONG_STIFF, LONG_SHAPE);
+
+            // Friction ellipse: one budget, both directions spend from it.
+            // This is what makes power-on oversteer and braking-induced
+            // understeer fall out of the model rather than be special-cased.
+            let cap = mu * self.w[i].load;
+            let mag = fx.hypot(fy);
+            if mag > cap && mag > 1.0 {
+                let s = cap / mag;
+                fx *= s;
+                fy *= s;
+            }
+            self.w[i].fx = fx;
+            self.w[i].fy = fy;
+
+            let roll = -sign(vroll) * ROLL_RESIST * self.w[i].load;
+
+            let cd = delta.cos();
+            let sd = delta.sin();
+            let bx = (fx + roll) * cd - fy * sd;
+            let by = (fx + roll) * sd + fy * cd;
+            fx_total += bx;
+            fy_total += by;
+            yaw_m += k.l * by - k.w * bx;
+
+            // ---- wheel spin ------------------------------------------------
+            let mut tq = 0.0;
+            if !k.front {
+                tq += (drive_torque + reverse) * 0.5 - eng_brake * 0.5;
+            }
+            // Brake proportioning follows the load this wheel is actually
+            // carrying. Under heavy braking the rear goes light, and a fixed
+            // split then asks it for more than it can hold: the rear locks
+            // first, loses its lateral grip, and the car spins.
+            let mut brake_t = 0.0;
+            if brake_in > 0.01 && u > 0.5 {
+                brake_t = 2.0 * BRAKE_TORQUE * brake_in * (self.w[i].load / total_load);
+                let over = (-self.w[i].slip_ratio - ABS_SLIP) / 0.12;
+                brake_t *= 1.0 - 0.9 * clamp(over, 0.0, 1.0);
+            }
+            if !k.front && self.drift_kick > 0.0 {
+                brake_t = brake_t.max(DRIFT_KICK_BRAKE);
+            }
+            // Semi-implicit, because the tyre is stiff. An explicit step lets
+            // the road torque overshoot the rolling condition and the wheel
+            // rings about it - which averages to *less* drive force than the
+            // true equilibrium, so the car ends up slower the harder the tyre
+            // grips. Linearising the tyre about the current slip removes it.
+            let ks = LONG_STIFF * self.w[i].slip_ratio;
+            let d_f_d_slip =
+                cap * LONG_SHAPE * LONG_STIFF * (LONG_SHAPE * ks.atan()).cos() / (1.0 + ks * ks);
+            let d_f_d_omega = d_f_d_slip.max(0.0) * rr / vroll.abs().max(2.0);
+            // The brake is part of the same balance, not a separate
+            // subtraction from wheel speed: decrementing omega directly makes
+            // the brake infinitely strong, the slip ratio pins at -1, and the
+            // stopping distance stops depending on the brakes at all.
+            let spin = if self.w[i].omega.abs() > 0.2 { sign(self.w[i].omega) } else { sign(vroll) };
+            let net = tq - fx * rr - brake_t * spin;
+            let mut omega = self.w[i].omega + h * net / (WHEEL_INERTIA + h * rr * d_f_d_omega);
+            // a brake can stop a wheel but never drive it backwards
+            if brake_t > 0.0 && self.w[i].omega * omega < 0.0 && tq.abs() < brake_t {
+                omega = 0.0;
+            }
+            self.w[i].omega = clamp(omega, -400.0, 400.0);
+        }
+
+        // ---- resistance ---------------------------------------------------
+        /* Body damage is drag, and drag is quadratic in speed - which is what
+           makes it the honest penalty. A wrecked car loses nothing at all
+           getting out of a hairpin and loses about eight per cent of its
+           terminal speed on the straight, because terminal speed goes as the
+           square root of thrust over drag: DAMAGE_DRAG of 0.42 at full damage
+           is sqrt(1/1.42) of it, sixteen per cent off the top end. The HUD
+           prints that same figure back at the player - see js/hud.js. */
+        let mut resist = DRAG * (1.0 + DAMAGE_DRAG * clamp(self.damage, 0.0, 1.0)) * u * abs_u;
+        // Tapered to nothing at a standstill: a flat 5,200 N is three and a
+        // half m/s^2 applied to a car that is not moving, which no amount of
+        // throttle gets out of. The verge has to cost speed, not forbid motion.
+        if self.offroad {
+            resist += sign(u) * OFFROAD_DRAG * clamp(u.abs() / OFFROAD_DRAG_SPEED, 0.0, 1.0);
+        }
+        if self.surface_drag > 0.0 {
+            resist += sign(u) * OFFROAD_DRAG * clamp(self.surface_drag, 0.0, 2.0);
+        }
+        fx_total -= resist;
+        if self.boosting && u < top_now {
+            /* ...and the reheat has less to push against. Half the loss of the
+               drag term, because the thing that is broken is the body rather
+               than the drive - a bent car still has all of its engine. */
+            fx_total += BOOST_THRUST * (1.0 - DAMAGE_BOOST * clamp(self.damage, 0.0, 1.0));
+        }
+
+        // ---- the slide controller -----------------------------------------
+        // beta is where the car is going against where it is pointing, and
+        //     beta_dot = (u*Fy - v*Fx) / (m * V^2) - r
+        // so the yaw rate that HOLDS a slide is the rate the lateral tyre
+        // force is already curving the path at. Servo r onto that plus a
+        // proportional term on the angle error and the car sits at whatever
+        // slide it is asked for. In the steady state the correction is zero -
+        // the tyres carry the angle themselves - which is the difference
+        // between this and yaw-rate-on-rails.
+        let beta = v.atan2((1.0f64).max(abs_u));
+        let want_yaw = u * self.steer.tan() / WHEELBASE;
+        let drift = self.drift_hold;
+        let beta_limit = SPIN_LIMIT
+            + (self.drift_angle.abs() - SPIN_LIMIT).max(0.0)
+            + SPIN_MARGIN * drift;
+        // The exact derivative, not the small-angle v/u form: past thirty
+        // degrees that is wrong by enough to hand the servo the wrong target,
+        // and a servo with the wrong target drives the car round.
+        let vsq = (u * u + v * v).max(36.0);
+        let r_neutral = (u * fy_total - v * fx_total) / (m * vsq);
+
+        if drift > 0.02 && u > DRIFT_MIN_SPEED {
+            // Deeper slide means MORE rotation, and beta is negative in a
+            // right-hand slide, so the error term is added rather than
+            // subtracted. Backwards, the servo points at the mirror of the
+            // angle asked for and the car swaps ends.
+            let r_des = r_neutral + (beta - self.drift_angle) * DRIFT_BETA_P;
+            yaw_m += (r_des - r) * DRIFT_AUTHORITY * YAW_I * drift;
+            yaw_m -= (r - want_yaw) * YAW_DAMP * YAW_I * (1.0 - drift);
+            // Sideways is slow - every tyre is scrubbing. On the throttle some
+            // of that is handed back, which is what makes a drift a line
+            // through the corner instead of a penalty for taking one.
+            let push = DRIFT_PUSH * drift * (1.0f64).min(beta.abs() / DRIFT_ANGLE) * self.drift_throttle;
+            fx_total += push * if u >= 0.0 { 1.0 } else { -1.0 };
+        } else {
+            yaw_m -= (r - want_yaw) * YAW_DAMP * YAW_I;
+        }
+
+        // The spin guard, always on. Past the limit the correction stops
+        // holding the angle and starts removing it, so the car can be thrown a
+        // long way sideways and still comes back pointing forwards. Nothing
+        // caps the yaw rate directly: a cap is what made a spin wind up to it
+        // and stay there.
+        let over = beta.abs() - beta_limit;
+        if over > 0.0 && abs_u > 2.0 {
+            let pull = (1.0f64).min(over / 0.35);
+            let r_back = r_neutral + sign(beta) * SPIN_RECOVER * pull;
+            yaw_m += (r_back - r) * SPIN_AUTHORITY * YAW_I * pull;
+        }
+
+        let du = fx_total / m + r * v;
+        let dv = fy_total / m - r * u;
+        let dr = yaw_m / YAW_I;
+        self.v_long = u + du * h;
+        self.v_lat = v + dv * h;
+        self.yaw_rate = clamp(r + dr * h, -3.0, 3.0);
+        self.accel_long = du;
+        self.accel_lat = dv + r * u;
+
+        if self.v_long.abs() < 0.05 && throttle < 0.01 && brake_in < 0.01 {
+            self.v_long = 0.0;
+            self.v_lat *= 0.5;
+            for w in self.w.iter_mut() {
+                w.omega *= 0.5;
+            }
+        }
+        self.v_long = clamp(self.v_long, -18.0, self.ceiling());
+        self.yaw += self.yaw_rate * h;
+
+        // ---- body: heave, pitch and roll ----------------------------------
+        let d_heave = (sum_f - m * G) / m;
+        let d_pitch = (pitch_m + m * self.accel_long * CG_HEIGHT) / PITCH_I;
+        let d_roll = (roll_m + m * self.accel_lat * CG_HEIGHT) / ROLL_I;
+        self.heave_v = (self.heave_v + d_heave * h) * 0.999;
+        self.pitch_v = (self.pitch_v + d_pitch * h) * 0.999;
+        self.roll_v = (self.roll_v + d_roll * h) * 0.999;
+        self.heave = clamp(self.heave + self.heave_v * h, -TRAVEL, TRAVEL);
+        self.pitch = clamp(self.pitch + self.pitch_v * h, -0.10, 0.10);
+        self.roll = clamp(self.roll + self.roll_v * h, -0.16, 0.16);
+    }
+
+    /// The barrier, resolved as an impulse at the corner that touched it.
+    ///
+    /// Damping the sideways velocity and scaling the forward one reads as the
+    /// car being quietly deleted into the wall. A real contact has a point of
+    /// application, and because that point is off the centre of mass the same
+    /// equation that stops a square hit spins a glancing one.
+    fn collide(&mut self, track: &Track, proj: &Projection, dt: f64) {
+        // How far the car reaches across the road depends on which way it is
+        // pointing: half its width square to the road, half its length
+        // broadside. Testing the centre against a fixed half-width lets a
+        // yawed car put a corner straight through the barrier.
+        let skew = crate::math::ang_diff(self.yaw, proj.yaw);
+        let reach = (HALF_WIDTH * skew.cos()).abs() + (HALF_LENGTH * skew.sin()).abs();
+        let limit = track.outer_half - reach - 0.05;
+        if proj.lateral.abs() <= limit {
+            if self.s_track < self.min_s {
+                self.hold_start_line(proj);
+            }
+            if self.crash_cooldown > 0.0 {
+                self.crash_cooldown -= dt;
+            }
+            return;
+        }
+
+        let over = proj.lateral.abs() - limit;
+        let sgn = sign(proj.lateral);
+        let nx = -proj.yaw.cos() * sgn;
+        let nz = proj.yaw.sin() * sgn;
+        self.x += nx * over;
+        self.z += nz * over;
+
+        let yaw_n = nx.atan2(nz);
+        let rel = crate::math::ang_diff(self.yaw, yaw_n);
+        let n_l = rel.cos();
+        let n_w = rel.sin();
+
+        // The corner of the car furthest into the wall. Which end touches
+        // first decides whether the car is spun or stopped, so it comes from
+        // the geometry rather than from a constant.
+        let cw = -sgn * reach;
+        let cl = if self.v_long >= 0.0 { HALF_LENGTH * 0.85 } else { -HALF_LENGTH * 0.85 };
+        let vp_l = self.v_long - self.yaw_rate * cw;
+        let vp_w = self.v_lat + self.yaw_rate * cl;
+        let vn = vp_l * n_l + vp_w * n_w;
+        if vn >= 0.0 {
+            self.v_lat *= 0.6;
+            if self.s_track < self.min_s {
+                self.hold_start_line(proj);
+            }
+            if self.crash_cooldown > 0.0 {
+                self.crash_cooldown -= dt;
+            }
+            return;
+        }
+
+        let rxn = cl * n_w - cw * n_l;
+        let inv_mass = 1.0 / MASS + (rxn * rxn) / YAW_I;
+        let jn = -(1.0 + WALL_RESTITUTION) * vn / inv_mass;
+
+        let t_l = -n_w;
+        let t_w = n_l;
+        let vt = vp_l * t_l + vp_w * t_w;
+        let rxt = cl * t_w - cw * t_l;
+        let inv_mass_t = 1.0 / MASS + (rxt * rxt) / YAW_I;
+        let max_t = WALL_FRICTION * jn.abs();
+        let jt = clamp(-vt / inv_mass_t, -max_t, max_t);
+
+        self.v_long += (jn * n_l + jt * t_l) / MASS;
+        self.v_lat += (jn * n_w + jt * t_w) / MASS;
+        self.yaw_rate = clamp(self.yaw_rate + (jn * rxn + jt * rxt) / YAW_I, -3.6, 3.6);
+
+        let hit = vn.abs();
+        self.roll_v += -sgn * hit * 0.10;
+        self.pitch_v += hit * 0.045;
+        self.heave_v -= (1.4f64).min(hit * 0.05);
+        for w in self.w.iter_mut() {
+            w.omega *= 1.0 - (0.5f64).min(hit * 0.03);
+        }
+
+        self.contact_timer = self.contact_timer.max(0.55);
+        // A brush along the wall at speed scrubs hard even when the closing
+        // speed is small, so this reads the speed along the barrier as well as
+        // the speed into it.
+        let along = vt.abs();
+        self.scrape = (1.0f64).min(
+            self.scrape
+                .max((1.0f64).min(hit / 6.0) * 0.75 + (1.0f64).min(along / 26.0) * 0.55),
+        );
+        if self.crash_cooldown <= 0.0 && hit > 1.4 {
+            self.crash_cooldown = 0.28;
+            self.last_hit = true;
+            self.last_hit_kind = HitKind::Wall;
+            self.impact_speed = hit;
+            self.impact = (1.0f64).min(hit / 11.0);
+            self.stun = WALL_STUN * (1.0f64).min(hit / 8.0);
+        }
+        if self.s_track < self.min_s {
+            self.hold_start_line(proj);
+        }
+        if self.crash_cooldown > 0.0 {
+            self.crash_cooldown -= dt;
+        }
+    }
+
+    /// The start line is a wall: there is no level behind it.
+    fn hold_start_line(&mut self, proj: &Projection) {
+        let back = self.min_s - self.s_track;
+        self.x += proj.yaw.sin() * back;
+        self.z += proj.yaw.cos() * back;
+        self.s_track = self.min_s;
+        if self.v_long < 0.0 {
+            self.v_long = 0.0;
+        }
+    }
+}
+
+/// How far this body reaches along a world direction.
+pub(crate) fn support(car: &Vehicle, nx: f64, nz: f64) -> f64 {
+    let sy = car.yaw.sin();
+    let cy = car.yaw.cos();
+    let l = nx * sy + nz * cy;
+    let w = nx * cy - nz * sy;
+    l.abs() * HALF_LENGTH + w.abs() * HALF_WIDTH
+}
+
+fn body_point(car: &Vehicle, dx: f64, dz: f64) -> (f64, f64) {
+    let sy = car.yaw.sin();
+    let cy = car.yaw.cos();
+    (dx * sy + dz * cy, dx * cy - dz * sy)
+}
+
+/// Two cars touching.
+///
+/// Resolved the same way the barrier is: separate them, then exchange an
+/// impulse at the contact point. Because that point is off both centres of
+/// mass, a nose-to-tail nudge shoves the car in front forwards while a
+/// door-to-door lean pushes both sideways and turns them - out of one
+/// equation, with no special case for who hit whom. Equal masses, so neither
+/// car gets a free ride out of being the one that made contact.
+pub fn collide_cars(a: &mut Vehicle, b: &mut Vehicle) -> f64 {
+    let dx = b.x - a.x;
+    let dz = b.z - a.z;
+    let dist = dx.hypot(dz);
+    if dist < 1e-4 || dist > 12.0 {
+        return 0.0;
+    }
+    let nx = dx / dist;
+    let nz = dz / dist;
+    let overlap = support(a, nx, nz) + support(b, -nx, -nz) - dist;
+    if overlap <= 0.0 {
+        return 0.0;
+    }
+
+    // push apart evenly, so neither car is walked through the other
+    let push = overlap * 0.5 + 0.002;
+    a.x -= nx * push;
+    a.z -= nz * push;
+    b.x += nx * push;
+    b.z += nz * push;
+
+    let sa = support(a, nx, nz);
+    let cx = a.x + nx * sa;
+    let cz = a.z + nz * sa;
+    let (al, aw) = body_point(a, cx - a.x, cz - a.z);
+    let (bl, bw) = body_point(b, cx - b.x, cz - b.z);
+    let (anl, anw) = body_point(a, nx, nz);
+    let (bnl, bnw) = body_point(b, nx, nz);
+
+    let avn = (a.v_long - a.yaw_rate * aw) * anl + (a.v_lat + a.yaw_rate * al) * anw;
+    let bvn = (b.v_long - b.yaw_rate * bw) * bnl + (b.v_lat + b.yaw_rate * bl) * bnw;
+    let rel = bvn - avn;
+    if rel > 0.0 {
+        return 0.0; // already separating
+    }
+
+    let ra = al * anw - aw * anl;
+    let rb = bl * bnw - bw * bnl;
+    let inv_mass = 2.0 / MASS + (ra * ra + rb * rb) / YAW_I;
+    let j = -(1.0 + 0.22) * rel / inv_mass;
+
+    a.v_long -= j * anl / MASS;
+    a.v_lat -= j * anw / MASS;
+    a.yaw_rate = clamp(a.yaw_rate - j * ra / YAW_I, -3.6, 3.6);
+    b.v_long += j * bnl / MASS;
+    b.v_lat += j * bnw / MASS;
+    b.yaw_rate = clamp(b.yaw_rate + j * rb / YAW_I, -3.6, 3.6);
+
+    let hit = rel.abs();
+    a.roll_v += hit * 0.05;
+    b.roll_v -= hit * 0.05;
+    a.contact_timer = a.contact_timer.max(0.55);
+    b.contact_timer = b.contact_timer.max(0.55);
+    for c in [&mut *a, &mut *b] {
+        if c.crash_cooldown <= 0.0 && hit > 2.2 {
+            c.crash_cooldown = 0.30;
+            c.last_hit = true;
+            c.last_hit_kind = HitKind::Car;
+            c.impact_speed = hit;
+            c.impact = (1.0f64).min(hit / 14.0);
+        }
+    }
+    hit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::track::{Centreline, Track};
+
+    fn straight_track(n: usize) -> Track {
+        let mut c = Centreline { step: 6.0, count: n, shipped_count: n, ..Default::default() };
+        for i in 0..n {
+            c.x.push(0.0);
+            c.y.push(0.0);
+            c.z.push(i as f64 * 6.0);
+            c.yaw.push(0.0);
+            c.curv.push(0.0);
+            c.tunnel.push(0);
+        }
+        Track::new(c)
+    }
+
+    fn drive(car: &mut Vehicle, t: &Track, secs: f64, input: Input) {
+        let n = (secs * 60.0) as usize;
+        for _ in 0..n {
+            car.update(t, 1.0 / 60.0, input, true);
+        }
+    }
+
+    /// The car's ceiling is `TOP_SPEED` **world units** per second, and the
+    /// speedometer converts that through `UNIT_METRES` - which is why the
+    /// street engine reads 132 mph rather than the 290 the constant looks
+    /// like. The Forge swap lifts it to 144, and its hard cap to 200.
+    #[test]
+    fn reaches_its_specified_top_speed() {
+        let t = straight_track(20_000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 100.0, 0.0);
+        drive(&mut car, &t, 60.0, Input { throttle: 1.0, ..Default::default() });
+        let mph = car.speed_mph();
+        assert!(mph > 125.0, "flat out for a minute only reached {mph:.1} mph");
+        assert!(mph <= 133.0, "street engine exceeded its ceiling at {mph:.1} mph");
+        assert_eq!(car.gear, 7, "should be in top gear at {mph:.0} mph");
+
+        // ...and the rebuild is worth what Javas says it is worth.
+        let mut swapped = Vehicle::new(&t, 0.0);
+        swapped.reset(&t, 100.0, 0.0);
+        swapped.fit_engine(true);
+        drive(&mut swapped, &t, 60.0, Input { throttle: 1.0, ..Default::default() });
+        let smph = swapped.speed_mph();
+        assert!(smph > 140.0 && smph <= 146.0, "swapped engine reached {smph:.1} mph, wanted ~144");
+
+        // raceMode lifts the ceiling to the 200 mph hard cap and no further.
+        swapped.race_mode_multiplier = 1.5;
+        drive(&mut swapped, &t, 40.0, Input { throttle: 1.0, boost: true, ..Default::default() });
+        let rmph = swapped.speed_mph();
+        assert!(rmph <= 201.0, "raceMode blew past the 200 mph cap at {rmph:.1}");
+    }
+
+    /// A car on full throttle in a straight line must not wander off it.
+    #[test]
+    fn tracks_straight_under_power() {
+        let t = straight_track(20_000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 100.0, 0.0);
+        drive(&mut car, &t, 20.0, Input { throttle: 1.0, ..Default::default() });
+        assert!(car.lateral.abs() < 0.5, "drifted {} units off line", car.lateral);
+        assert!(car.s_track > 500.0, "barely moved: s = {}", car.s_track);
+    }
+
+    /// Braking must actually stop the car, and the ABS must keep the wheels
+    /// turning while it does - a locked wheel has no lateral grip left.
+    #[test]
+    fn brakes_stop_the_car_without_locking() {
+        let t = straight_track(20_000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 100.0, 0.0);
+        drive(&mut car, &t, 20.0, Input { throttle: 1.0, ..Default::default() });
+        let entry = car.speed;
+        assert!(entry > 40.0);
+        let mut min_omega = f64::INFINITY;
+        for _ in 0..(6 * 60) {
+            car.update(&t, 1.0 / 60.0, Input { brake: 1.0, ..Default::default() }, true);
+            if car.speed > 8.0 {
+                for w in &car.w {
+                    min_omega = min_omega.min(w.omega.abs());
+                }
+            }
+        }
+        assert!(car.speed < entry * 0.25, "six seconds of brakes left {} u/s", car.speed);
+        assert!(min_omega > 1.0, "a wheel locked solid (omega {min_omega})");
+    }
+
+    /// The boost reservoir latches empty. A held key must never produce a
+    /// continuous stuttering boost off a bar that reads as spent: once
+    /// emptied, nothing fires again until there is a real charge in it, so the
+    /// reservoir settles into a burn/refill cycle between the two thresholds
+    /// rather than trickling out at zero.
+    #[test]
+    fn boost_latches_when_spent() {
+        let t = straight_track(20_000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 100.0, 0.0);
+        let input = Input { throttle: 1.0, boost: true, ..Default::default() };
+
+        // it empties in about three and a half seconds of holding it
+        let mut emptied = false;
+        for i in 0..(10 * 60) {
+            car.update(&t, 1.0 / 60.0, input, true);
+            if car.boost_locked {
+                emptied = true;
+                assert!(i < 5 * 60, "reservoir took {} s to empty", i as f64 / 60.0);
+                break;
+            }
+        }
+        assert!(emptied, "holding boost never emptied the reservoir");
+
+        // The reservoir now cycles. What must never happen is a burn starting
+        // on an empty bar: the latch only clears once the refill has put a
+        // real charge back, so every frame that fires has at least BOOST_ARM's
+        // worth in it at the moment it re-arms, and there is a measurable gap
+        // between running dry and firing again.
+        let mut dry_fires = 0;
+        let mut gap = 0usize;
+        let mut worst_gap = usize::MAX;
+        for _ in 0..(12 * 60) {
+            car.update(&t, 1.0 / 60.0, input, true);
+            if car.boosting {
+                if gap > 0 {
+                    worst_gap = worst_gap.min(gap);
+                }
+                gap = 0;
+                if car.boost < 0.01 {
+                    dry_fires += 1;
+                }
+            } else {
+                gap += 1;
+            }
+        }
+        assert_eq!(dry_fires, 0, "boost fired off an empty reservoir");
+        assert!(
+            worst_gap > 30,
+            "only {worst_gap} frames of recharge between burns - that is the stutter the latch exists to stop"
+        );
+    }
+
+    /// The barrier is a wall with a point of application, and a car thrown at
+    /// it must come back rather than be deleted into it.
+    #[test]
+    fn barrier_bounces_rather_than_absorbs() {
+        let t = straight_track(20_000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 100.0, 0.0);
+        drive(&mut car, &t, 12.0, Input { throttle: 1.0, ..Default::default() });
+        // aim it at the wall
+        car.v_lat = 14.0;
+        for _ in 0..90 {
+            car.update(&t, 1.0 / 60.0, Input { throttle: 1.0, ..Default::default() }, true);
+        }
+        assert!(
+            car.lateral.abs() <= t.outer_half,
+            "car ended up {} units out, past the barrier at {}",
+            car.lateral,
+            t.outer_half
+        );
+        assert!(car.speed > 1.0, "the wall swallowed the car");
+    }
+
+    /// A spin must recover. The guard is always on, so however far the car is
+    /// thrown sideways it comes back pointing forwards.
+    #[test]
+    fn spin_guard_recovers_the_car() {
+        let t = straight_track(20_000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 100.0, 0.0);
+        drive(&mut car, &t, 12.0, Input { throttle: 1.0, ..Default::default() });
+        car.yaw_rate = 2.6;
+        car.v_lat = 18.0;
+        drive(&mut car, &t, 6.0, Input { throttle: 0.5, ..Default::default() });
+        assert!(
+            car.body_slip.abs() < 0.7,
+            "still sideways at {} rad after six seconds",
+            car.body_slip
+        );
+    }
+
+    /// Two cars must not occupy the same space, and a contact must exchange
+    /// momentum rather than give one of them a free ride.
+    #[test]
+    fn cars_separate_and_exchange_momentum() {
+        let t = straight_track(20_000);
+        let mut a = Vehicle::new(&t, 0.0);
+        let mut b = Vehicle::new(&t, 0.0);
+        a.reset(&t, 100.0, 0.0);
+        b.reset(&t, 100.0, 1.2);
+        a.v_long = 40.0;
+        b.v_long = 40.0;
+        a.v_lat = 6.0;
+        let before = a.v_lat + b.v_lat;
+        let hit = collide_cars(&mut a, &mut b);
+        assert!(hit > 0.0, "overlapping cars did not register a hit");
+        let apart = (b.x - a.x).hypot(b.z - a.z);
+        assert!(apart > 1.2, "cars still interpenetrating at {apart}");
+        assert!(
+            (a.v_lat + b.v_lat - before).abs() < 1.0,
+            "momentum was created: {} -> {}",
+            before,
+            a.v_lat + b.v_lat
+        );
+    }
+
+    /// The solver is fixed-step, so the same inputs must produce the same
+    /// result whatever frame rate they arrive at. Straight-line acceleration
+    /// is the honest test: a constant steering input would put the two runs on
+    /// different parts of the barrier and compare nothing.
+    #[test]
+    fn frame_rate_independent() {
+        let t = straight_track(20_000);
+        let input = Input { throttle: 1.0, ..Default::default() };
+        let mut fast = Vehicle::new(&t, 0.0);
+        fast.reset(&t, 100.0, 0.0);
+        for _ in 0..(15 * 120) {
+            fast.update(&t, 1.0 / 120.0, input, true);
+        }
+        let mut slow = Vehicle::new(&t, 0.0);
+        slow.reset(&t, 100.0, 0.0);
+        for _ in 0..(15 * 30) {
+            slow.update(&t, 1.0 / 30.0, input, true);
+        }
+        let d = (fast.speed - slow.speed).abs();
+        assert!(d < 1.5, "120 Hz reached {} u/s, 30 Hz reached {}", fast.speed, slow.speed);
+    }
+}

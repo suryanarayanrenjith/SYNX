@@ -1,0 +1,21 @@
+[package]
+name = "synx-core"
+version = "1.0.0"
+edition = "2021"
+description = "SYNX simulation core: course generation, world meshing, vehicle physics, rival AI and particle simulation, compiled to WebAssembly."
+
+[lib]
+# A plain cdylib with a hand-written C ABI. There is deliberately no
+# wasm-bindgen here: everything crossing the boundary is either a scalar or a
+# block of f32/f64 the JS side maps as a typed-array view straight onto this
+# module's linear memory, so the glue would only add a copy and a build step.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The multiplayer wire format, compiled from the same source the server
+# compiles. See the note in the workspace manifest about how the two copies
+# are kept from drifting.
+synx-net = { path = "../synx-net" }
+
+[features]
+default = []

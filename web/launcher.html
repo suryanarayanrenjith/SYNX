@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SYNX</title>
+<!-- The launcher shares the game's fonts and its design tokens, and nothing
+     else. style.css is 3,500 lines of in-game interface; loading it here would
+     be loading the pause card and the story hub to draw a dialogue. The
+     tokens it needs are duplicated at the top of launcher.css, deliberately
+     and with a note saying so.
+
+     THE TYPEFACE IS LOCAL. The game installs Orbitron out of the 56 MB asset
+     pack at load, which is the right trade for the game and the wrong one for
+     a launcher that has to be on screen instantly. The two faces are 35 KB
+     between them, so they sit in web/fonts/ and are declared in launcher.css.
+     Nothing here touches the network: a desktop game whose settings screen
+     needs Google Fonts is a settings screen that does not open on a machine
+     with no connection. -->
+<link rel="stylesheet" href="css/launcher.css">
+<link rel="icon" href="favicon.png">
+</head>
+<body>
+<!-- The sunset behind everything: the game's own horizon, drawn in CSS so the
+     launcher costs no GPU context of its own. A launcher that spins up WebGL
+     to draw its background is a launcher that fails on exactly the machines
+     whose owner came here to switch to the software renderer. -->
+<div id="sky" aria-hidden="true">
+  <i class="sun"></i>
+  <i class="grid"></i>
+  <i class="haze"></i>
+</div>
+
+<main id="shell">
+  <header id="head">
+    <div class="brand">
+      <h1 class="synx-chrome">SYNX</h1>
+      <p class="tag">SYNTHWAVE&nbsp;eXTREME&nbsp;RACING</p>
+    </div>
+    <div class="build">
+      <span>BUILD</span><b id="version">—</b>
+      <span>GRAPHICS</span><b id="graphics">—</b>
+    </div>
+  </header>
+
+  <nav id="tabs" role="tablist" aria-label="Launcher sections"></nav>
+
+  <!-- SHOWN ONLY WHEN SOMETHING IS WRONG.
+       A launcher that always carries a diagnostics band trains the player to
+       ignore it, and the one time it matters it is furniture. This is hidden
+       unless a previous run left a report or this one hit a problem. -->
+  <section id="alert" hidden>
+    <div class="alert-head">
+      <b id="alertTitle">THE LAST RUN DID NOT FINISH</b>
+      <span id="alertPath"></span>
+    </div>
+    <p id="alertBody"></p>
+    <div class="alert-acts">
+      <button type="button" id="alertOpen" class="ui-btn synx-cut">OPEN THE REPORT</button>
+      <button type="button" id="alertDismiss" class="ui-btn synx-cut">DISMISS</button>
+    </div>
+  </section>
+
+  <section id="panel" class="synx-cut">
+    <div id="rows"></div>
+    <p id="hint" role="status" aria-live="polite"></p>
+  </section>
+
+  <footer id="foot">
+    <!-- The left of the footer is a legend, not a control. There is no "skip
+         this screen" any more: this IS the graphics screen, the game has no
+         other, and a checkbox that hides the only way to reach it is a
+         checkbox that strands the player who ticks it. -->
+    <p id="legend">
+      <b>ARROWS</b> MOVE &nbsp; <b>ENTER</b> PLAY &nbsp; <b>CTRL+S</b> SAVE &nbsp; <b>ESC</b> QUIT
+    </p>
+    <div class="acts">
+      <button type="button" id="reset" class="ui-btn synx-cut">DEFAULTS</button>
+      <button type="button" id="save" class="ui-btn synx-cut">SAVE</button>
+      <button type="button" id="quit" class="ui-btn synx-cut">QUIT</button>
+      <button type="button" id="play" class="ui-btn primary synx-cut">
+        <b>PLAY</b><span aria-hidden="true">▸</span>
+      </button>
+    </div>
+  </footer>
+
+  <p id="note"></p>
+  <p id="diag"></p>
+</main>
+
+<!-- The rows themselves. Shared with the in-game options screen so the two
+     cannot disagree about what a setting is called or what it defaults to. -->
+<script src="js/settings.js"></script>
+<script src="js/launcher.js"></script>
+</body>
+</html>
