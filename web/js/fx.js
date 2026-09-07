@@ -22,6 +22,14 @@
   const U = G.U;
 
   const MAX = 900;
+  /* The particle field layout, mirroring `particles::f` in the core. Kept as
+     one table so a spawn cannot get an offset wrong silently; the Rust side
+     owns the order and tools/checkfx.js asserts the two agree. */
+  const PF = {
+    LIFE: 0, MAX: 1, X: 2, Y: 3, Z: 4, VX: 5, VY: 6, VZ: 7,
+    SIZE: 8, GROW: 9, DRAG: 10, GRAVITY: 11, STRETCH: 12, FLOOR: 13,
+    R: 14, G: 15, B: 16, A: 17, STRIDE: 18,
+  };
   const FLOATS = 9;              // pos.xyz, uv.xy, rgba
   const VERTS_PER = 6;
 
@@ -244,12 +252,34 @@
       this.gl = gl;
       this.prog = G.program(gl, VERT, FRAG, 'fx');
       this.data = new Float32Array(MAX * VERTS_PER * FLOATS);
+      /* THE PARTICLES ARE A FLAT BUFFER IN THE CORE.
+
+         They were an array of 900 plain objects with seventeen fields each,
+         walked twice a frame - once to integrate and once to build the
+         sprites. Measured on the release build that made `Fx.draw` the most
+         expensive function the game's own code ran, and it was never about
+         the arithmetic: it was a pointer chase per particle per field, plus
+         an array literal allocated inside the builder's inner loop nine
+         hundred times a frame.
+
+         `core` is the flat buffer, `PF` the field offsets. Everything that
+         DECIDES things - what to spawn, when, what colour - stays here, in
+         JavaScript, where it is legible. Only the two numeric loops moved.
+
+         The object array is still built when there is no core, because the
+         browser build has to run without one; `spawnJs` and the loops below
+         keep working against it unchanged. */
+      this.core = null;
+      const NRx = global.NR;
+      if (NRx.fxReset && NRx.fxReset(MAX)) this.core = NRx.fxParticles(MAX);
       this.p = [];
-      for (let i = 0; i < MAX; i++) {
-        this.p.push({ life: 0, max: 1, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
-                      size: 1, grow: 0, drag: 1, gravity: 0, stretch: 0,
-                      floor: 0.05,
-                      r: 1, g: 1, b: 1, a: 1 });
+      if (!this.core) {
+        for (let i = 0; i < MAX; i++) {
+          this.p.push({ life: 0, max: 1, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
+                        size: 1, grow: 0, drag: 1, gravity: 0, stretch: 0,
+                        floor: 0.05,
+                        r: 1, g: 1, b: 1, a: 1 });
+        }
       }
       this.next = 0;
       this.count = 0;
@@ -295,8 +325,27 @@
     }
 
     spawn(o) {
-      const q = this.p[this.next];
+      const i = this.next;
       this.next = (this.next + 1) % MAX;
+      if (this.core) {
+        /* Eighteen stores into a flat buffer, in the layout `particles::f`
+           declares. The field order is fixed on the Rust side and read from
+           there; writing it out twice is how a layout drifts, and a drifted
+           particle layout is sparks that are the wrong colour and fall up. */
+        const c = this.core, b = i * PF.STRIDE;
+        c[b + PF.LIFE] = o.life; c[b + PF.MAX] = o.life;
+        c[b + PF.X] = o.x; c[b + PF.Y] = o.y; c[b + PF.Z] = o.z;
+        c[b + PF.VX] = o.vx || 0; c[b + PF.VY] = o.vy || 0; c[b + PF.VZ] = o.vz || 0;
+        c[b + PF.SIZE] = o.size; c[b + PF.GROW] = o.grow || 0;
+        c[b + PF.DRAG] = o.drag === undefined ? 1.6 : o.drag;
+        c[b + PF.GRAVITY] = o.gravity || 0;
+        c[b + PF.STRETCH] = o.stretch || 0;
+        c[b + PF.FLOOR] = o.floor === undefined ? -1e9 : o.floor;
+        c[b + PF.R] = o.r; c[b + PF.G] = o.g; c[b + PF.B] = o.b;
+        c[b + PF.A] = o.a === undefined ? 1 : o.a;
+        return null;
+      }
+      const q = this.p[i];
       q.life = o.life; q.max = o.life;
       q.x = o.x; q.y = o.y; q.z = o.z;
       q.vx = o.vx || 0; q.vy = o.vy || 0; q.vz = o.vz || 0;
@@ -766,6 +815,10 @@
     }
 
     integrate(dt) {
+      if (this.core) {
+        this.count = global.NR.fxIntegrate(dt);
+        return;
+      }
       let live = 0;
       for (const q of this.p) {
         if (q.life <= 0) continue;
@@ -943,6 +996,27 @@
       const up = [view[1], view[5], view[9]];
       const fwd = [view[2], view[6], view[10]];
 
+      if (this.core) {
+        /* The whole build, in one call. What comes back is a view straight onto
+           the core's own output buffer - no copy, and `bufferSubData` reads it
+           where it already lives. */
+        const out = global.NR.fxBuild(right, up, fwd);
+        if (!out || !out.length) return;
+        gl.useProgram(this.prog.prog);
+        gl.bindVertexArray(this.vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, out, 0, out.length);
+        U.m4(gl, this.prog.u.uVP, vp);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+        gl.depthMask(false);
+        gl.enable(gl.DEPTH_TEST);
+        gl.drawArrays(gl.TRIANGLES, 0, (out.length / FLOATS) | 0);
+        gl.depthMask(true);
+        gl.disable(gl.BLEND);
+        gl.bindVertexArray(null);
+        return;
+      }
       const d = this.data;
       let o = 0, n = 0;
       for (const q of this.p) {

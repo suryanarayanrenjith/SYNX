@@ -10,6 +10,57 @@
 <link rel="stylesheet" href="css/style.css?v=rust-1">
 </head>
 <body>
+<!-- ============================================================ ADVISORY ==
+     The photosensitivity and beta notice, shown once per launch before the
+     title screen. It is the first thing in <body> on purpose: it has to be
+     able to paint before the renderer exists, and a warning that arrives
+     after the thing it warns about is not a warning.
+
+     Everything in it is markup and CSS. No canvas, no WebGL, no font from the
+     pack - it renders correctly on a machine whose driver is about to fail
+     the game, which is the machine most likely to need to read it. -->
+<div id="advisory" role="dialog" aria-modal="true" aria-labelledby="advTitle">
+  <div class="adv-crt" aria-hidden="true"></div>
+  <div class="adv-grid" aria-hidden="true"></div>
+  <div class="adv-scan" aria-hidden="true"></div>
+  <div class="adv-frame">
+    <div class="adv-rule"><i></i><span>SYNX // SYSTEM ADVISORY</span><i></i></div>
+
+    <h1 id="advTitle" class="adv-title" data-text="PHOTOSENSITIVITY">
+      <span>P</span><span>H</span><span>O</span><span>T</span><span>O</span><span>S</span><span>E</span><span>N</span><span>S</span><span>I</span><span>T</span><span>I</span><span>V</span><span>I</span><span>T</span><span>Y</span>
+    </h1>
+    <p class="adv-sub">WARNING &mdash; BRIGHT &amp; FLASHING LIGHTS</p>
+
+    <div class="adv-body">
+      <p>This game contains <b>rapidly flashing lights</b>, high-contrast strobing
+         and saturated neon effects throughout.</p>
+      <p>A very small number of people may experience seizures when exposed to
+         certain flashing lights or patterns. If you or anyone in your family
+         has an epileptic condition, <b>consult a doctor before playing</b>.</p>
+      <p class="adv-stop">Stop immediately and consult a doctor if you experience
+         dizziness, altered vision, eye or muscle twitching, disorientation,
+         involuntary movement or convulsions.</p>
+    </div>
+
+    <div class="adv-beta">
+      <span class="adv-tag">BETA</span>
+      <p>SYNX is in <b>open beta</b>. Expect bugs, rough edges and things that
+         change between builds. Reports are welcome.</p>
+    </div>
+
+    <button id="advGo" class="adv-go" type="button">
+      <span class="adv-go-key">PRESS ANY KEY</span>
+      <span class="adv-go-sub">to continue</span>
+    </button>
+
+    <div class="adv-foot">
+      <span>SYNTHWAVE eXTREME RACING</span>
+      <span class="adv-dot">&bull;</span>
+      <span>synx-racing.vercel.app</span>
+    </div>
+  </div>
+</div>
+
 <div id="stage">
   <canvas id="glCanvas"></canvas>
   <canvas id="hudCanvas"></canvas>

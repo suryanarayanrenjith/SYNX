@@ -182,10 +182,13 @@ fn launcher_view(app: tauri::AppHandle, window: WebviewWindow) -> LauncherView {
     if let Ok(list) = window.available_monitors() {
         for m in list {
             let size = m.size();
+            let pos = m.position();
             let name = m.name().cloned().unwrap_or_else(|| "DISPLAY".into());
             monitors.push(launcher::MonitorInfo {
                 primary: Some(&name) == primary_name.as_ref(),
                 name,
+                x: pos.x,
+                y: pos.y,
                 width: size.width,
                 height: size.height,
                 scale: m.scale_factor(),
@@ -195,6 +198,8 @@ fn launcher_view(app: tauri::AppHandle, window: WebviewWindow) -> LauncherView {
     if monitors.is_empty() {
         monitors.push(launcher::MonitorInfo {
             name: "DISPLAY".into(),
+            x: 0,
+            y: 0,
             width: 1920,
             height: 1080,
             scale: 1.0,
@@ -363,7 +368,13 @@ fn launch_game(app: tauri::AppHandle, settings: serde_json::Value) -> Result<boo
        to - the process relaunches itself with `--play`, so the player gets
        what they asked for immediately and lands in the game rather than back
        on this screen. */
-    if parsed.renderer() != startup_renderer() {
+    /* TWO SETTINGS COST A RESTART, not one. Vertical sync is the other: it is
+       a switch on the webview's command line, the command line is fixed when
+       the environment is created, and this window's environment was created
+       before the player touched the row. Relaunching is what makes the row
+       true - the alternative is the one this code already rejected once, a
+       label for something that does not happen. */
+    if parsed.renderer() != startup_renderer() || parsed.vsync != startup_vsync() {
         let exe = std::env::current_exe().map_err(|e| format!("cannot find the executable: {e}"))?;
         std::process::Command::new(exe)
             .arg("--play")
@@ -439,9 +450,22 @@ fn apply_window(app: &tauri::AppHandle, window: &WebviewWindow, s: &launcher::La
             resize_on_main(app, window, Target::Borderless(s.monitor));
         }
         launcher::WindowMode::Fullscreen => {
+            /* FULLSCREEN HAS TO BE TOLD WHICH SCREEN, and it cannot be told
+               directly. `set_fullscreen(true)` fills the monitor the window is
+               ALREADY ON - that is what the platform layer means by it - so
+               calling it on a window still sitting where the launcher left it
+               fills the launcher's display and silently ignores the setting.
+               This was the reported fault: choosing a display did nothing.
+
+               Windowed and borderless never had it, because both position the
+               window themselves on the way past.
+
+               So the move happens first, and it happens in the SAME main-thread
+               block as the fullscreen call - see resize_on_main. Splitting them
+               is what makes it a race rather than a sequence. */
             let _ = window.set_decorations(true);
             let _ = window.set_resizable(true);
-            let _ = window.set_fullscreen(true);
+            resize_on_main(app, window, Target::Fullscreen(s.monitor));
         }
     }
 }
@@ -485,6 +509,9 @@ enum Target {
     Windowed(f64, f64, usize),
     /// monitor index
     Borderless(usize),
+    /// monitor index. Positioned first, then handed to the platform's own
+    /// fullscreen path; see the note in `apply_window`.
+    Fullscreen(usize),
 }
 
 /// Move and size the window, on the platform's own thread.
@@ -511,6 +538,21 @@ fn resize_on_main(app: &tauri::AppHandle, window: &WebviewWindow, t: Target) {
                 } else {
                     let _ = w.maximize();
                 }
+            }
+            Target::Fullscreen(idx) => {
+                /* Put it on the target screen BEFORE asking for fullscreen.
+                   Position and size both, because a window smaller than the
+                   monitor can still have its centre on the previous one on a
+                   mixed-DPI desktop - and it is the centre the platform uses
+                   to decide which display a window belongs to. */
+                if let Some(mon) = monitors.get(idx).or_else(|| monitors.first()) {
+                    let pos = *mon.position();
+                    let size = *mon.size();
+                    let _ = w.set_fullscreen(false);
+                    let _ = w.set_position(tauri::PhysicalPosition::new(pos.x, pos.y));
+                    let _ = w.set_size(tauri::PhysicalSize::new(size.width, size.height));
+                }
+                let _ = w.set_fullscreen(true);
             }
             Target::Windowed(width, height, idx) => {
                 let _ = w.set_size(tauri::LogicalSize::new(width, height));
@@ -579,6 +621,17 @@ fn startup_renderer() -> platform::Renderer {
     *STARTUP_RENDERER.get().unwrap_or(&platform::Renderer::Gpu)
 }
 
+/// ...and the vertical-sync setting it started with.
+///
+/// Kept for the same reason the renderer is: both are baked into the webview's
+/// command line when its environment is created, so a change to either can
+/// only take effect on a fresh process. See `launch_game`.
+static STARTUP_VSYNC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn startup_vsync() -> bool {
+    *STARTUP_VSYNC.get().unwrap_or(&true)
+}
+
 fn main() {
     /* Before anything else.
 
@@ -590,6 +643,7 @@ fn main() {
     let saved = launcher::load(dir.as_deref());
     let renderer = saved.renderer();
     let _ = STARTUP_RENDERER.set(renderer);
+    let _ = STARTUP_VSYNC.set(saved.vsync);
     platform::apply_env(renderer);
 
     let skip = std::env::args().any(|a| a == "--play");
@@ -709,7 +763,7 @@ fn main() {
 
             #[cfg(target_os = "windows")]
             {
-                b = b.additional_browser_args(&platform::browser_args(renderer));
+                b = b.additional_browser_args(&platform::browser_args(renderer, startup_vsync()));
             }
 
             /* BUILDING THE WEBVIEW IS THE RISKY STEP.

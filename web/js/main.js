@@ -78,6 +78,79 @@
   /* A velocity-responsive presentation cursor. It never alters the user's
      system mouse settings: it only gives the in-game pointer a short,
      accelerated follow and a directional neon wake on fine-pointer devices. */
+
+  /* ------------------------------------------------------------ advisory --
+   *
+   * The photosensitivity and beta notice. It is markup that is already on the
+   * page when this runs, so it has painted long before the renderer exists -
+   * which is the point: the machines most likely to need to read it are the
+   * ones where the next step fails.
+   *
+   * IT DOES NOT BLOCK THE LOAD. The pack, the core and the first frame all
+   * continue behind it; dismissing it only takes the cover away. A warning
+   * that also cost fifteen seconds of loading would train people to hammer
+   * through it, which defeats the purpose of showing it.
+   *
+   * DISMISSED BY ANYTHING - key, click, tap, gamepad - because "press any key"
+   * has to be true. There is no "do not show again": it is shown once per
+   * launch, every launch, and a warning with an off switch is a warning that
+   * is off.
+   */
+  function advisory() {
+    const el = document.getElementById('advisory');
+    if (!el) return;
+    /* The per-glyph stagger. The rule is in the stylesheet; the index is here
+       because CSS cannot count children into a custom property, and writing
+       sixteen nth-child rules by hand is sixteen things to get wrong. */
+    const glyphs = el.querySelectorAll('.adv-title span');
+    for (let i = 0; i < glyphs.length; i++) glyphs[i].style.setProperty('--i', i);
+
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      el.classList.add('gone');
+      window.removeEventListener('keydown', go, true);
+      window.removeEventListener('pointerdown', go, true);
+      /* Removed rather than hidden, once the fade is over. It is a full-screen
+         element with a stacking context and three animated layers; leaving it
+         parked over the game costs a composite every frame for something
+         nobody will see again this session. */
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 600);
+      /* Hand focus back to the page so the game's own key handling resumes on
+         the very next press rather than the one after it. */
+      try { document.body.focus({ preventScroll: true }); } catch (e) { /* older webview */ }
+    };
+    window.addEventListener('keydown', go, true);
+    window.addEventListener('pointerdown', go, true);
+    const btn = document.getElementById('advGo');
+    if (btn) {
+      btn.addEventListener('click', go);
+      /* Focused, so the prompt is where the keyboard already is and a screen
+         reader announces the dialog's action rather than the page behind it.
+         The keydown listener above dismisses on anything, so this only
+         changes where ENTER and SPACE land - and it stops a stray TAB from
+         moving focus into the game's own controls underneath. */
+      try { btn.focus({ preventScroll: true }); } catch (e) { btn.focus(); }
+    }
+    /* A gamepad has no DOM event to listen for, so it is polled - only while
+       the notice is up, and it stops the moment it is dismissed. */
+    const pad = () => {
+      if (done) return;
+      const list = navigator.getGamepads ? navigator.getGamepads() : [];
+      for (const g of list) {
+        if (!g || !g.buttons) continue;
+        for (const b of g.buttons) if (b && b.pressed) return go();
+      }
+      requestAnimationFrame(pad);
+    };
+    if (navigator.getGamepads) requestAnimationFrame(pad);
+    /* The one way in that is not a player: the harness drives the game with no
+       input layer at all, and a modal it cannot see would make every automated
+       run a screenshot of this screen. */
+    window.NR.dismissAdvisory = go;
+  }
+
   function installPointerFx() {
     const cursor = document.getElementById('synxCursor');
     const fine = window.matchMedia && window.matchMedia('(pointer: fine)').matches;
@@ -136,6 +209,9 @@
       fatal('Game scripts failed to load.');
       return;
     }
+
+    /* THE NOTICE COMES UP FIRST, and the load runs behind it. See `advisory`. */
+    advisory();
 
     /* Two things have to exist before the game does.
 

@@ -24,6 +24,7 @@ pub mod ai;
 pub mod math;
 pub mod mesh;
 pub mod net;
+pub mod particles;
 pub mod ribbon;
 pub mod track;
 pub mod vehicle;

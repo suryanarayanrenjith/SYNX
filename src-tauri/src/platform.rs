@@ -32,8 +32,12 @@ pub enum Renderer {
 ///
 /// Only Windows uses this; on Linux it is ignored and [`apply_env`] does the
 /// equivalent job.
+/// `vsync` is a webview environment flag, not a game setting: Chromium's
+/// compositor decides when a frame is presented, and nothing inside the page
+/// can ask it not to wait for the display. That is why it is here and why
+/// changing it costs a relaunch, exactly as the renderer does.
 #[cfg(target_os = "windows")]
-pub fn browser_args(r: Renderer) -> String {
+pub fn browser_args(r: Renderer, vsync: bool) -> String {
     // Common to both: the things a game wants from a webview that a document
     // viewer does not.
     let mut a = String::from(concat!(
@@ -60,6 +64,17 @@ pub fn browser_args(r: Renderer) -> String {
             a.push_str(&format!("--remote-debugging-port={port} "));
         }
     }
+    /* TEARING, ON PURPOSE.
+
+       The row said "OFF can tear" and did nothing whatsoever - the flag was
+       stored, sanitised, unit-tested and never read by anything. These are the
+       two switches that actually turn it off: the first stops the GPU process
+       waiting for the display, the second removes the compositor's own cap,
+       which on its own holds the page at the refresh rate even with vsync
+       disabled. Both are needed; either alone leaves the frame rate pinned. */
+    if !vsync {
+        a.push_str("--disable-gpu-vsync --disable-frame-rate-limit ");
+    }
     match r {
         Renderer::Gpu => a.push_str(concat!(
             "--ignore-gpu-blocklist ",
@@ -81,7 +96,7 @@ pub fn browser_args(r: Renderer) -> String {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn browser_args(_r: Renderer) -> String {
+pub fn browser_args(_r: Renderer, _vsync: bool) -> String {
     String::new()
 }
 
@@ -135,8 +150,8 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn the_two_paths_ask_for_different_backends() {
-        let gpu = browser_args(Renderer::Gpu);
-        let cpu = browser_args(Renderer::Cpu);
+        let gpu = browser_args(Renderer::Gpu, true);
+        let cpu = browser_args(Renderer::Cpu, true);
         assert!(gpu.contains("d3d11"));
         assert!(gpu.contains("force_high_performance_gpu"));
         assert!(cpu.contains("swiftshader"));
@@ -146,5 +161,19 @@ mod tests {
             assert!(a.contains("autoplay-policy=no-user-gesture-required"));
             assert!(a.contains("disable-background-timer-throttling"));
         }
+    }
+
+    /// VERTICAL SYNC has to reach the command line, because there is nowhere
+    /// else it can be applied. This is the regression test for a row that was
+    /// shipped doing nothing at all.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn vsync_off_actually_asks_for_it() {
+        let on = browser_args(Renderer::Gpu, true);
+        let off = browser_args(Renderer::Gpu, false);
+        assert!(!on.contains("disable-gpu-vsync"), "vsync ON must not disable it");
+        assert!(off.contains("disable-gpu-vsync"), "vsync OFF did not reach the webview");
+        // ...and the compositor's own cap, which holds the rate on its own
+        assert!(off.contains("disable-frame-rate-limit"));
     }
 }

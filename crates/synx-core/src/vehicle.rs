@@ -321,6 +321,28 @@ pub struct Vehicle {
     pub stun: f64,
     pub contact_timer: f64,
 
+    /* ---- the air. See the long note above `Ramp` at the end of this file. --
+       `air_y` is the height above the road the pose adds; `air_abs` is the
+       WORLD height it is integrated at, which is the one that must not follow
+       the road down a dip. */
+    pub airborne: bool,
+    pub air_y: f64,
+    pub air_abs: f64,
+    pub air_v: f64,
+    pub air_time: f64,
+    pub air_pitch: f64,
+    pub air_pitch_v: f64,
+    pub air_roll: f64,
+    pub air_roll_v: f64,
+    pub air_yaw_v: f64,
+    /// 0..1, how straight the last landing was. See `update_air`.
+    pub landing: f64,
+    /// Set to 1 on the frame a landing happens, and cleared by whoever reads
+    /// it - a director wants the EVENT, and a flag it has to clear is the only
+    /// version of that which cannot be missed by a slow frame.
+    pub landed: f64,
+    pub ramp: Option<Ramp>,
+
     accum: f64,
 }
 
@@ -347,6 +369,9 @@ impl Default for Vehicle {
             w: [Wheel::default(); 4],
             crash_cooldown: 0.0, last_hit: false, last_hit_kind: HitKind::None,
             braking: 0.0, impact: 0.0, impact_speed: 0.0, stun: 0.0, contact_timer: 0.0,
+            airborne: false, air_y: 0.0, air_abs: 0.0, air_v: 0.0, air_time: 0.0,
+            air_pitch: 0.0, air_pitch_v: 0.0, air_roll: 0.0, air_roll_v: 0.0,
+            air_yaw_v: 0.0, landing: 0.0, landed: 0.0, ramp: None,
             accum: 0.0,
         }
     }
@@ -436,6 +461,23 @@ impl Vehicle {
         self.pitch_v = 0.0;
         self.roll = 0.0;
         self.roll_v = 0.0;
+        /* ...and out of the air. A rewind while the car is over a ramp used to
+           be impossible because there was no air to be in; now it is a state
+           that would otherwise survive a checkpoint restore and drop the car
+           out of the sky at the checkpoint. */
+        self.airborne = false;
+        self.air_y = 0.0;
+        self.air_abs = self.y;
+        self.air_v = 0.0;
+        self.air_time = 0.0;
+        self.air_pitch = 0.0;
+        self.air_pitch_v = 0.0;
+        self.air_roll = 0.0;
+        self.air_roll_v = 0.0;
+        self.air_yaw_v = 0.0;
+        self.landing = 0.0;
+        self.landed = 0.0;
+        self.ramp = None;
         self.body_y = 0.0;
         self.accel_long = 0.0;
         self.accel_lat = 0.0;
@@ -742,7 +784,12 @@ impl Vehicle {
         let road_ahead = track.at(self.s_track + 6.0);
         self.road_y = road_pose.y;
         self.road_pitch = -((road_ahead.y - road_back.y).atan2(12.0));
-        self.y = self.road_y + self.lift + self.body_y;
+        /* The ramp and the flight, AFTER road_y is known and before the pose
+           is assembled: `air_y` is measured from the road surface, so it has
+           to be computed against this frame's elevation rather than last
+           frame's. */
+        self.update_air(track, dt, steer_in);
+        self.y = self.road_y + self.lift + self.body_y + self.air_y;
     }
 
     /// Pick a gear from road speed.
@@ -872,6 +919,18 @@ impl Vehicle {
         self.w[1].load = (self.w[1].load - arb_f).max(0.0);
         self.w[2].load = (self.w[2].load + arb_r).max(0.0);
         self.w[3].load = (self.w[3].load - arb_r).max(0.0);
+        /* NOTHING IS CARRYING THE CAR. This is the whole of "no grip in the
+           air": every tyre force below is `mu * load * f(slip)`, so a wheel
+           with no load makes no lateral force, no longitudinal force and no
+           yaw moment, and the car simply keeps the velocity it left with. One
+           line, in the one place where it cannot be got round, rather than an
+           airborne branch through the rest of the solver. */
+        if self.airborne {
+            for i in 0..4 {
+                self.w[i].load = 0.0;
+                self.w[i].contact = false;
+            }
+        }
         roll_m += (-HW) * arb_f + HW * (-arb_f) + (-HW) * arb_r + HW * (-arb_r);
 
         // ---- tyres --------------------------------------------------------
@@ -1345,6 +1404,298 @@ pub fn collide_cars(a: &mut Vehicle, b: &mut Vehicle) -> f64 {
     hit
 }
 
+/* -------------------------------------------------------------- the air ---
+ *
+ * A CAR THAT LEAVES THE ROAD.
+ *
+ * Everything else in this solver assumes the wheels are on the tarmac. The
+ * pose is `road_y + lift + body_y` - an elevation looked up from the track and
+ * a spring travel on top of it - so there is no vertical state at all and no
+ * way for the car to be anywhere the road is not. That is the right model for
+ * a road racer and it is exactly one assumption short of a stunt course.
+ *
+ * What is added is the smallest thing that makes a jump real:
+ *
+ *   - an ABSOLUTE world height while airborne, integrated under gravity.
+ *     Absolute rather than an offset from the road, because the road keeps
+ *     rising and falling underneath a car that has left it, and a car flying
+ *     over a dip should not follow the dip down.
+ *
+ *   - ZERO WHEEL LOAD. This is the whole of "no grip in the air", and it is
+ *     one line rather than a second code path: every tyre force in this file
+ *     is `mu * load * f(slip)`, so a wheel carrying no load generates no
+ *     lateral force, no longitudinal force and no yaw moment. The engine still
+ *     spins the wheels - they are free - which is what a car does off a ramp.
+ *
+ *   - AIR CONTROL, deliberately weak. The trial is to land straight, so the
+ *     player has to be able to correct; but a car that can be spun freely in
+ *     the air is a toy, and a car that cannot be corrected at all is a coin
+ *     toss. It is a yaw RATE the steering asks for, damped, so releasing the
+ *     wheel stops the rotation rather than leaving it spinning.
+ *
+ * The ramp itself is not geometry the car collides with. It is an arc-length
+ * window with a height profile, armed by the director; while the car is inside
+ * it the wheels follow that profile, and at the lip the vertical speed the
+ * profile was already producing becomes the launch speed. That means the
+ * take-off is continuous - the car never gains a velocity it did not have -
+ * and it means the ramp cannot be clipped through, driven around, or landed on
+ * from the wrong side, none of which a collision mesh gives for free.
+ */
+
+/// A launch ramp: an arc-length window and how high its lip stands.
+#[derive(Clone, Copy, Default)]
+pub struct Ramp {
+    /// Where the incline starts and where the lip is, in arc length.
+    pub s0: f64,
+    pub s1: f64,
+    /// The height of the lip above the road, in world units.
+    pub h: f64,
+}
+
+/* WHY THE FIRST TUNE FELT LIKE A PAPER CAR, AND WHAT FIXED IT.
+ *
+ * Reported: boosting off a ramp read as "someone tossed a paper car in the
+ * air". That is a specific complaint and it had three specific causes, none
+ * of which was the gravity constant on its own.
+ *
+ *   NOTHING SLOWED DOWN. A car off a ramp has no wheels on the road, so the
+ *   only thing still acting on it horizontally is air - and the solver's drag
+ *   lives in the tyre model, which was switched off with the wheel loads. So
+ *   the car held its exact launch speed for the whole flight and landed doing
+ *   what it took off doing. Real cars do not; that alone reads as weightless.
+ *
+ *   THE STEERING STILL WORKED. Air control was a whole radian a second, which
+ *   is faster than the car yaws ON THE GROUND at speed. A mass with no contact
+ *   patch cannot rotate like that, and being able to spin it freely in mid-air
+ *   is exactly the "paper" feeling.
+ *
+ *   THE NOSE FELL AT A CONSTANT RATE. `air_pitch_v` was a fixed -0.30 rad/s,
+ *   so the car rotated like a hand on a clock rather than tipping. A real car
+ *   pitches nose-down under its own weight, and the rate BUILDS.
+ *
+ * Gravity was also too low - a 4-unit lip at 70 units/s hung for about a
+ * second and a half - but raising it alone would have made a lighter paper
+ * car that fell faster. All four are below.
+ */
+/// How hard the world pulls a car down.
+///
+/// Not 9.81. This game's unit is about a metre but its speeds are not - a
+/// stock car runs to 83 units/s, which is 300 km/h - so at real gravity a
+/// jump taken at racing speed hangs for two and a half seconds and reads as
+/// the moon. Arcade racers all exaggerate this for the same reason; the value
+/// is chosen from the flight TIME, which lands a good launch in a little
+/// under a second.
+const AIR_G: f64 = 27.0;
+/// Aerodynamic drag while airborne, per second, as a fraction of speed.
+///
+/// The tyre model carries all the drag this solver has and it is switched off
+/// with the wheel loads, so without this a car in the air is in a vacuum. A
+/// car doing 70 units/s sheds about four of them over a one-second flight,
+/// which is small enough not to feel like a handbrake and large enough that
+/// the landing is visibly slower than the launch - which is the thing that
+/// makes it read as having weight.
+const AIR_DRAG: f64 = 0.055;
+/// How fast the steering can yaw the car in the air, in radians a second.
+///
+/// A fifth of what it was. Enough to straighten a car that left the lip a few
+/// degrees out - which is the trial - and nowhere near enough to point it
+/// somewhere else, which is what a car with no contact patch cannot do.
+const AIR_YAW: f64 = 0.34;
+/// ...and how quickly it settles to that. Slow, because this is a two-tonne
+/// mass changing its rotation rather than a cursor: the wheel asks, and the
+/// car takes most of a second to agree.
+const AIR_YAW_DAMP: f64 = 1.15;
+/// How fast the nose drops, as an ACCELERATION rather than a rate.
+///
+/// A car leaving a ramp is unsupported at the front first and pitches forward
+/// under its own weight, so the rotation builds through the flight instead of
+/// running at a constant speed. This is what turns "a model sliding through
+/// the air at a fixed angle" into something that tips.
+const AIR_PITCH_ACC: f64 = 0.85;
+/// ...bounded, so a long flight cannot put the car on its roof.
+const AIR_PITCH_MAX: f64 = 0.85;
+/// The heading error, in radians, at which a landing scores nothing. Twelve
+/// degrees: past that the car is visibly sideways as it touches down.
+const LAND_TOL: f64 = 0.21;
+
+impl Vehicle {
+    /// Arm the next ramp, or clear it with `h <= 0`.
+    ///
+    /// One at a time, because only one can be being driven at once and holding
+    /// a list here would put course layout inside the solver.
+    pub fn arm_ramp(&mut self, s0: f64, s1: f64, h: f64) {
+        self.ramp = if h > 0.0 && s1 > s0 { Some(Ramp { s0, s1, h }) } else { None };
+    }
+
+    /// True while no wheel is on the ground.
+    pub fn is_airborne(&self) -> bool {
+        self.airborne
+    }
+
+    /// The ramp climb and the flight, run once per frame after the solver.
+    ///
+    /// Returns nothing and writes `air_y`, which the caller adds to the pose.
+    fn update_air(&mut self, track: &Track, dt: f64, steer_in: f64) {
+        let ground = self.road_y + self.lift;
+
+        // ---- on the ramp, still on the ground ----------------------------
+        if !self.airborne {
+            let mut launched = false;
+            if let Some(r) = self.ramp {
+                if self.s_track >= r.s0 && self.s_track <= r.s1 {
+                    /* Quadratic, not linear: a ramp with a constant slope has
+                       a corner at the bottom that the car hits rather than
+                       rides, and the whole feel of a jump is in the transition
+                       being smooth. The vertical speed is read back off the
+                       profile rather than assumed, so what leaves the lip is
+                       what the car was actually doing. */
+                    let span = (r.s1 - r.s0).max(1.0);
+                    let u = ((self.s_track - r.s0) / span).clamp(0.0, 1.0);
+                    let prev = self.air_y;
+                    self.air_y = r.h * u * u;
+                    self.air_v = if dt > 1e-6 { (self.air_y - prev) / dt } else { 0.0 };
+                    // the nose follows the surface it is climbing
+                    self.air_pitch = (2.0 * r.h * u / span).atan();
+                    self.air_time = 0.0;
+                    return;
+                }
+                if self.s_track > r.s1 && self.air_y > 0.02 {
+                    launched = true;
+                }
+            }
+            if launched {
+                self.airborne = true;
+                self.air_time = 0.0;
+                self.air_abs = ground + self.air_y;
+                self.landing = 0.0;
+                self.landed = 0.0;
+                /* THE LAUNCH. The nose keeps the angle the ramp gave it and
+                   then starts falling from there - the rate is zero at the lip
+                   and builds, which is what a car actually does. Starting it
+                   at a fixed rate made every jump rotate identically no matter
+                   how it was taken. */
+                self.air_pitch_v = 0.0;
+                self.air_yaw_v = self.yaw_rate * 0.35;
+                /* ...and the suspension unloads. A car leaving a ramp rebounds
+                   as the springs let go, which is the visual cue that it has
+                   left the ground at all. */
+                self.heave_v += 1.6;
+                self.ramp = None;
+            } else if self.air_y != 0.0 {
+                // walked off the side of an armed ramp, or was teleported
+                self.air_y = 0.0;
+                self.air_v = 0.0;
+                self.air_pitch = 0.0;
+            }
+        }
+
+        // ---- the flight ---------------------------------------------------
+        if !self.airborne {
+            return;
+        }
+        self.air_time += dt;
+        self.air_v -= AIR_G * dt;
+        self.air_abs += self.air_v * dt;
+        self.air_y = self.air_abs - ground;
+
+        /* AIR RESISTANCE. The only thing still touching the car is the air,
+           and the solver's own drag went away with the wheel loads - so
+           without this the car holds its launch speed exactly and lands doing
+           what it took off doing, which is most of why it felt weightless.
+           Applied to both axes: a car sliding sideways through the air loses
+           that too. */
+        let keep = (-AIR_DRAG * dt).exp();
+        self.v_long *= keep;
+        self.v_lat *= keep;
+
+        /* Air control: a damped yaw RATE, so letting go stops the rotation
+           rather than leaving it spinning. Deliberately weak and deliberately
+           slow to respond - see AIR_YAW. */
+        let want = clamp(steer_in, -1.0, 1.0) * AIR_YAW;
+        self.air_yaw_v += (want - self.air_yaw_v) * (1.0f64).min(AIR_YAW_DAMP * dt);
+        self.yaw += self.air_yaw_v * dt;
+        self.yaw_rate = self.air_yaw_v;
+        /* THE NOSE DROPS, AND THE DROP BUILDS. Gravity acts at the centre of
+           mass and the car is unsupported at the front first, so this is an
+           angular acceleration, not the constant rate it used to be. Bounded,
+           or a long flight ends inverted. */
+        self.air_pitch_v = (self.air_pitch_v - AIR_PITCH_ACC * dt).max(-AIR_PITCH_MAX);
+        self.air_pitch += self.air_pitch_v * dt;
+        self.air_roll += self.air_roll_v * dt;
+        /* The body follows the chassis. `pitch` and `roll` are what the
+           renderer and the camera read, and leaving them on the spring model
+           while the car is in the air is why it used to fly dead level - the
+           suspension has nothing to push against up here. */
+        self.pitch = self.air_pitch;
+        self.roll += (self.air_roll - self.roll) * (1.0f64).min(6.0 * dt);
+
+        if self.air_y > 0.0 {
+            return;
+        }
+
+        // ---- the landing ---------------------------------------------------
+        /* WHAT "PERFECTLY STRAIGHT" MEANS, and it is measured rather than
+           judged: the angle between where the car is pointing and where the
+           road is going, at the moment the wheels touch. Roll is folded in
+           because a car that lands on two wheels has not landed well either. */
+        let p = track.at(self.s_track);
+        let head = crate::math::ang_diff(self.yaw, p.yaw).abs();
+        let straight = (1.0 - head / LAND_TOL).clamp(0.0, 1.0);
+        let level = (1.0 - self.air_roll.abs() / 0.45).clamp(0.0, 1.0);
+        self.landing = straight * straight * level;
+        self.landed = 1.0;
+
+        self.airborne = false;
+        self.air_y = 0.0;
+        self.air_abs = ground;
+        self.air_pitch = 0.0;
+        self.air_roll = 0.0;
+        self.air_pitch_v = 0.0;
+        self.air_roll_v = 0.0;
+        self.air_yaw_v = 0.0;
+
+        /* The impact. A landing is a vertical speed arriving at a suspension,
+           so it goes into the heave the body model already runs rather than
+           into a separate shake - that way the car squats and rebounds, the
+           camera follows it because the camera already follows the body, and
+           there is nothing new to tune. */
+        /* THE ARRIVAL. A landing is a vertical speed meeting a suspension, so
+           it goes into the heave the body model already runs - the car squats,
+           rebounds, and the camera follows it because the camera already
+           follows the body. Heavier than it was: the first tune barely moved
+           and a landing you cannot feel is a landing that did not happen. */
+        let fall = (-self.air_v).max(0.0);
+        self.heave_v -= (fall * 0.22).min(6.5);
+        self.impact = self.impact.max((fall / 20.0).min(0.85));
+        self.impact_speed = self.impact_speed.max(fall);
+        /* The nose slaps down. Whatever pitch the car was carrying is thrown
+           into the spring rather than snapped to zero, so a nose-down arrival
+           bottoms the front and comes back up. */
+        self.pitch_v -= self.air_pitch * 5.0;
+
+        /* THE PENALTY, and it is a penalty on SPEED, not a crash.
+           A bad landing scrubs momentum: the tyres arrive pointing one way and
+           travelling another, which is a slide, and a slide costs the exit.
+           A good one costs nothing at all, which is what makes the trial worth
+           doing well rather than merely surviving. */
+        /* Every landing costs something, and a bad one costs a lot. The floor
+           is the point: even a perfect arrival scrubs a little, because four
+           tyres taking a car's whole weight at once cannot do it for free, and
+           a jump that returned the car to the road at exactly its launch speed
+           was the other half of what made this feel weightless. */
+        let miss = 1.0 - self.landing;
+        self.v_long *= 1.0 - (0.06 + 0.34 * miss);
+        // and the sideways component the heading error just created is real
+        let slip = head.sin() * self.v_long;
+        self.v_lat += slip * miss;
+        self.yaw_rate += slip * miss * 0.04;
+        if miss > 0.55 {
+            // hard enough to unsettle it, never hard enough to end the run
+            self.stun = self.stun.max(WALL_STUN * 0.45 * miss);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1573,4 +1924,180 @@ mod tests {
         let d = (fast.speed - slow.speed).abs();
         assert!(d < 1.5, "120 Hz reached {} u/s, 30 Hz reached {}", fast.speed, slow.speed);
     }
+    /// A RAMP MUST LAUNCH THE CAR, AND THE CAR MUST COME DOWN.
+    ///
+    /// The three things a jump has to be, none of which the road-locked solver
+    /// could do before: it leaves the ground, it is unsupported while it is up
+    /// there, and it arrives back on the road further down it.
+    #[test]
+    fn a_ramp_launches_the_car_and_it_lands() {
+        let t = straight_track(4000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 400.0, 0.0);
+        car.v_long = 70.0;
+        car.arm_ramp(500.0, 530.0, 4.2);
+
+        let dt = 1.0 / 120.0;
+        let (mut peak, mut air_frames, mut launch_s, mut land_s) = (0.0f64, 0, 0.0, 0.0);
+        let mut was_air = false;
+        for _ in 0..(10 * 120) {
+            let input = Input { throttle: 1.0, ..Default::default() };
+            car.update(&t, dt, input, true);
+            if car.airborne && !was_air {
+                launch_s = car.s_track;
+            }
+            if !car.airborne && was_air {
+                land_s = car.s_track;
+            }
+            if car.airborne {
+                air_frames += 1;
+                /* No wheel may carry load while the car is off the ground -
+                   checked from the SECOND airborne frame on. The loads are
+                   computed before `update_air` decides the car has left the
+                   lip, so the launch frame still has grip; at 1/120 s and 70
+                   u/s that is half a unit of road, and moving the decision
+                   earlier would mean deciding it against last frame's arc
+                   length, which is a worse error than the one it fixes. */
+                if was_air {
+                    for i in 0..4 {
+                        assert_eq!(car.w[i].load, 0.0, "a wheel is loaded in mid-air");
+                    }
+                }
+            }
+            was_air = car.airborne;
+            peak = peak.max(car.air_y);
+        }
+        assert!(air_frames > 30, "the car was airborne for only {air_frames} frames");
+        assert!(peak > 4.2, "the jump only reached {peak:.1}u, lower than the lip");
+        assert!(
+            land_s - launch_s > 40.0,
+            "the car flew only {:.0}u down the road",
+            land_s - launch_s
+        );
+        assert!(!car.airborne, "the car never came down");
+        assert!(car.air_y.abs() < 1e-9, "it landed but is still {}u up", car.air_y);
+    }
+
+    /// LANDING STRAIGHT HAS TO BE WORTH MORE THAN LANDING SIDEWAYS.
+    ///
+    /// The whole trial is the landing, so the score has to separate the two
+    /// cases and the penalty has to be real - and it has to be a penalty on
+    /// SPEED rather than a crash, or the stunt is a checkpoint reload.
+    #[test]
+    fn a_straight_landing_beats_a_crooked_one() {
+        let t = straight_track(4000);
+        let run = |yaw_off: f64| {
+            let mut car = Vehicle::new(&t, 0.0);
+            car.reset(&t, 400.0, 0.0);
+            car.v_long = 70.0;
+            car.arm_ramp(500.0, 530.0, 4.2);
+            let dt = 1.0 / 120.0;
+            let mut turned = false;
+            for _ in 0..(10 * 120) {
+                car.update(&t, dt, Input { throttle: 1.0, ..Default::default() }, true);
+                // put the heading error in once, just after take-off, so both
+                // runs are otherwise identical
+                if car.airborne && !turned {
+                    turned = true;
+                    car.yaw += yaw_off;
+                }
+                if turned && !car.airborne {
+                    return (car.landing, car.v_long);
+                }
+            }
+            (-1.0, -1.0)
+        };
+        let (good, v_good) = run(0.0);
+        let (bad, v_bad) = run(0.30);          // seventeen degrees out
+        assert!(good > 0.9, "a straight landing scored only {good:.2}");
+        assert!(bad < 0.15, "a landing 17 degrees out still scored {bad:.2}");
+        assert!(
+            v_good > v_bad + 8.0,
+            "a crooked landing cost only {:.1} u/s ({v_good:.1} vs {v_bad:.1})",
+            v_good - v_bad
+        );
+    }
+
+    /// AN ARMED RAMP MUST NOT CHANGE A CAR THAT NEVER REACHES IT, and a car
+    /// that is reset out of the air must not keep falling.
+    #[test]
+    fn the_air_state_does_not_leak() {
+        let t = straight_track(4000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 400.0, 0.0);
+        car.v_long = 60.0;
+        car.arm_ramp(9000.0, 9030.0, 4.0);     // far up the road
+        let dt = 1.0 / 120.0;
+        for _ in 0..(4 * 120) {
+            car.update(&t, dt, Input { throttle: 1.0, ..Default::default() }, true);
+            assert!(!car.airborne, "an unreached ramp put the car in the air");
+            assert_eq!(car.air_y, 0.0, "an unreached ramp lifted the car");
+        }
+        // ...and a rewind out of mid-flight
+        car.arm_ramp(car.s_track + 40.0, car.s_track + 70.0, 4.2);
+        for _ in 0..(3 * 120) {
+            car.update(&t, dt, Input { throttle: 1.0, ..Default::default() }, true);
+            if car.airborne {
+                break;
+            }
+        }
+        assert!(car.airborne, "the second ramp never launched it");
+        car.reset(&t, 400.0, 0.0);
+        assert!(!car.airborne, "reset left the car airborne");
+        assert!(car.ramp.is_none(), "reset left a ramp armed");
+        car.update(&t, dt, Input::default(), true);
+        assert_eq!(car.air_y, 0.0, "reset left the car {}u off the road", car.air_y);
+    }
+
+
+    /// A JUMP HAS TO HAVE WEIGHT, and "weight" is three measurable things.
+    ///
+    /// The first tune of this read as "someone tossed a paper car in the air",
+    /// and every part of that complaint is a number: the flight was too long,
+    /// the car did not slow down while it was up there, and it arrived doing
+    /// exactly what it left doing. This pins all three so they cannot drift
+    /// back - a floaty jump is a regression nobody notices in a diff.
+    #[test]
+    fn a_jump_has_weight() {
+        let t = straight_track(4000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 400.0, 0.0);
+        car.v_long = 72.0;
+        car.arm_ramp(500.0, 546.0, 4.2);
+
+        let dt = 1.0 / 120.0;
+        let (mut air, mut launch_v, mut land_v, mut peak_pitch) = (0.0f64, 0.0, 0.0, 0.0f64);
+        let mut was = false;
+        for _ in 0..(12 * 120) {
+            car.update(&t, dt, Input { throttle: 1.0, ..Default::default() }, true);
+            if car.airborne && !was {
+                launch_v = car.v_long;
+            }
+            if !car.airborne && was {
+                land_v = car.v_long;
+                break;
+            }
+            was = car.airborne;
+            if car.airborne {
+                air += dt;
+                peak_pitch = peak_pitch.max(car.air_pitch.abs());
+            }
+        }
+        assert!(air > 0.35, "the jump lasted only {air:.2}s - it barely left the road");
+        assert!(air < 1.35, "the jump hung for {air:.2}s, which is the moon");
+        /* IT MUST SLOW DOWN IN THE AIR. Without drag the solver has nothing
+           acting on a car with no wheel load, so it holds its launch speed
+           exactly - which is the single clearest tell that a thing has no
+           mass. */
+        assert!(
+            land_v < launch_v - 1.5,
+            "the car left at {launch_v:.1} and landed at {land_v:.1}: nothing slowed it down"
+        );
+        // ...and the nose has to actually drop, rather than flying dead level
+        assert!(
+            peak_pitch > 0.06,
+            "the body never pitched more than {peak_pitch:.3} rad - it flew flat"
+        );
+    }
+
 }

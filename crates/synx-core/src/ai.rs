@@ -83,6 +83,36 @@ pub struct Level {
  *   MEDIUM  a car to chase. Competent and close; small errors, not gifts.
  *   HARD    a car that knows the line. Clean, quick, and it does not wait.
  */
+/* ---------------------------------------------------- the overtake ----
+ *
+ * How far sideways a pass is, how long the two cars count as sharing road,
+ * and how fast the offset that expresses it may move. See the long note in
+ * `drive`; the values matter less than the RELATIONSHIP between them.
+ *
+ * `PASS_KEEP_*` has to be wider than any gap the lead realistically changes
+ * over, or releasing and re-arming the side becomes an oscillator at the
+ * rate of the race. `PASS_SLEW` is the backstop under all of it.
+ */
+/// How far sideways an overtake actually is. Most of the road asks a car
+/// doing a hundred units a second to move twenty-five sideways, and that is
+/// not a move, it is a spin. Three car widths is a lane change.
+const PASS_ROOM: f64 = 8.5;
+/// How far up the road a car has to be before a pass on it is even a move.
+const PASS_KEEP_FWD: f64 = 60.0;
+/// ...and how far THIS car may get in front before the two stop sharing
+/// road. Asymmetric on purpose: a car being drafted has not gone away.
+const PASS_KEEP_BACK: f64 = 55.0;
+/// How far up the road a car has to be before a pass on it is STARTED. A
+/// car length: closer than this the two are overlapped and the move is a
+/// side-swipe, not an overtake.
+const PASS_START_GAP: f64 = 6.0;
+/// How long the side survives a genuine break in contact.
+const PASS_MEM_SECS: f64 = 6.0;
+/// Units per second of lateral travel the offset may command. A road car
+/// changes lane in about a second over three metres; this is that, and it is
+/// the guarantee that no future term can produce a dash rather than a lean.
+const PASS_SLEW: f64 = 4.0;
+
 pub const EASY: Level = Level {
     skill: 0.58, assist: 0.30, target: -55.0, grip: 0.80, react: 0.28,
     boost_skill: 0.40, drift_skill: 0.25, mistakes: 0.035,
@@ -319,11 +349,20 @@ pub struct Driver {
     mistake_timer: f64,
     boost_hold: f64,
     avoid: f64,
+    /// `avoid` as it stood last frame, for the slew limit. Kept separately
+    /// from `avoid` because the limit has to bound what is COMMANDED, not
+    /// what some later term would have liked to command.
+    avoid_prev: f64,
     /// Which side of the car ahead this driver has committed to going round,
-    /// or 0 for "no pass in progress". Held for the whole move; see the note
-    /// in `drive`. Without it the side is re-decided every frame and the car
-    /// chatters between the two edges of the road.
+    /// or 0 for "no pass in progress". Held for the whole time the two cars
+    /// are sharing road; see the note in `drive`. Without it the side is
+    /// re-decided and the car chatters between the two edges of the road.
     pass_side: f64,
+    /// The last side actually used, kept after the move ends, and the window
+    /// in which it is reused rather than re-decided. Two cars that keep
+    /// swapping the lead must not swap sides with it.
+    pass_mem: f64,
+    pass_cool: f64,
     /* THERE IS NO SHOULDER, AND THERE IS NO `ram`.
      *
      * A previous version let a director hand this driver an absolute lateral
@@ -398,7 +437,10 @@ impl Driver {
             mistake_timer: 0.0,
             boost_hold: 0.0,
             avoid: 0.0,
+            avoid_prev: 0.0,
             pass_side: 0.0,
+            pass_mem: 0.0,
+            pass_cool: 0.0,
             stuck: 0.0,
             lane_bias: 0.0,
             pace_scale: 1.0,
@@ -436,7 +478,10 @@ impl Driver {
         self.mistake_timer = 0.0;
         self.boost_hold = 0.0;
         self.avoid = 0.0;
+        self.avoid_prev = 0.0;
         self.pass_side = 0.0;
+        self.pass_mem = 0.0;
+        self.pass_cool = 0.0;
         self.stuck = 0.0;
         self.lane_bias = 0.0;
         self.pace_scale = 1.0;
@@ -655,85 +700,128 @@ impl Driver {
         };
 
         // ---- overtaking and avoidance -------------------------------------
-        /* A PASS IS A DECISION, NOT A PER-FRAME OPINION.
+        /* A PASS IS A LANE, NOT A DECISION THAT IS RETAKEN.
          *
-         * This used to choose a side every frame from `sign(their lateral)`
-         * and damp toward it. Two consequences, and both were visible on the
-         * road:
+         * Three versions of this have now been wrong, and each one was wrong
+         * for a narrower reason than the last. The history is worth keeping
+         * because the fault it produced - a rival that dashes left and right
+         * across the road instead of racing down it - looks identical in all
+         * three, and the obvious fix for each is what produced the next.
          *
-         *   - a car being followed anywhere near the centreline flips that
-         *     sign every time it drifts across, so the target snapped between
-         *     the two edges of the road and the chasing car chattered between
-         *     them at whatever rate the car in front wandered;
-         *   - the 55-unit gate is a single threshold, so a rival hovering on
-         *     it had the whole offset switched on and off at frame rate.
+         *   1. The side was chosen every frame from `sign(their lateral)`. A
+         *      car being followed near the centreline flips that sign every
+         *      time it drifts across, so the set point snapped between the two
+         *      edges of the road at whatever rate the car in front wandered.
+         *      Bang-bang controller, chattering at frame rate.
          *
-         * A controller whose set point is the sign of a moving quantity is a
-         * bang-bang controller, and bang-bang controllers chatter. That is a
-         * property of the shape, not of the gain, so it is fixed by changing
-         * the shape: the side is chosen ONCE, when the move begins, and held
-         * until the move is over - through them, or dropped far enough back
-         * that there is no move on. Capture and release distances differ, so
-         * a rival sitting exactly on the boundary cannot toggle it.
+         *   2. So the side was LATCHED: chosen once when the move began, held
+         *      until the move was over. That fixed the frame-rate chatter and
+         *      the regression test that covers it - which pins the rival two
+         *      units up the road for the whole run, so the latch is taken once
+         *      and never released. The test could not reach the fault.
          *
-         * Inside a dead band around the centreline the sign of their lateral
-         * carries no information, so the tie is broken by which side this car
-         * is already on - the shorter move, and the one already committed to.
+         *      Chapter 7 could. Its director holds the R-IX wheel to wheel
+         *      with the player, so the SIGN of the gap changes every few
+         *      seconds; each change released the latch and re-armed it from
+         *      `sign(their lateral)` again. The same bang-bang controller,
+         *      running at the rate the lead changes rather than at frame rate,
+         *      and measured at seventeen units of lateral travel - the full
+         *      width of the deck, indefinitely.
+         *
+         *   3. What is here now. The window is the one the RACE is in, not the
+         *      one a single move is in: while the two cars are sharing road at
+         *      all - in either order - the offset is held, so swapping the
+         *      lead does not release anything and there is nothing to re-arm.
+         *      The side survives a release in `pass_mem` for a few seconds
+         *      after it, so even a genuine break and re-engagement comes back
+         *      on the side it left on. And the offset is SLEW LIMITED, which
+         *      is the backstop: whatever the side logic decides, the car
+         *      cannot cross the road faster than a car changes lane.
+         *
+         * The property that makes this stable is that no term in it is a
+         * function of a quantity that the term itself moves. The magnitude
+         * comes from the longitudinal gap, which this car's steering cannot
+         * change; the side comes from a latch with hysteresis wider than the
+         * race's own oscillation.
+         *
+         * There is still NO DEFENSIVE LINE. A move is only ever started on a
+         * car that is genuinely up the road, so a car in this one's mirror
+         * produces nothing at all.
          */
         let mut bias;
         if world.has_rival {
-            let ahead = world.rival_s - s;
-            // Only look where a pass could be happening. Outside that the
-            // projection is wasted work and the answer is always "go back to
-            // the line".
-            if self.pass_side != 0.0 && (ahead < -6.0 || ahead > 70.0) {
-                self.pass_side = 0.0; // through them, or dropped: the move is over
+            let ahead = world.rival_s - s; // + means they are up the road
+            self.pass_cool = (self.pass_cool - dt).max(0.0);
+            /* SHARING ROAD, in either order. Deliberately far wider than the
+               gap the lead changes over, which is the whole point: inside this
+               window the pass is one continuous move and the lead may change
+               hands as often as it likes without touching it. */
+            let sharing = ahead > -PASS_KEEP_BACK && ahead < PASS_KEEP_FWD;
+            if self.pass_side != 0.0 && !sharing {
+                // Out of contact. Remember the side; a re-engagement inside
+                // the cooldown comes back on it rather than picking again.
+                self.pass_mem = self.pass_side;
+                self.pass_cool = PASS_MEM_SECS;
+                self.pass_side = 0.0;
             }
-            if self.pass_side != 0.0 || (ahead > 0.0 && ahead < 55.0) {
+            /* A move is STARTED only on a car that is genuinely up the road.
+               Being ahead of somebody is not a reason to move anywhere, and
+               neither is being overlapped with them: at a bumper's distance
+               the two cars are side by side already, and a lane change from
+               there is not an overtake, it is a side-swipe. A car length is
+               also comfortably clear of the floating-point noise in the gap,
+               which a threshold of two units was not - that alone made the
+               move start at a random moment. */
+            if self.pass_side == 0.0 && sharing && ahead > PASS_START_GAP {
                 let p = track.project(world.rival_x, world.rival_z, world.rival_s);
                 let mine = track.project(car.x, car.z, s);
-                // How far sideways an overtake actually is. Most of the road
-                // asks a car doing a hundred units a second to move
-                // twenty-five sideways, and that is not a move, it is a spin.
-                // Three car widths is a lane change and is all this needs.
-                let room = (track.half_width * 0.85).min(8.5);
-                if self.pass_side == 0.0 {
+                let room = (track.half_width * 0.85).min(PASS_ROOM);
+                let mut side = if self.pass_cool > 0.0 && self.pass_mem != 0.0 {
+                    self.pass_mem // came back to the same fight: same side
+                } else if p.lateral.abs() > 1.5 {
+                    // go round the side they are not on
+                    if p.lateral > 0.0 { -1.0 } else { 1.0 }
+                } else {
+                    // ...or, if that tells us nothing, the way this car leans
                     let lean = mine.lateral - p.lateral;
-                    let mut side = if p.lateral.abs() > 1.5 {
-                        // go round the side they are not on
-                        if p.lateral > 0.0 { -1.0 } else { 1.0 }
-                    } else if lean.abs() > 0.4 {
-                        // ...or, if that tells us nothing, the way we lean
-                        if lean > 0.0 { 1.0 } else { -1.0 }
-                    } else {
-                        1.0
-                    };
-                    // ...and never into a barrier. If the chosen side has no
-                    // road left to move into, the pass goes the other way.
-                    if (p.lateral + side * room).abs() > track.half_width - 2.6 {
-                        side = -side;
-                    }
-                    self.pass_side = side;
+                    if lean > 0.0 { 1.0 } else { -1.0 }
+                };
+                // ...and never into a barrier. If the chosen side has no road
+                // left to move into, the pass goes the other way.
+                if (p.lateral + side * room).abs() > track.half_width - 2.6 {
+                    side = -side;
                 }
-                // Urgency ramps in over the gap rather than switching on at
-                // it, and is clamped so the capture edge is not a step.
-                let urgency = clamp((55.0 - ahead) / 55.0, 0.0, 1.0);
-                // Alongside already: hold the full width and hold it briskly,
-                // because this is the moment the two cars are closest.
-                let alongside = (mine.lateral - p.lateral).abs() < 3.2 && ahead < 9.0;
-                let want = self.pass_side
-                    * room
-                    * if alongside { 1.0 } else { urgency * (0.55 + 0.45 * self.skill) };
-                self.avoid = damp(self.avoid, want, if alongside { 6.0 } else { 3.0 }, dt);
-                // NO DEFENSIVE LINE. Both shapes of it were tried and both are
-                // positive feedback: the leader reads a car sitting in its own
-                // mirror, moves over, reads it again from the new position, and
-                // walks itself into the barrier.
-            } else {
-                self.avoid = damp(self.avoid, 0.0, 1.6, dt);
+                self.pass_side = side;
+                self.pass_mem = side;
             }
-        } else if self.pass_side != 0.0 {
+            let want = if self.pass_side != 0.0 {
+                let room = (track.half_width * 0.85).min(PASS_ROOM);
+                /* Urgency is a smooth function of the gap and NOTHING else.
+                   It used to switch to a hard "alongside" case on a boolean,
+                   which is one more edge for two cars running together to
+                   chatter on. A car this driver has drawn level with wants the
+                   full width; one still fifty units up the road wants part of
+                   it; and everything between is the ramp. */
+                let urgency = clamp((PASS_KEEP_FWD - ahead) / PASS_KEEP_FWD, 0.0, 1.0);
+                self.pass_side * room * (0.55 + 0.45 * self.skill) * urgency
+            } else {
+                0.0
+            };
+            self.avoid = damp(self.avoid, want, if want == 0.0 { 1.6 } else { 3.0 }, dt);
+            /* THE BACKSTOP, and the one guarantee that does not depend on any
+               of the reasoning above being right. A road car changes lane in
+               about a second; nothing this controller decides may move the
+               car sideways faster than that. If some future term flips a sign
+               under a condition nobody predicted, the result is a lean, not a
+               dash. */
+            let step = PASS_SLEW * dt;
+            let prev = self.avoid_prev;
+            self.avoid = clamp(self.avoid, prev - step, prev + step);
+            self.avoid_prev = self.avoid;
+        } else {
             self.pass_side = 0.0;
+            self.avoid = damp(self.avoid, 0.0, 1.6, dt);
+            self.avoid_prev = self.avoid;
         }
         bias = self.avoid;
 
@@ -1356,6 +1444,71 @@ mod tests {
                 car.s_track - 400.0 > 900.0,
                 "{name} covered only {:.0} units in 24 s",
                 car.s_track - 400.0
+            );
+        }
+    }
+
+    /// REGRESSION: THE LEAD-CHANGE WEAVE (the reported Chapter 7 fault).
+    ///
+    /// `a_rival_alongside_does_not_make_the_driver_weave` pins the rival two
+    /// units ahead for the whole run, so `pass_side` is captured once and is
+    /// never released - the one path that test cannot reach is the one Chapter
+    /// 7 lives on. The R-IX's hunt curve holds it wheel to wheel with the
+    /// player, so the SIGN of the gap changes every few seconds, and on the old
+    /// code every change re-armed the side from `sign(their lateral)`. That is
+    /// the same bang-bang controller the capture latch was added to remove,
+    /// running at the rate the lead changes rather than at frame rate.
+    ///
+    /// The player here swaps the lead on a slow cycle AND moves across the road
+    /// while it happens, which is what a real one does.
+    #[test]
+    fn a_lead_change_does_not_make_the_driver_weave() {
+        let t = course();
+        let line = RacingLine::build(&t, t.half_width * 0.68);
+        for (name, level, who) in [
+            ("HARD", HARD, Personality::None),
+            ("R-IX", IMPOSSIBLE, Personality::Predator),
+        ] {
+            let mut d = Driver::new(level, 4242);
+            d.personality = who;
+            d.build_profile_for(&line);
+            let mut car = Vehicle::new(&t, 0.0);
+            car.reset(&t, 400.0, 0.0);
+
+            let dt = 1.0 / 60.0;
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for step in 0..(40 * 60) {
+                let time = step as f64 * dt;
+                let s = car.s_track;
+                // The lead changes hands on a seven-second cycle.
+                let gap = 14.0 * (time * 0.9).sin();
+                // ...and the player is not on the centreline while it does.
+                let plat = 6.0 * (time * 0.55 + 1.0).sin();
+                let p = t.at(s + gap);
+                let (rx, rz) = (p.yaw.cos(), -p.yaw.sin());
+                let world = WorldView {
+                    race_on: true,
+                    has_rival: true,
+                    rival_s: s + gap,
+                    rival_x: p.x + rx * plat,
+                    rival_z: p.z + rz * plat,
+                    finish_at: 100_000.0,
+                };
+                let cmd = d.drive(dt, &car, &t, &line, &world);
+                car.update(&t, dt, cmd, true);
+                // Settle first: getting off the line is one legitimate move.
+                if step > 240 {
+                    let lat = t.project(car.x, car.z, car.s_track).lateral;
+                    lo = lo.min(lat);
+                    hi = hi.max(lat);
+                }
+            }
+            let swing = hi - lo;
+            println!("{name}: {swing:.1} units of lateral travel");
+            assert!(
+                swing < 8.0,
+                "{name} moved {swing:.1} units across the road as the lead changed \
+                 - that is the weave, not a racing line"
             );
         }
     }

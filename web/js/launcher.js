@@ -173,7 +173,6 @@
       if (typeof w.gpu !== 'boolean') w.gpu = true;
       if (typeof w.vsync !== 'boolean') w.vsync = true;
       if (typeof w.always_on_top !== 'boolean') w.always_on_top = false;
-      if (typeof w.fps_cap !== 'number') w.fps_cap = 0;
       if (typeof w.monitor !== 'number') w.monitor = 0;
       if (typeof w.width !== 'number') w.width = 1600;
       if (typeof w.height !== 'number') w.height = 900;
@@ -194,7 +193,7 @@
         case 'gpu': return w.gpu ? 1 : 0;
         case 'vsync': return w.vsync ? 1 : 0;
         case 'always_on_top': return w.always_on_top ? 1 : 0;
-        case 'fps_cap': return Math.max(0, S.FPS_CAPS.indexOf(w.fps_cap));
+
         default: return this.game[row.key] | 0;
       }
     }
@@ -217,7 +216,7 @@
         case 'gpu': w.gpu = i === 1; break;
         case 'vsync': w.vsync = i === 1; break;
         case 'always_on_top': w.always_on_top = i === 1; break;
-        case 'fps_cap': w.fps_cap = S.FPS_CAPS[i] || 0; break;
+
         default: this.game[row.key] = i; break;
       }
     }
@@ -607,7 +606,7 @@
       this.game = S.defaults();
       this.win = {
         mode: 'borderless', width: 1600, height: 900, monitor: 0, gpu: true,
-        always_on_top: false, fps_cap: 0, vsync: true,
+        always_on_top: false, vsync: true,
       };
       this.applyDefaults();
       this.render();

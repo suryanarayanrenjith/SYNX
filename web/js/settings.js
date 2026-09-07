@@ -118,9 +118,18 @@
       hint: 'HARDWARE is the GPU path and is what the game is built for. SOFTWARE is a fallback for a machine whose driver cannot give a 3D context — correct, and very slow. Changing this restarts the game.' },
     { where: 'launcher', tab: 0, key: 'vsync', label: 'VERTICAL SYNC', opts: ['OFF', 'ON'], def: 1,
       hint: 'Matches the frame to the display refresh. Off can tear; on is smoother and adds a frame of latency.' },
+    /* THE GAME OWNS THIS ONE, not the host.
+
+       It used to be a host key, stored under the launcher's own save entry -
+       which the game never reads. So it was written, sanitised, unit-tested
+       and applied by nothing at all: the row moved, and the frame rate did
+       not. A limit is enforced by the thing that draws the frames, so it lives
+       where every other row the renderer reads lives. */
     { where: 'launcher', tab: 0, key: 'fps_cap', label: 'FRAME LIMIT',
       opts: ['UNCAPPED', '30', '60', '75', '90', '120', '144', '165', '240'], def: 0,
       hint: 'An upper bound on the frame rate. Useful on a laptop, where an uncapped menu screen is a fan at full speed for nothing.' },
+    { where: 'launcher', tab: 0, key: 'fpsShow', label: 'FPS COUNTER', opts: ['OFF', 'ON'], def: 0,
+      hint: 'Shows the frame rate in the corner while you drive, with the slowest frame of the last second beside it.' },
     { where: 'launcher', tab: 0, key: 'always_on_top', label: 'ALWAYS ON TOP', opts: ['OFF', 'ON'], def: 0,
       hint: 'Keeps the window above everything else on the desktop.' },
 
@@ -214,7 +223,15 @@
    * Deriving this from `where` would be wrong: RENDER SCALE and UPSCALER are
    * shown only on the launcher and belong to the game's blob, because the
    * renderer is what reads them. So it is a list. */
-  const HOST_KEYS = ['mode', 'monitor', 'size', 'gpu', 'vsync', 'fps_cap', 'always_on_top'];
+  /* Rows the HOST owns, stored under the launcher's own save entry and read
+     by Rust before any window exists. Everything else on the launcher screen
+     is an ordinary game setting that happens to be shown there, stored in the
+     same place the in-game options screen stores its rows and read by the same
+     loader - which is the only reason those rows work.
+
+     `fps_cap` was in this list and had no business being here: nothing in the
+     host reads it, and the game cannot see this entry. See the row itself. */
+  const HOST_KEYS = ['mode', 'monitor', 'size', 'gpu', 'vsync', 'always_on_top'];
 
   /** True when this row is saved in the launcher's own blob. */
   function isHostKey(key) {

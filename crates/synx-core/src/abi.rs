@@ -88,6 +88,10 @@ veh_layout! {
     W1_OMEGA => "w1omega", W1_LOAD => "w1load", W1_SLIP_ANGLE => "w1slipAngle", W1_SLIP_RATIO => "w1slipRatio",
     W2_OMEGA => "w2omega", W2_LOAD => "w2load", W2_SLIP_ANGLE => "w2slipAngle", W2_SLIP_RATIO => "w2slipRatio",
     W3_OMEGA => "w3omega", W3_LOAD => "w3load", W3_SLIP_ANGLE => "w3slipAngle", W3_SLIP_RATIO => "w3slipRatio",
+    // the stunt course; see the note above `Ramp` in vehicle.rs
+    AIRBORNE => "airborne", AIR_Y => "airY", AIR_V => "airV", AIR_TIME => "airTime",
+    AIR_PITCH => "airPitch", AIR_ROLL => "airRoll",
+    LANDING => "landing", LANDED => "landed",
 }
 
 #[inline]
@@ -143,6 +147,9 @@ pub(crate) fn store_vehicle(v: &Vehicle, out: &mut [f64]) {
     for w in &v.w {
         p(w.omega, &mut i); p(w.load, &mut i); p(w.slip_angle, &mut i); p(w.slip_ratio, &mut i);
     }
+    p(b(v.airborne), &mut i); p(v.air_y, &mut i); p(v.air_v, &mut i); p(v.air_time, &mut i);
+    p(v.air_pitch, &mut i); p(v.air_roll, &mut i);
+    p(v.landing, &mut i); p(v.landed, &mut i);
     debug_assert_eq!(i, VEH_STRIDE, "store_vehicle wrote {i} of {VEH_STRIDE} fields");
 }
 
@@ -192,6 +199,13 @@ fn load_vehicle(v: &mut Vehicle, src: &[f64]) {
     v.roll = src[f::ROLL];
     v.road_pitch = src[f::ROAD_PITCH];
     v.lateral = src[f::LATERAL];
+    /* `landed` is a one-frame EVENT flag, and the director that reads it
+       clears it - so it has to come back in, or the clear is thrown away by
+       the next store and the same landing is reported for the rest of the
+       run. Nothing else about the flight is loadable: `airborne`, the height
+       and the vertical speed are integrator state, and letting a director
+       write them is how a car ends up falling forever. */
+    v.landed = src[f::LANDED];
 }
 
 // -------------------------------------------------------------- exports ----
@@ -452,6 +466,16 @@ pub extern "C" fn synx_veh_reset(id: u32, s: f64, lateral: f64) {
 #[no_mangle]
 pub extern "C" fn synx_veh_fit_engine(id: u32, swap: u32) {
     with_car(id, |v, _| v.fit_engine(swap != 0));
+}
+
+/// Arm the next launch ramp for a car, or clear it with `h <= 0`.
+///
+/// One at a time: only one ramp can be being driven at once, and holding the
+/// course's list of them in the solver would put level layout inside the
+/// physics. The director arms the next one as the car comes up on it.
+#[no_mangle]
+pub extern "C" fn synx_veh_arm_ramp(id: u32, s0: f64, s1: f64, h: f64) {
+    with_car(id, |v, _| v.arm_ramp(s0, s1, h));
 }
 
 /// Move a car to a lateral offset on the road WITHOUT resetting it.
@@ -1379,3 +1403,65 @@ pub extern "C" fn synx_pow_digest(len: usize) -> *const f64 {
     }
     w.scratch.as_ptr()
 }
+
+// ---- particles ------------------------------------------------------------
+//
+// See `particles` for why the sprite system's two hot loops are on this side
+// of the boundary. The buffer is owned here and written from JavaScript: one
+// pointer, mapped once, and nothing else crosses per frame.
+
+static mut PARTS: Option<crate::particles::Particles> = None;
+
+fn parts() -> &'static mut crate::particles::Particles {
+    unsafe {
+        let p = &mut *core::ptr::addr_of_mut!(PARTS);
+        if p.is_none() {
+            *p = Some(crate::particles::Particles::default());
+        }
+        p.as_mut().unwrap()
+    }
+}
+
+/// Allocate for `max` particles. Safe to call again; it reallocates, so the
+/// caller must re-derive its views afterwards.
+#[no_mangle]
+pub extern "C" fn synx_fx_reset(max: usize) {
+    parts().reset(max);
+}
+
+/// The particle buffer: `max * synx_fx_stride()` floats, laid out as
+/// `particles::f`. JavaScript writes this directly when it spawns.
+#[no_mangle]
+pub extern "C" fn synx_fx_pptr() -> *mut f32 {
+    parts().p.as_mut_ptr()
+}
+
+/// The vertex buffer `synx_fx_build` fills, ready for `bufferSubData`.
+#[no_mangle]
+pub extern "C" fn synx_fx_optr() -> *mut f32 {
+    parts().out.as_mut_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn synx_fx_stride() -> usize {
+    crate::particles::STRIDE
+}
+
+/// Step every live particle. Returns how many are still alive.
+#[no_mangle]
+pub extern "C" fn synx_fx_integrate(dt: f32) -> usize {
+    parts().integrate(dt)
+}
+
+/// Expand the live particles into camera-facing triangles. Returns the number
+/// of VERTICES written to `synx_fx_optr`.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn synx_fx_build(
+    rx: f32, ry: f32, rz: f32,
+    ux: f32, uy: f32, uz: f32,
+    fx: f32, fy: f32, fz: f32,
+) -> usize {
+    parts().build([rx, ry, rz], [ux, uy, uz], [fx, fy, fz])
+}
+

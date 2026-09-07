@@ -1436,6 +1436,10 @@
       };
       // the frame's own census; see drawPart and boxVisible
       this.drawCalls = 0;
+      /* How many of those draws actually had to restate their material. The
+         gap between the two is what the cache in `drawPart` is worth, and it
+         is reported rather than assumed - see tools/profile.js. */
+      this.matUploads = 0;
       this.culled = 0;
       // up to two cars pressing a soft shadow into the road
       this.shadows = [[0, 0, 0, 1], [0, 0, 0, 1]];
@@ -1481,6 +1485,14 @@
       const vBytes = manifest.vertexBytes;
       const verts = new Float32Array(bin, 0, vBytes / 4);
       const idx = new Uint32Array(bin, vBytes, manifest.indexBytes / 4);
+      /* Kept for buildPalms, which stamps the shipped `trunk` and `palms`
+         meshes into the dressing arena rather than instancing them - see the
+         long note there for why the palms are geometry now and not 940 draw
+         calls. These are VIEWS on the bytes the pack already handed over, so
+         holding them costs nothing until the arena reads them, and they are
+         released below once the dressing has been built. */
+      this.srcVerts = verts;
+      this.srcIdx = idx;
 
       mark('fixupGeometry', () => this.fixupGeometry(verts));
       mark('fixupInstances', () => this.fixupInstances());
@@ -1679,6 +1691,306 @@
           m.gain = 0.3;
         }
       }
+    }
+
+    /* ---------------------------------------------------------- the palms --
+     *
+     * THREE FAULTS, AND WHY NONE OF THEM COULD BE TUNED OUT.
+     *
+     * The level ships 112 palm instances - 56 trunks and 56 frond clusters -
+     * and three baked forest meshes. Measured against the data rather than by
+     * eye, all three reported symptoms are in the PLACEMENT, and every one of
+     * them is structural:
+     *
+     *   THE CROWN IS NOT ON THE TRUNK. The two halves of a palm are separate
+     *   meshes with separate matrices, and the matrices disagree. They carry
+     *   different vertical scales - 3.47 on the trunk against 4.33 on the
+     *   crown - and translations that were never derived from each other, so
+     *   the frond cluster sits 9.6 units sideways and 16.6 units BELOW the top
+     *   of its own trunk. What that draws is a bare pole with a bush floating
+     *   beside it: the reported "half of trunk and leafs structure".
+     *
+     *   NOTHING IS ON THE GROUND. Every one of the 112 is pinned at a constant
+     *   y - -2.12 for trunks, 18.69 for crowns - with no reference to any
+     *   surface. That was survivable when the level shipped its own flat
+     *   terrain. buildLandscape replaced that terrain with a height field that
+     *   reaches 340 units, and a tree at a fixed height in a landscape that is
+     *   not is either standing on air or buried to the crown - which is the
+     *   reported "trees with no trunks" and "trees with no leaves", depending
+     *   only on how deep the ground happens to be where it stands.
+     *
+     *   THEY ARE NOT BY THE ROAD. Their distance from the centreline runs from
+     *   69.7 units to 5,440, over 53 stations of a 173 km course.
+     *
+     * So the placement is regenerated rather than repaired, and THE ART IS NOT
+     * TOUCHED. The two shipped meshes are stamped into the dressing arena
+     * exactly as exported - the same 99- and 190-vertex geometry, the same
+     * unwrap, the same sheets - and only the transform is this function's
+     * work. The alpha in palm_trunk.png and palm_leaf.png is binary and covers
+     * 2% of a 1024 square: these are neon WIREFRAMES, and any UV of my own
+     * invention would have thrown the artist's line work away. Nothing here
+     * invents a leaf.
+     *
+     * GEOMETRY, NOT INSTANCES. A coast road wants palms every few car lengths,
+     * and at two draw calls each that is most of a frame's budget spent on
+     * trees. Stamped into the arena they are one batch per 2 km chunk, which
+     * is what every other piece of dressing already costs.
+     *
+     * WHERE THE JOINT COMES FROM. Not from a constant. The trunk's top and the
+     * point where the fronds converge are both MEASURED off the meshes below,
+     * so a re-exported palm of a different height still assembles.
+     */
+    buildPalms(ctx) {
+      const { C, push, tri, sweep } = ctx;
+      const man = this.man;
+      const SV = this.srcVerts, SI = this.srcIdx;
+      if (!SV || !SI || !C) return;
+      const byName = {};
+      for (const m of man.meshes) byName[m.name] = m;
+      const trunk = byName['trunk'], crown = byName['palms'];
+      if (!trunk || !crown) return;
+
+      /* The centroid of the slice of a mesh nearest one end of its own long
+         axis - which for these two, exported Z-up, is local z. */
+      const capOf = (mesh, hi) => {
+        let z0 = Infinity, z1 = -Infinity;
+        for (let i = mesh.vOff; i < mesh.vOff + mesh.vCount; i++) {
+          const z = SV[i * 8 + 2];
+          if (z < z0) z0 = z;
+          if (z > z1) z1 = z;
+        }
+        const band = (z1 - z0) * 0.08;
+        const lim = hi ? z1 - band : z0 + band;
+        let cx = 0, cy = 0, cz = 0, n = 0;
+        for (let i = mesh.vOff; i < mesh.vOff + mesh.vCount; i++) {
+          const z = SV[i * 8 + 2];
+          if (hi ? z < lim : z > lim) continue;
+          cx += SV[i * 8]; cy += SV[i * 8 + 1]; cz += z; n++;
+        }
+        return n ? [cx / n, cy / n, cz / n] : [0, 0, hi ? z1 : z0];
+      };
+      /* The trunk's top, and the point on the crown that has to meet it.
+
+         The crown's narrowest slice is its TOP, not its bottom: the fronds
+         radiate from the collar and droop, so the widest part of the cluster
+         is halfway down it and the tips hang below the collar entirely.
+         Measured, the top slice spans 1.9 units and the middle 4.9. Taking the
+         bottom would hang the whole crown off one frond tip. */
+      const joint = capOf(trunk, true);
+      const collar = capOf(crown, true);
+      // in the meshes' shared local frame, this is how far the crown must move
+      const DX = joint[0] - collar[0], DY = joint[1] - collar[1], DZ = joint[2] - collar[2];
+      if (!(joint[2] - capOf(trunk, false)[2] > 0.5)) return;
+
+      /* Deterministic, and the same every load. Not noise for its own sake: a
+         forest that reshuffles between runs makes every screenshot and every
+         bug report describe a different world. */
+      const hash = (a, b) => {
+        let h = (a * 374761393 + b * 668265263) | 0;
+        h = Math.imul(h ^ (h >>> 13), 1274126177);
+        return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+      };
+
+      /* Stamp one mesh through a 3x4 transform: bx/by/bz are the basis columns
+         and t the translation. Normals take the basis without the translation
+         and are renormalised, because the basis is NOT uniform - a palm is
+         scaled differently along its trunk than across it. */
+      const stamp = (mesh, bx, by, bz, t) => {
+        const map = new Int32Array(mesh.vCount);
+        for (let i = 0; i < mesh.vCount; i++) {
+          const o = (mesh.vOff + i) * 8;
+          const x = SV[o], y = SV[o + 1], z = SV[o + 2];
+          const nx = SV[o + 3], ny = SV[o + 4], nz = SV[o + 5];
+          const mx = bx[0] * nx + by[0] * ny + bz[0] * nz;
+          const my = bx[1] * nx + by[1] * ny + bz[1] * nz;
+          const mz = bx[2] * nx + by[2] * ny + bz[2] * nz;
+          const l = Math.hypot(mx, my, mz) || 1;
+          map[i] = push(
+            [bx[0] * x + by[0] * y + bz[0] * z + t[0],
+             bx[1] * x + by[1] * y + bz[1] * z + t[1],
+             bx[2] * x + by[2] * y + bz[2] * z + t[2]],
+            [mx / l, my / l, mz / l],
+            [SV[o + 6], SV[o + 7]]);
+        }
+        for (let k = 0; k < mesh.iCount; k += 3) {
+          tri(map[SI[mesh.iOff + k] - mesh.vOff],
+              map[SI[mesh.iOff + k + 1] - mesh.vOff],
+              map[SI[mesh.iOff + k + 2] - mesh.vOff]);
+        }
+      };
+
+      /* Where palms grow. The coast road carries them in force; the canyon
+         after it takes them away over six kilometres rather than at a line,
+         because a species that stops dead at a zone boundary is the same
+         "assembled rather than made" tell the two-terrain seam used to be. */
+      const COAST_TO = 13000, FADE_TO = 19000;
+      const density = (s) => (s < COAST_TO ? 1
+        : s < FADE_TO ? 1 - (s - COAST_TO) / (FADE_TO - COAST_TO) : 0);
+
+      /* One palm. Everything about it is derived; nothing is placed by hand.
+
+         The basis is the shipped convention - the meshes are Z-up and the
+         world is Y-up, so local z becomes world up - with a yaw of its own and
+         a lean applied to all three columns at once. */
+      const plant = (i, lat, k, yaw, lean, leanAz, which) => {
+        const c = C.yaw[i];
+        const rx = Math.cos(c), rz = -Math.sin(c);
+        const px = C.x[i] + rx * lat, pz = C.z[i] + rz * lat;
+        /* Never in the road, and never in ANOTHER pass of the same road. This
+           course comes back within 452 units of itself, so a tree placed by
+           lateral offset alone can land on a carriageway two zones away. */
+        const q = this.roadAt ? this.roadAt(px, pz) : null;
+        if (q && q.d < ROAD_HALF + 8) return false;
+        const gy = this.groundHeight ? this.groundHeight(px, pz) : 0;
+        if (!isFinite(gy)) return false;
+
+        const sh = 4.33 * k, sv = 3.47 * k;
+        const cy = Math.cos(yaw), sy = Math.sin(yaw);
+        let bx = [cy * sh, 0, sy * sh];
+        let by = [sy * sh, 0, -cy * sh];
+        let bz = [0, sv, 0];
+        if (lean > 1e-4) {
+          /* Rodrigues about a horizontal axis a: v cos + (a x v) sin + a(a.v)(1-cos).
+             a is horizontal, so a.y is zero and the middle term collapses. */
+          const ax = -Math.sin(leanAz), az = Math.cos(leanAz);
+          const cl = Math.cos(lean), sl = Math.sin(lean), ic = 1 - cl;
+          const rot = (v) => {
+            const d = ax * v[0] + az * v[2];
+            return [
+              v[0] * cl - az * v[1] * sl + ax * d * ic,
+              v[1] * cl + (az * v[0] - ax * v[2]) * sl,
+              v[2] * cl + ax * v[1] * sl + az * d * ic,
+            ];
+          };
+          bx = rot(bx); by = rot(by); bz = rot(bz);
+        }
+        /* Sunk a little. The height field is sampled at the trunk's axis and
+           the ground under a two-metre bole is not level, so a palm placed
+           exactly on its own sample stands on one edge of its base on any
+           slope. Burying the collar is what a real one does anyway. */
+        const t = [px, gy - 1.5 * k, pz];
+        const crownT = [
+          t[0] + bx[0] * DX + by[0] * DY + bz[0] * DZ,
+          t[1] + bx[1] * DX + by[1] * DY + bz[1] * DZ,
+          t[2] + bx[2] * DX + by[2] * DY + bz[2] * DZ,
+        ];
+        if (which === trunk) {
+          stamp(trunk, bx, by, bz, t);
+          /* The three measurements, taken on the transform that was actually
+             used rather than on the one that was intended. */
+          const put = (b, v) => [
+            b[0] + bx[0] * v[0] + by[0] * v[1] + bz[0] * v[2],
+            b[1] + bx[1] * v[0] + by[1] * v[1] + bz[1] * v[2],
+            b[2] + bx[2] * v[0] + by[2] * v[1] + bz[2] * v[2],
+          ];
+          const foot = put(t, base), top = put(t, joint), col = put(crownT, collar);
+          const gap = foot[1] - gy;                 // + floats, - is buried
+          chk.n++;
+          if (gap < chk.groundLo) chk.groundLo = gap;
+          if (gap > chk.groundHi) chk.groundHi = gap;
+          const je = Math.hypot(top[0] - col[0], top[1] - col[1], top[2] - col[2]);
+          if (je > chk.jointMax) chk.jointMax = je;
+          if (q) {
+            if (q.d < chk.distLo) chk.distLo = q.d;
+            if (q.d > chk.distHi) chk.distHi = q.d;
+            if (q.s < chk.sLo) chk.sLo = q.s;
+            if (q.s > chk.sHi) chk.sHi = q.s;
+          }
+        } else stamp(crown, bx, by, bz, crownT);
+        return true;
+      };
+
+      /* The stations. Walked in ARC LENGTH rather than in samples, so the
+         spacing is the same through a corner as down a straight, and emitted
+         through `sweep` so each 2 km chunk becomes its own batch and the
+         culling every other piece of dressing gets applies to these too.
+
+         The two meshes are TWO passes, not one batch. They sample different
+         sheets - palm_trunk.png and palm_leaf.png - and a single batch would
+         have to pick one of them, which would index the trunk's unwrap into
+         the frond sheet and throw away half the artist's line work. Placement
+         is a pure function of the station index, so running the walk twice
+         puts the second pass's crowns on exactly the first pass's trunks. */
+      const STEP = 58;
+      let planted = 0;
+      /* WHAT THE FIX HAS TO BE MEASURED ON, and it is measured here rather than
+         asserted in a comment. All three of the reported faults are quantities:
+         how far a trunk's base is from the ground it stands on, how far the
+         crown's collar is from the top of that trunk, and how far the whole
+         thing is from the road. tools/smoke.js --probe palms reads this. */
+      const chk = this.palmCheck = {
+        n: 0, groundLo: 1e9, groundHi: -1e9, jointMax: 0,
+        distLo: 1e9, distHi: -1e9, sLo: 1e9, sHi: -1e9,
+      };
+      const base = capOf(trunk, false);
+      const emit = (which) => (a, b) => {
+        const s0 = a * C.step, s1 = b * C.step;
+        if (density(s0) <= 0 && density(s1) <= 0) return;
+        for (let s = Math.ceil(s0 / STEP) * STEP; s < s1; s += STEP) {
+          const d = density(s);
+          if (d <= 0) continue;
+          const i = Math.min(C.count - 1, Math.round(s / C.step));
+          if (hash(i, 1) > d) continue;             // the taper, as a probability
+          /* A cluster, not a picket line. Palms grow in groups, and a group of
+             three costs one station rather than three - which is most of how
+             this reads dense at a fraction of the vertex budget an even
+             spacing of the same count would need. */
+          const n = 1 + (hash(i, 2) < 0.45 ? 1 : 0) + (hash(i, 3) < 0.22 ? 1 : 0);
+          for (let j = 0; j < n; j++) {
+            const h1 = hash(i, 10 + j), h2 = hash(i, 20 + j), h3 = hash(i, 30 + j);
+            const h4 = hash(i, 40 + j), h5 = hash(i, 50 + j);
+            /* Which side. The coast zone is asymmetric - open water one way, a
+               bluff the other - and palms belong on the seafront, so the
+               seaward side takes two thirds of them. See the coast case in
+               buildLandscape's profile for which sign that is. */
+            const side = h1 < 0.66 ? 1 : -1;
+            const lat = side * (30 + h2 * 46);
+            const k = 0.34 + h3 * 0.20;             // a trunk 15 to 23 units tall
+            /* Leaning AWAY from the road, by up to about seven degrees. A palm
+               leaning over the carriageway reads as an obstacle in a game
+               where the things beside the road usually are one. */
+            const leanAz = (side > 0 ? 0 : Math.PI) + (h5 - 0.5) * 1.1;
+            const ok = plant(i, lat, k, h4 * Math.PI * 2, 0.02 + h5 * 0.11, leanAz, which);
+            if (ok && which === trunk) planted++;
+          }
+        }
+      };
+      sweep(this.palmMat('trunk'), 'emissive', emit(trunk));
+      sweep(this.palmMat('leaf'), 'emissive', emit(crown));
+      this.palmCount = planted;
+    }
+
+    /* The palm material.
+     *
+     * Cloned from the shipped PalmLeafGlow rather than reused, for one reason:
+     * the shipped one is `glow`, the additive pass. Additive is right for a
+     * light strip and wrong for a tree - it makes every palm transparent, lets
+     * two of them one behind the other read as one brighter one, and puts a
+     * few hundred objects into the depth-sorted list every frame. These are
+     * alpha-cut line art on a solid silhouette, which is `emissive`: the mode
+     * the renderer's own comment names for "palms, trees, tunnel rings", and
+     * the one the billboards on the same road already use. It writes depth,
+     * needs no sorting, and is what lets a palm occlude what is behind it.
+     *
+     * Everything else - the sheet, the emission, the gain, the cut-off - is
+     * the artist's, unchanged.
+     */
+    palmMat(which) {
+      const cache = (this._palmMat = this._palmMat || {});
+      if (cache[which]) return cache[which];
+      const leaf = which === 'leaf';
+      const src = (this.man.materials || [])
+        .find((m) => m.name === (leaf ? 'PalmLeafGlow' : 'PalmTrunkGlow')) || {};
+      return (cache[which] = mat({
+        name: leaf ? 'PalmLeafSet' : 'PalmTrunkSet',
+        tex: src.tex || (leaf ? 'palm_leaf.png' : 'palm_trunk.png'),
+        mode: 'emissive',
+        color: src.color || [1, 1, 1, 1],
+        tint: src.tint || [0.5, 0.5, 0.5, 0.5],
+        emis: src.emis || [0, 0.0312, 0.6471],
+        gain: src.gain === undefined ? 0.3393 : src.gain,
+        cutoff: src.cutoff === undefined ? 0.25 : src.cutoff,
+      }));
     }
 
     /** Environment name at a course distance, shared with the radio mixer. */
@@ -2193,7 +2505,13 @@
          more - it just reallocates and re-derives the views, which is exactly
          what should not happen on the common path. */
       const Geo = global.NR.Geo;
-      Geo.reset(380000 * 8, 1250000);
+      /* Raised from 380,000 for the palms: they are the only dressing that
+         stamps an imported mesh rather than generating its own, so they are
+         289 vertices each rather than the dozen a strip of paint costs, and a
+         coast road's worth of them is about 135,000. Growth still works - it
+         just reallocates and re-derives every view, which is exactly what
+         should not happen on the common path. */
+      Geo.reset(450000 * 8, 1250000);
 
       /* Every emitter goes through these three, so the reservation and the
          re-derivation after a growth live in exactly one place.
@@ -2946,6 +3264,14 @@
       this.buildLandscape({ Geo, parts, push, quad, tri, begin, end, sweep, walk, at,
                             nearTunnel, C, shipped, shippedLen });
 
+
+      /* The palms.
+       *
+       * See Scene.buildPalms. It has to run after buildLandscape, because
+       * every one of them is planted on the height field that builds, and
+       * before the arena is uploaded - which is here.
+       */
+      this.buildPalms({ Geo, parts, push, tri, sweep, C, at });
       if (!Geo.iLen) { this.dressing = []; this.dressingOpaque = []; this.dressingGlow = []; return; }
 
       this.exVao = gl.createVertexArray();
@@ -4919,7 +5245,6 @@
          palms, billboards, the sun, the haze dome, the gantry - stays. */
       const world = [];
       for (const i of (man.world || [])) {
-        if (/^terrain_sunset/.test(i.name || '')) continue;
         /* ...and neither are the four shipped tunnel facades.
            A facade is a pale concrete slab several times wider than the bore,
            and it is drawn in FRONT of the generated neon portal - so the two
@@ -5423,6 +5748,11 @@
       const gl = this.gl;
       o = o || {};
       gl.useProgram(this.prog.prog);
+      /* The one place the scene program is made current, and therefore the one
+         place the material cache has to be dropped: another pass has been
+         running since the last draw and the texture bound to unit 0 is not
+         necessarily the one the cache thinks it is. */
+      this.invalidateMaterial();
       gl.bindVertexArray(this.vao);
       U.m4(gl, this.prog.u.uVP, vp);
       this._frustumEye = camPos;
@@ -5510,6 +5840,35 @@
       gl.activeTexture(gl.TEXTURE0);
     }
 
+    /* ONE DRAW, AND EVERYTHING THAT DOES NOT CHANGE BETWEEN TWO OF THEM.
+     *
+     * This function used to upload EIGHTEEN uniforms and bind a texture on
+     * every call, unconditionally, whether or not anything about the material
+     * had changed since the last one. Measured on Chapter 7 with the real GPU:
+     * 792 draw calls a frame, so about fourteen thousand GL calls a frame just
+     * to restate values that were almost always already correct - and the CPU
+     * profile said so plainly, with `uniform1f` appearing four separate times
+     * in the top eighteen self-time entries, `uniformMatrix4fv` twice, and
+     * `uniform4f` and `bindVertexArray` besides. That was the frame.
+     *
+     * WHY A CACHE IS SAFE HERE. Uniform values are per-PROGRAM-OBJECT state in
+     * GL: they survive `useProgram` switching away and back, so the shadow and
+     * sky passes cannot invalidate them. What they can invalidate is the bound
+     * TEXTURE, which is per-unit global state - so the cache is cleared in
+     * `bind`, which is the single place the scene program is made current, and
+     * that is also once per pass per frame.
+     *
+     * WHAT MAKES A MATERIAL "THE SAME". Its identity, plus the frame. Two of
+     * its uniforms are functions of the clock - `pulse` and the scrolling
+     * chevrons' `scroll` - so a cache keyed on identity alone would freeze
+     * both. Keyed on identity AND `this.time` it cannot: a new frame is a new
+     * key, so the first draw of each material each frame pays in full and
+     * every repeat after it is free.
+     *
+     * The mode and the model matrix are NOT cached. `mode` belongs to the part
+     * rather than the material, and the matrix is different for every draw by
+     * definition - caching it would be the one lookup guaranteed to miss.
+     */
     drawPart(p, modelOverride) {
       const gl = this.gl;
       /* One counter, on the one function every shaded draw in the game goes
@@ -5520,54 +5879,71 @@
          drawing its production hall seven times a frame unnoticed. */
       this.drawCalls++;
       const mat = p.mat;
-      const tex = mat && mat.tex && this.tex[mat.tex] ? this.tex[mat.tex] : this.white;
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      U.i(gl, this.prog.u.uHasTex, mat && mat.tex && this.tex[mat.tex] ? 1 : 0);
-      const c = mat ? mat.color : [1, 1, 1, 1];
-      U.v4(gl, this.prog.u.uColor, c[0], c[1], c[2], c[3]);
-      const tn = (mat && mat.tint) ? mat.tint : [0.5, 0.5, 0.5, 0.5];
-      U.v4(gl, this.prog.u.uTint, tn[0], tn[1], tn[2], tn[3]);
-      const e = (mat && mat.emis) ? mat.emis : [0, 0, 0];
-      U.v3(gl, this.prog.u.uEmis, e[0], e[1], e[2]);
-      U.f(gl, this.prog.u.uGain, mat ? (mat.gain || 0) : 0);
-      U.f(gl, this.prog.u.uCutoff, mat ? (mat.cutoff === undefined ? 0.25 : mat.cutoff) : 0.25);
-      const t = mat ? mat.tiling : [1, 1];
-      const o = mat ? mat.offset : [0, 0];
-      // the guidance chevrons scroll down the road, which is what turns a
-      // static stripe into something that reads as flow
-      const scroll = (mat && mat.scroll) ? mat.scroll * this.time : 0;
-      U.v4(gl, this.prog.u.uST, t[0], t[1], o[0] + scroll, o[1]);
-      U.f(gl, this.prog.u.uSmooth, this.smoothnessOf(mat));
-      U.f(gl, this.prog.u.uMetal, this.metalOf(mat));
-      U.f(gl, this.prog.u.uReflect, this.reflectOf(mat));
-      U.f(gl, this.prog.u.uEmisPulse, (mat && mat.pulse) ? mat.pulse(this.time) : 1);
-      U.f(gl, this.prog.u.uFogScale, (mat && mat.noFog) ? 0 : 1);
-      U.f(gl, this.prog.u.uFadeV, (mat && mat.fadeV) ? mat.fadeV : 0);
-      U.f(gl, this.prog.u.uClearcoat, this.clearcoatOf(mat));
-      const nrm = mat && mat.nrm ? this.tex[mat.nrm] : null;
-      if (nrm) {
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, nrm);
-        gl.activeTexture(gl.TEXTURE0);
-        U.i(gl, this.prog.u.uNrm, 2);
-        const nt = this.nrmTileOf(mat);
-        U.v2(gl, this.prog.u.uNrmTile, nt[0], nt[1]);
+      if (mat !== this._matLast || this.time !== this._matTime) {
+        this._matLast = mat;
+        this._matTime = this.time;
+        this.matUploads++;
+        const tex = mat && mat.tex && this.tex[mat.tex] ? this.tex[mat.tex] : this.white;
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        U.i(gl, this.prog.u.uHasTex, mat && mat.tex && this.tex[mat.tex] ? 1 : 0);
+        const c = mat ? mat.color : [1, 1, 1, 1];
+        U.v4(gl, this.prog.u.uColor, c[0], c[1], c[2], c[3]);
+        const tn = (mat && mat.tint) ? mat.tint : [0.5, 0.5, 0.5, 0.5];
+        U.v4(gl, this.prog.u.uTint, tn[0], tn[1], tn[2], tn[3]);
+        const e = (mat && mat.emis) ? mat.emis : [0, 0, 0];
+        U.v3(gl, this.prog.u.uEmis, e[0], e[1], e[2]);
+        U.f(gl, this.prog.u.uGain, mat ? (mat.gain || 0) : 0);
+        U.f(gl, this.prog.u.uCutoff, mat ? (mat.cutoff === undefined ? 0.25 : mat.cutoff) : 0.25);
+        const t = mat ? mat.tiling : [1, 1];
+        const o = mat ? mat.offset : [0, 0];
+        // the guidance chevrons scroll down the road, which is what turns a
+        // static stripe into something that reads as flow
+        const scroll = (mat && mat.scroll) ? mat.scroll * this.time : 0;
+        U.v4(gl, this.prog.u.uST, t[0], t[1], o[0] + scroll, o[1]);
+        U.f(gl, this.prog.u.uSmooth, this.smoothnessOf(mat));
+        U.f(gl, this.prog.u.uMetal, this.metalOf(mat));
+        U.f(gl, this.prog.u.uReflect, this.reflectOf(mat));
+        U.f(gl, this.prog.u.uEmisPulse, (mat && mat.pulse) ? mat.pulse(this.time) : 1);
+        U.f(gl, this.prog.u.uFogScale, (mat && mat.noFog) ? 0 : 1);
+        U.f(gl, this.prog.u.uFadeV, (mat && mat.fadeV) ? mat.fadeV : 0);
+        U.f(gl, this.prog.u.uClearcoat, this.clearcoatOf(mat));
+        const nrm = mat && mat.nrm ? this.tex[mat.nrm] : null;
+        if (nrm) {
+          gl.activeTexture(gl.TEXTURE2);
+          gl.bindTexture(gl.TEXTURE_2D, nrm);
+          gl.activeTexture(gl.TEXTURE0);
+          U.i(gl, this.prog.u.uNrm, 2);
+          const nt = this.nrmTileOf(mat);
+          U.v2(gl, this.prog.u.uNrmTile, nt[0], nt[1]);
+        }
+        U.f(gl, this.prog.u.uHasNrm, nrm ? 1 : 0);
+        const em = mat && mat.emisTex ? this.tex[mat.emisTex] : null;
+        if (em) {
+          gl.activeTexture(gl.TEXTURE4);
+          gl.bindTexture(gl.TEXTURE_2D, em);
+          gl.activeTexture(gl.TEXTURE0);
+          U.i(gl, this.prog.u.uEmisTex, 4);
+          const et = mat.emisTile || [1, 1];
+          U.v2(gl, this.prog.u.uEmisTile, et[0], et[1]);
+        }
+        U.f(gl, this.prog.u.uHasEmisTex, em ? 1 : 0);
       }
-      U.f(gl, this.prog.u.uHasNrm, nrm ? 1 : 0);
-      const em = mat && mat.emisTex ? this.tex[mat.emisTex] : null;
-      if (em) {
-        gl.activeTexture(gl.TEXTURE4);
-        gl.bindTexture(gl.TEXTURE_2D, em);
-        gl.activeTexture(gl.TEXTURE0);
-        U.i(gl, this.prog.u.uEmisTex, 4);
-        const et = mat.emisTile || [1, 1];
-        U.v2(gl, this.prog.u.uEmisTile, et[0], et[1]);
+      /* Per PART, not per material: two batches sharing a material can still
+         be drawn in different modes, and every draw has its own matrix. */
+      if (p.mode !== this._matMode) {
+        this._matMode = p.mode;
+        U.i(gl, this.prog.u.uMode, p.mode);
       }
-      U.f(gl, this.prog.u.uHasEmisTex, em ? 1 : 0);
-      U.i(gl, this.prog.u.uMode, p.mode);
       U.m4(gl, this.prog.u.uModel, modelOverride || p.m);
       gl.drawElements(gl.TRIANGLES, p.sub.count, gl.UNSIGNED_INT,
         (p.mesh.iOff + p.sub.start) * 4);
+    }
+
+    /** Forget the cached material. See the note on `drawPart`. */
+    invalidateMaterial() {
+      this._matLast = null;
+      this._matTime = -1;
+      this._matMode = -1;
     }
 
     /* THE VIEW FRUSTUM, FROM THE MATRIX THAT DEFINES IT.

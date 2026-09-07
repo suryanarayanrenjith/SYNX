@@ -201,47 +201,6 @@
     return {vao,vb,ib,count:I.length};
   }
 
-  /* A flat-shaded multi-section monocoque. Cubes are useful for mechanisms,
-     but a boss car built only from stretched boxes reads like armour strapped
-     to a normal street car. These sections make one continuous low wedge with
-     a needle nose, pinched waist and enormous rear haunches. */
-  function makeFacetedHull(gl, sections) {
-    const V=[],I=[];
-    const pushQuad=(a,b,c,d)=>{
-      const ab=[b[0]-a[0],b[1]-a[1],b[2]-a[2]],ac=[c[0]-a[0],c[1]-a[1],c[2]-a[2]];
-      let nx=ab[1]*ac[2]-ab[2]*ac[1],ny=ab[2]*ac[0]-ab[0]*ac[2],nz=ab[0]*ac[1]-ab[1]*ac[0];
-      const il=1/Math.max(1e-6,Math.hypot(nx,ny,nz));nx*=il;ny*=il;nz*=il;
-      const o=V.length/8,pts=[a,b,c,d],uv=[[0,0],[1,0],[1,1],[0,1]];
-      for(let k=0;k<4;k++)V.push(pts[k][0],pts[k][1],pts[k][2],nx,ny,nz,uv[k][0],uv[k][1]);
-      I.push(o,o+1,o+2,o,o+2,o+3);
-    };
-    const ring=s=>({
-      lb:[-s.wb,s.yb,s.z],rb:[s.wb,s.yb,s.z],rt:[s.wt,s.yt,s.z],lt:[-s.wt,s.yt,s.z],
-    });
-    const R=sections.map(ring);
-    for(let i=0;i<R.length-1;i++){
-      const a=R[i],b=R[i+1];
-      pushQuad(a.lt,a.rt,b.rt,b.lt);        // top
-      pushQuad(b.lb,b.rb,a.rb,a.lb);        // floor
-      pushQuad(a.lb,a.lt,b.lt,b.lb);        // left flank
-      pushQuad(b.rb,b.rt,a.rt,a.rb);        // right flank
-    }
-    const f=R[0],r=R[R.length-1];
-    pushQuad(f.lb,f.rb,f.rt,f.lt);
-    pushQuad(r.lb,r.lt,r.rt,r.rb);
-    const vao=gl.createVertexArray();gl.bindVertexArray(vao);
-    const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);
-    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(V),gl.STATIC_DRAW);
-    const ib=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint32Array(I),gl.STATIC_DRAW);
-    const stride=8*4;
-    gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,stride,0);
-    gl.enableVertexAttribArray(1);gl.vertexAttribPointer(1,3,gl.FLOAT,false,stride,12);
-    gl.enableVertexAttribArray(2);gl.vertexAttribPointer(2,2,gl.FLOAT,false,stride,24);
-    gl.bindVertexArray(null);
-    return {vao,vb,ib,count:I.length};
-  }
-
   /* One part of the R-IX's own hardware.
    *
    * `opts` is what the first version of this did not have, and its absence is
@@ -1868,6 +1827,11 @@
      forty units of tarmac inside a barrier at twenty, so three lanes wide
      enough to take a car at speed leaves the dividers at just under seven. */
   const CHUTE = [-13, 0, 13], DIVIDER = 6.8;
+  /* How far from the centreline a car can reach on the Forge deck. LEVELS[5]
+     names no driveHalf of its own, so it takes NR.DRIVE_HALF - and the scrap
+     line has to solve against the same number the physics does, or a ram that
+     is meant to cover the road leaves a lane down one edge of it. */
+  const DRIVE_HALF6 = 18;
 
   function makeCube(gl) {
     const V=[],I=[], face=(n,a,b,c,d)=>{
@@ -2705,20 +2669,53 @@
         this.at(g.s-16,CHUTE[g.live],3.4,8.0,1.1,.5,this.red);
         for(const side of[-1,1])this.at(g.s-8,CHUTE[g.live]+side*5.6,3.0,.5,2.2,1.0,this.red);
       }
-      this.crusher(g);
+      this.crushers(g);
     }
 
-    /* The car crusher. A baling press: an infeed bed with jaws, two side rams
-       and a top platen, in a frame heavy enough to look like it does this all
-       day. It runs its cycle whether or not anybody drives into it, which is
-       the only honest telegraph a hazard like this can have. */
-    crusher(g) {
-      const x=CHUTE[g.live],s=g.s+150,t=this.g.time;
+    /* The car crushers. THERE ARE THREE OF THEM NOW, and that is the fix.
+     *
+     * Reported: the sorting trial is readable from the far end of the hall,
+     * and not from anything the design intended.
+     *
+     * There was ONE baler and it stood in the live chute. Measured: its frame
+     * crown sits at y=12.6, its hazard cap at 13.5 and its beacon at 14.1. The
+     * chute walls that are supposed to hold the answer are 4.62 high. So nine
+     * units of moving machinery stood above the wall line in exactly one of
+     * the three bays, three hundred units before the player has to commit -
+     * and the amber bay plates, which were deliberately made identical so that
+     * nothing would give it away, were answering a question the silhouette had
+     * already settled. The moving parts were the loudest thing on the skyline.
+     *
+     * A scrap line has a baler on every chute. All three are built, all three
+     * run the SAME cycle off the same clock, and above the wall line they are
+     * indistinguishable - same frame, same crown, same platen, same stroke.
+     *
+     * What is left to read is INSIDE the bore, which is where the design
+     * always meant the answer to be: the live chute's chamber lamps are lit
+     * and its jaw plate is hot; the two dead ones are dark and their jaws are
+     * cold steel. Both of those parts sit BELOW the wall line. That is plainly
+     * visible a long
+     * way down a narrow corridor to a driver who looks into it, it is nothing
+     * at all to a driver reading the skyline, and it cannot be had from the
+     * silhouette - which is the whole difference between a trial and a tell.
+     */
+    crushers(g) {
+      for (let i = 0; i < 3; i++) this.crusher(g, i);
+    }
+    /* One baler. `live` decides whether it is LIT and whether it crushes. It
+       never decides whether the machine is there, and it never decides how it
+       moves: both of those were the giveaway. */
+    crusher(g, chute) {
+      const live=chute===g.live;
+      const x=CHUTE[chute],s=g.s+150,t=this.g.time;
+      /* One clock for all three. Not a per-chute phase: three balers on
+         visibly different strokes is the same tell in a quieter voice, because
+         the player only has to learn which stroke belongs to the live one. */
       const cyc=(t*.55)%1;
-      const jaw=g.crush?clamp(g.crushT/.55,0,1)
+      const jaw=(live&&g.crush)?clamp(g.crushT/.55,0,1)
         :(cyc<.34?smooth(cyc/.34):cyc<.62?1:1-smooth((cyc-.62)/.38));
-      const side=g.crush?smooth(clamp((g.crushT-.5)/1.1,0,1)):jaw*.30;
-      const top=g.crush?smooth(clamp((g.crushT-1.55)/1.05,0,1)):jaw*.26;
+      const side=(live&&g.crush)?smooth(clamp((g.crushT-.5)/1.1,0,1)):jaw*.30;
+      const top=(live&&g.crush)?smooth(clamp((g.crushT-1.55)/1.05,0,1)):jaw*.26;
       this.at(s,x,.55,17,1.1,34,this.concrete);
       for(const o of[-15,15])for(const q of[-1,1])this.at(s+o,x+q*8.4,6.2,1.9,12.4,1.9,this.deck);
       this.at(s,x,12.6,18.4,1.6,34,this.deck);
@@ -2730,16 +2727,28 @@
       this.at(s,x,10.4-top*7.2,15.4,1.7,28,this.steel);
       this.at(s,x,9.4-top*7.2,14.2,.30,26,this.hazard);
       this.at(s-19,x,1.1+jaw*3.4,15.0,2.2,1.6,this.steel);
-      this.at(s-19,x,1.1+jaw*3.4,14.0,.34,1.9,this.red);
-      /* Work lamps inside the chamber. Without them the whole machine is a
-         black box with a car somewhere in it: the hall's high bays are outside
-         and the platen shuts out what little of them reaches in. */
-      for(const q of[-1,1])for(const o of[-9,0,9]){
+      /* THE JAW PLATE IS THE READ. Hot red on the machine that is about to
+         take a car, cold steel on the two that are not - on a part that sits
+         at y=1.1..4.5, which is BELOW the 4.62 chute wall. It can only be seen
+         by looking down the bore, which is the whole point. */
+      this.at(s-19,x,1.1+jaw*3.4,14.0,.34,1.9,live?this.red:this.steel);
+      /* Work lamps inside the chamber, and only in the live one. Without them
+         the machine is a black box with a car somewhere in it: the hall's high
+         bays are outside and the platen shuts out what little reaches in. Lit
+         is therefore both the lighting and the tell, and it is contained
+         entirely inside a bore that is 34 units deep. */
+      if(live)for(const q of[-1,1])for(const o of[-9,0,9]){
         this.at(s+o,x+q*7.4,8.6,.7,.5,3.4,this.lamp);
         this.at(s+o,x+q*7.4,8.15,1.1,.22,3.0,this.lamp);
       }
       // the scrap already on the stack, so it is obvious what this machine is
       for(const k of[0,1,2])this.at(s+27,x+(k-1)*5.2,.9+k*.55,4.4,1.0,2.6,this.shell,0,0,(k-1)*.12);
+      /* The interlock beacon. It stands at 14.1 - the highest thing on the
+         machine and well clear of the 4.62 wall - so it is the one part of
+         this that MUST be identical on all three. Same colour, same strobe,
+         same clock. Giving the live one a hot lamp here would have undone the
+         whole change with a single flashing light, which is precisely the
+         shape of the bug being fixed. */
       if(Math.sin(t*6.2)>0)this.at(s,x,14.1,1.6,.9,1.6,this.amber);
     }
 
@@ -2747,12 +2756,25 @@
        Stamping presses straddling the road and a magnet on a traverse.
        Everything here is timing, and the only telegraph a press needs is that
        you can see it working. */
-    /* A press that straddles the ROAD. The first pass put its uprights at
-       `lane +- (half + 2.6)`, which for a ram covering the left half of the
-       carriageway plants a steel column at lateral +2 - in the middle of the
-       lane the trial is telling the player to take. The frame stands outside
-       the barrier where a frame belongs; the gibs the slide runs in exist only
-       above six units, so nothing but the ram itself is ever in the road. */
+    /* A PRESS THAT COVERS THE WHOLE CARRIAGEWAY.
+     *
+     * It used to cover a lane. `half` was 6.5 to 8.5 against a drivable half
+     * of 18, so every ram left twenty units of clear road beside it and the
+     * trial was "read which side and steer there" - a lane-choice puzzle with
+     * a stamping press drawn over it. The rhythm the four phases were built to
+     * teach was decoration, because nobody ever had to wait for anything.
+     *
+     * The slide now spans the full corridor and a little past it. There is no
+     * way round; there is only a way THROUGH, and it is open for about three
+     * fifths of every cycle. The trial is the one the phases were always
+     * describing: read the stroke, judge the closing speed, and go when it
+     * lifts.
+     *
+     * The frame is unchanged and still stands outside the barrier at +-21.6,
+     * where a frame belongs. What changed is the slide between the uprights,
+     * and the gibs it runs in - which have to move out with it, or the columns
+     * that used to sit beside a half-width ram end up in the road.
+     */
     stampCell(p) {
       const x=p.lane,drop=p.drop,y=11.2-drop*10.0;
       for(const q of[-1,1]){
@@ -2768,8 +2790,31 @@
       this.at(p.s,x,y,p.half*2,2.2,5.0,this.steel);
       this.at(p.s,x,y-1.25,p.half*2-.6,.34,4.6,this.hazard);
       for(const q of[-1,1])this.at(p.s,x+q*(p.half+.5),9.6,.6,7.4,.6,this.steel);
-      this.at(p.s-7,x,3.0,p.half*2+3,.24,.8,drop>.35?this.red:this.green);
+      /* THE STROKE, READ FROM BEHIND.
+       *
+       * A full-width ram is a timing gate, and a timing gate that can only be
+       * read by looking at the ram itself is unfair at a hundred and thirty:
+       * by the time the slide is legible against the roof of the hall the car
+       * is already committed. So the cell says what it is about to do, on the
+       * road, seven units before the bolster and across the whole width the
+       * ram will cover.
+       *
+       * Green while there is time to go, amber while the slide is falling and
+       * red while the way is shut. Three states rather than two, because the
+       * one thing a player has to be able to tell apart is "still open" from
+       * "closing now", and a bar that only knows open and shut cannot say it.
+       */
+      const bar=drop>.55?this.red:drop>.06?this.amber:this.green;
+      this.at(p.s-7,x,3.0,p.half*2+3,.24,.8,bar);
       this.at(p.s-7,x,3.0,p.half*2+3.4,.5,.4,this.deck);
+      /* ...and a countdown down the approach: a run of chevrons that lights up
+         toward the cell as the window closes, so the stroke has a length in
+         ROAD rather than only in time. Sixty units is about a second at deck
+         speed, which is the distance the decision is actually made over. */
+      for(let k=0;k<4;k++){
+        const lit=drop>.06?(k/4<drop):false;
+        this.at(p.s-22-k*14,x,.10,p.half*2-1.5,.06,2.4,lit?this.red:this.green);
+      }
     }
     magnetRig(m) {
       const t=this.g.time;
@@ -2953,6 +2998,8 @@
     bind(){const id=n=>global.document.getElementById(n);this.ui={root:id('forge6'),objective:id('forge6Objective'),strikes:id('forge6Strikes'),phase:id('forge6Phase'),objectiveText:id('forge6ObjectiveText'),rule:id('forge6Rule'),round:id('forge6Round'),roundKicker:id('forge6RoundKicker'),roundTitle:id('forge6RoundTitle'),roundCopy:id('forge6RoundCopy'),math:id('forge6Math'),question:id('forge6Question'),answers:id('forge6Answers'),mathTime:id('forge6MathTime'),skill:id('forge6Skill'),fatal:id('forge6Fatal'),fatalReason:id('forge6FatalReason')};
       this.ui.mathCaption=this.ui.math?this.ui.math.querySelector('small'):null;}
     reset(){
+      // ...and on a restart too. See beginGhost for why this is not optional.
+      if(this.g.driver)this.g.driver.paceScale=1;
       this.started=false;this.phase='idle';this.phaseTime=0;this.roundTime=0;this.prevS=START;this.strikes=0;this.invertTime=0;this.question=null;this.questionIndex=0;this.failTimer=0;this.raceModeActive=false;this.raceModeTimer=0;this.raceModeCooldown=0;this.reserveLoaded=false;this.truckCleared=false;this.truckClearT=0;this.truckPrompt=false;this.activationTime=0;this.skillFlash=0;this.finalStarted=false;
       this.gates=[
         {s:112760,gap:-8,gapW:7,open:false,checked:false,live:false,pop:0},{s:113410,gap:8,gapW:7,open:false,checked:false,live:false,pop:0},
@@ -2975,12 +3022,23 @@
       ];
       /* THE SCRAP LINE. Four presses on their own beat and a magnet on a
          traverse. `phase` is where in its cycle the ram is at t=0, so the four
-         of them never come down together and the run has a rhythm to learn. */
+         of them never come down together and the run has a rhythm to learn.
+
+         EVERY ONE OF THEM NOW SPANS THE ROAD. `lane` is 0 and `half` is 19
+         against a drivable half of 18, so the slide covers the corridor and
+         two units past it either side: there is no line through a closed ram,
+         only a time. That is what makes the four phases mean something - the
+         rhythm was always the trial, and a ram covering a lane let the player
+         ignore it and steer round instead.
+
+         The periods stay coprime-ish and the phases stay spread, so the four
+         gates never open together and the run has to be read one at a time
+         rather than sprinted through on one lucky window. */
       this.stamps=[
-        {s:122650,lane:-9,half:8.5,period:2.5,duty:.34,phase:.00,drop:0},
-        {s:123150,lane: 9,half:8.5,period:2.5,duty:.34,phase:.50,drop:0},
-        {s:123700,lane: 0,half:7.0,period:2.2,duty:.32,phase:.25,drop:0},
-        {s:124200,lane:-11,half:6.5,period:2.0,duty:.36,phase:.70,drop:0},
+        {s:122650,lane:0,half:19,period:2.5,duty:.34,phase:.00,drop:0},
+        {s:123150,lane:0,half:19,period:2.5,duty:.34,phase:.50,drop:0},
+        {s:123700,lane:0,half:19,period:2.2,duty:.32,phase:.25,drop:0},
+        {s:124200,lane:0,half:19,period:2.0,duty:.36,phase:.70,drop:0},
       ];
       this.magnet={s:124400,lat:0,dir:1,speed:5.2};
       /* THE GHOST LINE. Five scanning arches, and Aurora gets better at each
@@ -3110,10 +3168,15 @@
         for(const i of safe)if(Math.abs(CHUTE[i]-lat)<Math.abs(CHUTE[pick]-lat))pick=i;
         return CHUTE[pick];
       }
-      // the scrap line: past whichever half the ram is standing in
+      /* The scrap line used to hand back a lane to steer into. The rams cover
+         the whole carriageway now, so there is no such lane and saying there
+         is would drive Javas at a barrier: a full-width gate is answered with
+         the THROTTLE, in scrapPace, not with the wheel. Anything narrower than
+         the corridor is still worth going round. */
       for(const p of this.stamps){
         if(sAhead<p.s-320||sAhead>p.s+40)continue;
         const cover=[p.lane-p.half,p.lane+p.half];
+        if(cover[0]<=-DRIVE_HALF6&&cover[1]>=DRIVE_HALF6)return null;
         return cover[1]<15?clamp(cover[1]+3.5,-16,16):clamp(cover[0]-3.5,-16,16);
       }
       const m=this.magnet;
@@ -3387,15 +3450,62 @@
       this.showRound('LINE 04 // STAMPING','SCRAP LINE','THE RAMS DO NOT STOP FOR YOU. GO WHEN THEY LIFT.',3.4);
       this.g.story.showCompact('JAVAS','calm','Nothing on this line is aimed at you. That is what makes it dangerous.',4.0);
     }
+    /* WHERE A RAM IS IN ITS STROKE, as one function.
+
+       Both the animation and the two controllers that have to reason about it
+       read this, so there is exactly one description of the cycle. It used to
+       be written out inline in updateScrap and nowhere else, because nothing
+       else needed it - a lane-wide ram is steered around and never timed. */
+    ramDropAt(p,t){
+      const u=((t/p.period)+p.phase)%1;
+      // down for `duty` of the cycle, with a fast fall and a slower lift
+      return u<p.duty*.35?smooth(u/(p.duty*.35))
+        :u<p.duty?1
+        :u<p.duty+.30?1-smooth((u-p.duty)/.30):0;
+    }
+    /* WHAT JAVAS DOES ABOUT A GATE SHE CANNOT STEER ROUND.
+     *
+     * The rams cover the whole carriageway, so the lane hint that used to get
+     * the rival through them has nothing to offer - see laneFor. A full-width
+     * gate is answered with the throttle instead, and it has to be answered,
+     * or the one car on the road that the player is measuring themselves
+     * against spends the trial being punched backwards by a press.
+     *
+     * The controller aims for an absolute TIME rather than correcting an
+     * error: it works out when the next window is properly open and asks for
+     * the pace that arrives in the middle of it. That is what keeps it stable.
+     * A controller that slowed down while a gate was shut and sped up while it
+     * was open would chase its own tail at the frequency of the press, which
+     * is the same limit cycle the finale's R-IX spent three attempts on.
+     */
+    scrapPace(){
+      const r=this.g.rival;
+      if(!r||this.phase!=='scrap')return 1;
+      let best=null;
+      for(const p of this.stamps){
+        const d=p.s-(r.sTrack||0);
+        if(d>6&&d<300&&(!best||d<best.d))best={p,d};
+      }
+      if(!best)return 1;
+      const P=best.p,v=Math.max(20,r.vLong||0),now=this.g.time;
+      // wide open, not merely passable: the ram is fully up for the last
+      // stretch of every cycle, and that is the only part worth aiming at
+      const openFrom=P.duty+.30,openTo=1;
+      const eta=best.d/v;
+      const at=((now+eta)/P.period+P.phase)%1;
+      if(at>=openFrom&&at<openTo)return 1;     // already arriving in the clear
+      // ...otherwise aim at the middle of the next fully-open window
+      const want=openFrom+(openTo-openFrom)*.5;
+      const u0=((now/P.period)+P.phase)%1;
+      let du=want-u0; if(du<0)du+=1;
+      const target=du*P.period;                // seconds from now
+      return clamp(best.d/Math.max(.35,target)/v,.58,1.14);
+    }
     updateScrap(dt){
       const t=this.g.time,car=this.g.car;
-      for(const p of this.stamps){
-        const u=((t/p.period)+p.phase)%1;
-        // down for `duty` of the cycle, with a fast fall and a slower lift
-        p.drop=u<p.duty*.35?smooth(u/(p.duty*.35))
-          :u<p.duty?1
-          :u<p.duty+.30?1-smooth((u-p.duty)/.30):0;
-      }
+      for(const p of this.stamps)p.drop=this.ramDropAt(p,t);
+      // Javas times the gates rather than steering round them; see scrapPace
+      if(this.g.driver)this.g.driver.paceScale=this.scrapPace();
       const m=this.magnet;
       m.lat+=m.dir*m.speed*dt;
       if(m.lat>15){m.lat=15;m.dir=-1;}
@@ -3405,7 +3515,15 @@
 
     // ------------------------------------------ TRIAL 05: the ghost line --
     beginGhost(){
-      if(this.phase!=='scrap')return;this.phase='ghost';this.ui.phase.textContent='AURORA FORGE // TRIAL 05';this.ui.objectiveText.textContent='GHOST LINE';this.updateRule();this.mark(this.g.car.sTrack-40,'GHOST LINE');
+      if(this.phase!=='scrap')return;
+      /* HAND THE THROTTLE BACK. scrapPace writes paceScale on the SHARED
+         driver, and this chapter has already shipped one bug of exactly this
+         shape - a Chapter 6 lane-hint closure left installed on that driver,
+         which then told Chapter 7's R-IX to sit at +-13 for the whole finale.
+         State put on a shared object has to be taken off it at every exit, not
+         at the one the author was thinking about. */
+      if(this.g.driver)this.g.driver.paceScale=1;
+      this.phase='ghost';this.ui.phase.textContent='AURORA FORGE // TRIAL 05';this.ui.objectiveText.textContent='GHOST LINE';this.updateRule();this.mark(this.g.car.sTrack-40,'GHOST LINE');
       this.showRound('PREDICTION ARCH // R-IX FEED','GHOST LINE','IT FOLLOWS YOU UNTIL IT COMMITS. MOVE AFTER THAT, NOT BEFORE.',4.2);
       this.g.story.showCompact('JAVAS','calculating','It tracks. Steering early only tells it where you are going. Wait for the lock to go solid, then go.',5.2);
     }
@@ -3990,6 +4108,51 @@
      tolerance is wider than the strip is drawn, so a car that is visibly on the
      paint is always clear - what it costs is committing to a lane instead of
      drifting between them. */
+  /* ----------------------------------------------------- the stunt course --
+   *
+   * Three launch ramps in the quiet stretch between the tunnel at 162,290 and
+   * the tower run at 167,620 - the one part of Neon Horizon that was two and a
+   * half kilometres of clear expressway with nothing on it but scenery.
+   *
+   * WHAT A JUMP NEEDS THAT THIS GAME DID NOT HAVE. The solver is road-locked:
+   * a car's height is the road's elevation plus its spring travel, so there
+   * was no state in which it could be anywhere the road was not. The vertical
+   * dynamics are in crates/synx-core/src/vehicle.rs - see the note above
+   * `Ramp` there - and everything below is the COURSE: where the ramps are,
+   * what they look like, and what the landing is worth.
+   *
+   * THE RULE IS THE LANDING, not the jump. Anyone can drive up a ramp. The
+   * trial is arriving straight: the score is the angle between where the car
+   * is pointing and where the road is going at the moment the wheels touch,
+   * and a bad one scrubs speed rather than ending the run. That makes it a
+   * thing to get better at rather than a thing to survive, which is the same
+   * bargain every other trial on this route makes.
+   *
+   *   s        where the lip is
+   *   len      how long the incline is. Longer is a shallower ramp and a
+   *            flatter, faster flight; shorter throws the car higher and
+   *            gives it less time to be straightened out.
+   *   h        the lip's height above the deck
+   *   name     what the objective line calls it
+   *
+   * They get harder in the order they are met, which is the only progression
+   * a set piece with no dialogue in it can have.
+   */
+  const JUMPS=[
+    {id:'jump_a',s:163120,len:46,h:3.4,name:'FIRST LAUNCH'},
+    {id:'jump_b',s:164560,len:38,h:4.1,name:'SECOND LAUNCH'},
+    {id:'jump_c',s:166010,len:32,h:4.8,name:'LONG LAUNCH'},
+  ];
+  /* How far before the lip the ramp is armed and the approach is painted. It
+     has to be longer than the distance the car covers while the player reads
+     it: at deck speed that is about two seconds. */
+  const JUMP_TELEGRAPH=280;
+  /* What a landing has to score to count as clean. The solver's `landing` is
+     1 at dead straight and 0 at twelve degrees out, squared - so 0.62 is about
+     four and a half degrees, which is tight enough to be worth doing and wide
+     enough that a deliberate line through it lands it. */
+  const JUMP_CLEAN=0.62;
+
   const SAFE_TOL=5.6;
   /* THE GLASS RUN, AS A DISTANCE.
    *
@@ -4085,13 +4248,11 @@
        enough to stop it disappearing over the horizon and no more. */
     const ease=gapM<0?clamp(gapM/900,-.16,0):0;
     // terminal speed it wants, as a multiple of a stock car's
-    /* ...plus how badly he is losing. See PRESSURE_* - this is the whole of
-       the answer to being overtaken, and it is a term in the same curve rather
-       than a mode bolted beside it, so there is no state in which the two
-       disagree about how fast he should be going. */
-    const press=clamp(o.pressure===undefined?0:o.pressure,0,1);
+    /* There is no `pressure` term any more - see the long note above
+       RETAKE_CLEAR. What he does about being overtaken is entirely in `hunt`
+       and `surge` below, both of which are functions of the gap. */
     const match=(o.playerMode?PRED_MATCH_MODE:o.playerBoosting?PRED_MATCH_BOOST:PRED_MATCH_IDLE)
-      +(o.trapRun?TRAP_MATCH:0)+PRESSURE_MATCH*press;
+      +(o.trapRun?TRAP_MATCH:0);
     let wantV=clamp((match+ease)*(.97+.03*conf)+pursuit*.92,.90,PRED_MAX_PACE/1.05);
 
     /* THE FLOOR THE UPGRADES CANNOT GET UNDER.
@@ -4111,12 +4272,10 @@
     const lost=clamp((gapM-PRED_LOST_FROM)/(PRED_LOST_TO-PRED_LOST_FROM),0,1);
     return {
       pace:clamp(wantV*1.05,.92,PRED_MAX_PACE),
-      /* The ceiling. `chase` earns him speed for a gap that has already opened;
-         `press` earns it for a gap that is only a car's length old, which is
-         what makes an overtake answered immediately rather than a kilometre
-         later. */
-      top:PRED_TOP+chase*chase*PRED_CHASE_TOP+lost*PRED_LOST_TOP+PRESSURE_TOP*press,
-      chase,pursuit,wantV,press,
+      // The ceiling. `chase` earns him speed for a gap that has opened, and
+      // `lost` for one that has opened a long way.
+      top:PRED_TOP+chase*chase*PRED_CHASE_TOP+lost*PRED_LOST_TOP,
+      chase,pursuit,wantV,
       /* Torque, and barely any of it.
 
          Squaring the wanted speed gave 2.4x a stock car's drive, which at the
@@ -4155,48 +4314,47 @@
   const RIVALRY_LED=0.052, RIVALRY_PASS=0.30, RIVALRY_EASE=0.030, RIVALRY_HIT=0.10;
   /* ------------------------------------------------------------ PRESSURE --
    *
-   * WHAT REPLACED THE COUNTER-ATTACK, AND WHY IT HAD TO.
+   * THE COUNTER-ATTACK, AND WHY THERE IS NO LONGER ONE.
    *
-   * There used to be a timed burst: once the player had held the lead for a
-   * few seconds the R-IX spent a scripted eleven-second answer worth a quarter
-   * more pace and fifty units of extra ceiling, then sat in a seventeen-second
-   * cooldown during which nothing could provoke him at all. Beside it sat a
-   * SECOND timed burst answering raceMode, on its own nine-second timer and
-   * its own twenty-six-second cooldown.
+   * Two of them have stood here. The first was a timed burst: once the player
+   * had held the lead for a few seconds the R-IX spent a scripted eleven
+   * seconds worth a quarter more pace and fifty units of extra ceiling, then
+   * sat in a seventeen-second cooldown during which nothing could provoke him
+   * at all - which made him PASSIVE at exactly the moment the player had just
+   * gone past, the opposite of a predator.
    *
-   * Two overlapping state machines, five timers, and a boss whose behaviour
-   * depended on which of them happened to be running - so the same overtake
-   * produced a savage answer, a mild one, or none at all, and none of it was
-   * legible from the driving seat. Worse, being inside a cooldown made him
-   * PASSIVE at exactly the moment the player had just taken the lead, which is
-   * the opposite of a predator.
+   * It was replaced by `pressure`: one integrator, no states, no timers,
+   * rising while the player was in front and feeding extra terminal speed and
+   * extra ceiling into the same hunt curve everything else went through. That
+   * was a better shape and it worked.
    *
-   * This is one number instead. `pressure` is how badly he is losing, it rises
-   * while the player is in front and bleeds off while he is, and everything he
-   * does is a continuous function of it. No delay, no hold, no rest: the answer
-   * begins on the frame the player goes past, and it grows for as long as they
-   * stay there.
+   * BOTH ARE GONE NOW, removed on request. The reason is worth recording
+   * exactly, because the reason GIVEN for the removal was that the counter-
+   * attack was making the R-IX dash from one side of the deck to the other
+   * instead of racing - and it was not, and could not have been. Every term
+   * `pressure` fed was longitudinal: a terminal speed, a ceiling, a skill
+   * nudge and the reheat lamp. Not one of them could move the car sideways.
    *
-   * SIZED SO THE COUNTERPLAY IS STILL THE COUNTERPLAY. A stock car does 88
-   * units here; the Forge engine takes the player to about 96, boost to a
-   * hundred, raceMode to a hundred and thirty-three. `PRESSURE_TOP` puts his
-   * ceiling at 132 when he is fully provoked - comfortably past anything the
-   * player can hold on the engine and the boost alone, and a whisker under
-   * raceMode. Boost therefore does not shake him off, and the sync window
-   * still does. That is the chapter's whole argument, expressed as two
-   * numbers that can be checked. */
-  const PRESSURE_RISE=0.62;       // per second, at a lead worth answering
-  const PRESSURE_FALL=0.30;       // per second, once he is clear in front
-  const PRESSURE_LEAD=110;        // the lead, in units, that provokes him fully
-  /* Extra units/s of ceiling at full pressure. Eleven, not fourteen: at
-     fourteen his provoked ceiling was 132.0 against a sync window's 132.9, so
-     the counterplay came down to nine tenths of a unit per second and a player
-     spending the reward could not feel it working. Eleven leaves about four,
-     which over a thirty-second window is the hundred metres the chapter's
-     notes say it should be worth. */
-  const PRESSURE_TOP=11;          // extra units/s of ceiling at full pressure
-  const PRESSURE_MATCH=0.18;      // ...and extra terminal speed, as a multiple
-  const PRESSURE_CLEAR=9;         // he must be this far ahead before it bleeds
+   * The dash was in the general overtaking controller in ai::Driver, which
+   * committed to a side to pass on and then released and re-armed that
+   * commitment every time the lead changed hands - so on a route whose whole
+   * design keeps the two cars level, the side flipped every few seconds and
+   * the car chased it across the road. Seventeen units of travel, measured.
+   * That is fixed at source; see the long note in `drive`.
+   *
+   * WHAT ANSWERS AN OVERTAKE NOW is the hunt curve alone, and the hunt curve
+   * is a function of the GAP. He still comes back - a gap he has decided to
+   * close, closes - but he comes back over a few hundred units rather than
+   * immediately, and there is one fewer system with an opinion about how fast
+   * he ought to be going. Measured on the balance probe his ceiling is 118
+   * units/s against 129 with the counter-attack; the player's engine holds 96,
+   * boost 100 and the sync window 133, so boost still does not shake him off
+   * and raceMode still does. The chapter's argument is unchanged.
+   */
+  /* How far ahead he has to be before he claims the place back out loud. Not
+     zero: a car being drafted a metre behind has not been passed, and a line
+     that fires on every twitch of the gap is noise. */
+  const RETAKE_CLEAR=9;
 
   function confidenceDelta(sample){
     sample=sample||{};
@@ -4294,7 +4452,10 @@
       for(const q of [[ro,d],[ri,d],[ro,-d],[ri,-d]])V.push(c*q[0],s*q[0],q[1],0,0,q[1]>0?1:-1,i/n,q[0]===ro?1:0);}
     const at=(i,j)=>(i%n)*4+j;
     for(let i=0;i<n;i++){const j=i+1;I.push(at(i,0),at(i,1),at(j,1),at(i,0),at(j,1),at(j,0));I.push(at(i,2),at(j,3),at(i,3),at(i,2),at(j,2),at(j,3));}
-    return makeMesh(gl,V,I,'Neon7Ring');
+    /* The source geometry is kept, exactly as the cube's is, so ring items can
+       be merged too. Without it `bakeCubeItems` had no choice but to leave
+       every arch, gate and portal ring as an individual draw call. */
+    const mesh=makeMesh(gl,V,I,'Neon7Ring');mesh._sourceV=V;mesh._sourceI=I;return mesh;
   }
   function makeSphere(gl,segments,rings){
     const V=[],I=[],n=segments||24,m=rings||12;
@@ -4831,6 +4992,14 @@
       this.bakeCubeItems(this.itemsOpaque,this.opaque,'Opaque');
       this.bakeCubeItems(this.itemsGlow,this.glow,'Glow');
       this.bakeCubeItems(this.itemsHorizon,this.horizon,'Horizon');
+      /* ...and the rings, on the same three lists. Whatever the first pass
+         left behind is a ring instance, and there is nothing about a ring that
+         makes it less mergeable than a box. The blend list is deliberately not
+         merged: alpha is order-dependent, and grouping by chunk and material
+         reorders it. */
+      this.bakeCubeItems(this.itemsOpaque,this.opaque,'OpaqueRing',this.ring);
+      this.bakeCubeItems(this.itemsGlow,this.glow,'GlowRing',this.ring);
+      this.bakeCubeItems(this.itemsHorizon,this.horizon,'HorizonRing',this.ring);
       for(const list of[this.opaque,this.blend,this.glow,this.groundOpaque,this.groundGlow,this.horizon])list.sort((a,b)=>a.s0-b.s0);
       for(const list of[this.itemsOpaque,this.itemsBlend,this.itemsGlow,this.itemsHorizon])list.sort((a,b)=>a.s-b.s);
     }
@@ -4850,21 +5019,33 @@
      * back (see js/wasm.js); the JavaScript that used to do it inline is kept
      * as the fallback for a build without the core, and only for that.
      */
-    bakeCubeItems(items,meshList,label){
-      const groups=new Map(),keep=[],srcV=this.cube._sourceV,srcI=this.cube._sourceI,chunkSize=1800;
+    /* `src` is the mesh whose instances are being merged. It used to be the
+       cube and only the cube, which left every ring on the route - the arches,
+       the sensor gates, the portals - as one draw call each, for no reason
+       other than that the function had the cube's name on it. */
+    bakeCubeItems(items,meshList,label,src){
+      const source=src||this.cube;
+      const groups=new Map(),keep=[],srcV=source._sourceV,srcI=source._sourceI,chunkSize=1800;
+      if(!srcV||!srcI){items.length=items.length;return;}
       /* Group first, WITHOUT touching the matrices. Each group keeps the
          instances themselves; the numbers are only ever read once, straight
          into the core's own buffer, because copying them into an intermediate
          array is most of what this used to cost. */
       for(const e of items){
-        if(!e.p||e.p._mesh!==this.cube){keep.push(e);continue;}
+        if(!e.p||e.p._mesh!==source){keep.push(e);continue;}
         const ci=Math.floor((e.s-FROM)/chunkSize),key=ci+'|'+e.p.mat.name;
         let g=groups.get(key);
         if(!g){g={list:[],mat:e.p.mat,s0:FROM+ci*chunkSize,s1:FROM+(ci+1)*chunkSize};groups.set(key,g);}
         g.list.push(e.m);
       }
       items.length=0;items.push(...keep);
+      /* What the merge was worth, published rather than assumed. Two numbers:
+         how many instances went in and how many draw calls came out. A bake
+         that silently matches nothing looks exactly like a bake that worked. */
+      const B=this.bakeStats||(this.bakeStats={});
       for(const g of groups.values()){
+        B[label]=B[label]||{in:0,out:0};
+        B[label].in+=g.list.length;B[label].out++;
         const view=NR.bakeBegin?NR.bakeBegin(srcV,srcI,g.list.length):null;
         let mesh;
         if(view){
@@ -5542,6 +5723,86 @@
       scaled(m,a.x+rx*(lat||0),(a.y||0)+(y||0),a.z+rz*(lat||0),a.yaw+(yawOff||0),pitch||0,roll||0,sx,sy,sz);
       return m;
     }
+    /* ------------------------------------------------------ the ramps --
+     *
+     * THE RAMP THE PLAYER SEES IS THE RAMP THE SOLVER USES.
+     *
+     * The physics does not collide with a mesh: it has an arc-length window
+     * and a height profile, `h * u^2` over `[s - len, s]` - see the note above
+     * `Ramp` in the core. So this draws exactly that curve, sliced, rather
+     * than a wedge of its own devising. A ramp that looked steeper or
+     * shallower than the one being driven would be the worst kind of bug in a
+     * timing trial: everything the player reads would be a lie, and nothing
+     * would look broken.
+     *
+     * Full width, for the same reason. The window is arc length and knows
+     * nothing about lateral, so a narrow ramp would launch a car driving
+     * beside it. Spanning the carriageway keeps the picture and the simulation
+     * telling the same story, and it makes the jump a thing to be taken rather
+     * than a thing to be dodged.
+     */
+    /* Every ramp inside the drawn span. The ramps are STRUCTURE - they stand
+       on the road whether or not the chapter is running - so unlike the
+       hazards they are not gated on a director state, and Free Roam gets them
+       too. Only the approach paint is gated, because that is a cue for a trial
+       and there is no trial in a tour. */
+    drawJumps(lo,hi){
+      const J=this.g.__jumps;
+      for(const j of JUMPS){
+        if(j.s<lo-JUMP_TELEGRAPH-200||j.s>hi+200)continue;
+        this.stuntRamp(j,!!(J&&J.live&&J.live.id===j.id));
+      }
+    }
+    stuntRamp(j,armed){
+      const t=this.sc.time||0,SL=10,edge=DRIVE_HALF;
+      /* The incline, as ten slices of the curve it actually is. Each slice is
+         a box standing from the deck to the profile at its own midpoint, so
+         the top of the run is a stepped approximation of h*u^2 - and at ten
+         steps over forty units the steps are under a car's length. */
+      for(let k=0;k<SL;k++){
+        const u=(k+.5)/SL,y=j.h*u*u;
+        const ss=j.s-j.len+j.len*(k+.5)/SL;
+        this.drawPart(this.p.steel,
+          this.dynamicMatrix(ss,0,y*.5,edge*2,y,j.len/SL*1.04));
+        // the running surface, lit, so the climb reads as a surface and not a
+        // stack of boxes
+        this.drawPart(k&1?this.p.orange:this.p.yellow,
+          this.dynamicMatrix(ss,0,y+.05,edge*2-1.2,.06,j.len/SL*.72));
+      }
+      // the lip, and the edge lights that say where it ends
+      this.drawPart(this.p.white,this.dynamicMatrix(j.s,0,j.h+.10,edge*2,.10,1.4));
+      for(const side of[-1,1])
+        this.drawPart(this.p.cyan,this.dynamicMatrix(j.s,side*(edge-1.2),j.h+.5,1.0,1.0,1.6));
+      /* THE APPROACH, and the centre line to take it on.
+         A jump is aimed before it is taken: the car has to arrive straight, so
+         the thing to paint is the line, not the ramp. Chevrons down the middle
+         with a run of edge bars either side, brightening toward the lip. */
+      if(armed){
+        for(let k=0;k<9;k++){
+          const f=k/9,ss=j.s-j.len-JUMP_TELEGRAPH*(1-f);
+          const lit=(t*2.2+k*.34)%1<.5;
+          this.drawPart(lit?this.p.cyan:this.p.blue,
+            this.dynamicMatrix(ss,0,.14,3.0,.05,10.0));
+          for(const side of[-1,1])
+            this.drawPart(this.p.magenta,
+              this.dynamicMatrix(ss,side*(edge-2.0),.14,2.2,.05,6.0));
+        }
+      }
+      /* THE LANDING ZONE. Where the car is expected to come down, marked as a
+         box on the road with a line down the middle of it - so the aim is
+         visible from the top of the flight, which is the moment the player is
+         actually steering for it. The reach is measured from the launch rather
+         than guessed: at deck speed a lip this high throws the car about this
+         far, and painting it anywhere else would teach the wrong thing. */
+      const reach=j.s+58+j.h*11;
+      for(let k=0;k<6;k++){
+        const ss=reach-40+k*16;
+        this.drawPart(this.p.cyan,this.dynamicMatrix(ss,0,.14,1.6,.05,9.0));
+        for(const side of[-1,1])
+          this.drawPart(this.p.grid,this.dynamicMatrix(ss,side*11,.13,.9,.05,9.0));
+      }
+    }
+
     drawHazards(pass,lo,hi){
       const d=this.g.__level7Director,states=d&&d.hazardStates,time=this.sc.time||0;
       /* THE SET PIECES BELONG TO THE CHAPTER.
@@ -5565,20 +5826,56 @@
            why nothing on this route was legible on the first attempt. */
         if(pass==='glow'&&st.phase!=='resolved'&&st.phase!=='dormant'){
           const reach=Math.max(120,(h.telegraph||420)*.62),live=st.phase==='active';
-          /* HATCHED, not painted. A solid strip nineteen units wide down a
-             sixty-four-unit deck, in an emissive that blooms, is most of the
-             road - so the cue that was added to make the route legible was
-             itself the thing making it unreadable. Eight bars with gaps
-             between them say exactly the same thing, read as a warning
-             marking rather than as a surface, and leave the tarmac visible
-             underneath. */
+          /* THE DECK IS THE HAZARD; THE SLOT IS THE ROAD.
+           *
+           * This used to be two stripes of about the same size: a danger bar
+           * as wide as the hazard's own radius, and a seven-unit cyan bar
+           * beside it. On a sixty-unit deck that is two ribbons on a lot of
+           * empty tarmac, and empty tarmac reads as drivable - so the cue was
+           * describing a lane to avoid when what it needed to describe was a
+           * lane to take. A player who read it as "not there" rather than
+           * "here, and only here" was not misreading it.
+           *
+           * It is inverted now. Magenta covers the WHOLE carriageway, edge to
+           * edge, with one narrow slot cut out of it; the slot is cyan. There
+           * is nothing left over to be ambiguous about, and the thing the eye
+           * has to find is a gap rather than an obstacle - which is the way
+           * every real hazard marking on a road works.
+           *
+           * Still HATCHED rather than painted, for the reason the old note
+           * gives: a solid emissive surface over the whole deck blooms into a
+           * wall of light. Eight bars with gaps between them say the same
+           * thing and leave the road visible under them.
+           */
           const mark=(st.lane===undefined)?lane:st.lane,bars=8,seg=reach/bars;
+          /* How wide the way through is. Half of the scored tolerance, so the
+             painted slot always sits INSIDE what the trial will accept: a
+             player on the paint is comfortably on the line, and the few units
+             either side are the margin rather than a trap. Small on purpose -
+             five and a half units of a sixty-unit deck. */
+          const slot=SAFE_TOL,half=slot*.5;
+          const edge=DRIVE_HALF;
           for(let k=0;k<bars;k++){
             const at=h.s-reach+seg*(k+.5);
-            this.drawPart(live?this.p.red:this.p.magenta,
-              this.dynamicMatrix(at,mark,.13,(h.radius||8)*1.9,.05,seg*.52));
-            if(h.safeLane!==undefined)this.drawPart(this.p.cyan,
-              this.dynamicMatrix(at,h.safeLane,.14,7.0,.05,seg*.52));
+            const danger=live?this.p.red:this.p.magenta;
+            if(h.safeLane===undefined){
+              // nowhere to go: the whole deck is the hazard and says so
+              this.drawPart(danger,this.dynamicMatrix(at,mark,.13,edge*2,.05,seg*.52));
+            }else{
+              /* Two bars, one either side of the slot, each sized to exactly
+                 the road it covers. A single bar with a hole in it is not
+                 something a box can be, and two boxes are cheaper than the
+                 alpha-cut sheet that would be. */
+              const lo=h.safeLane-half,hi=h.safeLane+half;
+              if(lo>-edge)this.drawPart(danger,
+                this.dynamicMatrix(at,(-edge+lo)*.5,.13,lo+edge,.05,seg*.52));
+              if(hi<edge)this.drawPart(danger,
+                this.dynamicMatrix(at,(hi+edge)*.5,.13,edge-hi,.05,seg*.52));
+              // ...and the slot itself, brighter and a hair higher so the two
+              // never z-fight along the seam
+              this.drawPart(this.p.cyan,
+                this.dynamicMatrix(at,h.safeLane,.145,slot,.05,seg*.52));
+            }
           }
           // chevrons pointing at the way out, so the cue reads as an instruction
           if(h.safeLane!==undefined)for(let k=0;k<3;k++){
@@ -5750,15 +6047,41 @@
         this.drawPart(p,p.m);
       }
     }
-    drawItems(list,lo,hi){
+    /* THE ITEMS, DRAWN IN MATERIAL ORDER RATHER THAN IN ROAD ORDER.
+     *
+     * The list is sorted by arc length, which is what makes the range lookup
+     * possible and is the wrong order to draw in. Consecutive items down a
+     * carriageway are a reflector, then a light on the other side, then a
+     * pylon - three different materials - so drawing them in the order they
+     * are found means every single draw restates its whole material. Measured
+     * on Chapter 7 before this: 561 of 792 draws re-uploaded, so the cache in
+     * Scene.drawPart was only catching 29% of them.
+     *
+     * WHEN REORDERING IS ALLOWED, which is the whole question. Opaque geometry
+     * is order-independent because the depth test decides what wins, and
+     * ADDITIVE blending is order-independent because addition commutes. Alpha
+     * blending is neither - `src*a + dst*(1-a)` depends on what was underneath
+     * - so the pass that uses it passes `false` and keeps road order. Getting
+     * that backwards would not crash; it would quietly re-stack the glass on
+     * the Skybreak span, which is why it is a parameter rather than a guess.
+     *
+     * The scratch array is reused across frames and passes. It is refilled
+     * every call, so it holds nothing between them, and not allocating it is
+     * several hundred objects a frame the collector never has to look at.
+     */
+    drawItems(list,lo,hi,sortable){
       const sc=this.sc;
       const skipCity=this.probeOnly;
+      const out=this._itemDraw||(this._itemDraw=[]);
+      out.length=0;
       for(let i=this.lowerBound(list,lo,e=>e.s);i<list.length&&list[i].s<=hi;i++){
         const e=list[i];
         if(skipCity&&e.p&&e.p.mat&&(e.p.mat._city||e.p.mat._horizon))continue;
         if(e.aabb&&!sc.boxVisible(e.aabb))continue;
-        this.drawPart(e.p,e.m);
+        out.push(e);
       }
+      if(sortable!==false&&out.length>2)out.sort(byMaterial);
+      for(let i=0;i<out.length;i++)this.drawPart(out[i].p,out[i].m);
     }
     draw(){
       const gl=this.gl,s=this.g.distance||this.g.car.sTrack||FROM,low=this.g.quality&&this.g.quality.scale<.8,lo=s-(low?700:950),hi=s+(low?2600:4200);
@@ -5771,11 +6094,13 @@
          kilometres away, it is behind the row in front of it, and on LOW the
          fog has it at ninety per cent before it is even drawn. */
       this.drawMeshes(this.horizon,s-(low?1200:2200),s+(low?4200:9000));
-      this.drawMeshes(this.opaque,lo,hi);this.drawItems(this.itemsOpaque,lo,hi);this.drawHazards('opaque',lo,hi);
+      this.drawMeshes(this.opaque,lo,hi);this.drawItems(this.itemsOpaque,lo,hi);this.drawHazards('opaque',lo,hi);this.drawJumps(lo,hi);
       gl.enable(gl.BLEND);gl.depthMask(false);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
       // Glass chunks are already authored in route order with little overlap;
       // depth testing stays on and depth writes stay off.
-      this.drawMeshes(this.blend,lo,hi);this.drawItems(this.itemsBlend,lo,hi);this.drawHazards('blend',lo,hi);
+      // itemsBlend is the ONE pass that keeps road order: alpha blending is
+      // not commutative, so reordering it re-stacks the glass. See drawItems.
+      this.drawMeshes(this.blend,lo,hi);this.drawItems(this.itemsBlend,lo,hi,false);this.drawHazards('blend',lo,hi);
       gl.blendFunc(gl.SRC_ALPHA,gl.ONE);this.drawMeshes(this.groundGlow,glo,ghi);this.drawMeshes(this.glow,lo,hi);this.drawItems(this.itemsGlow,lo,hi);this.drawHazards('glow',lo,hi);this.drawTraffic(glo,ghi);this.drawMazeGates(lo,hi);
       gl.depthMask(true);gl.disable(gl.BLEND);gl.bindVertexArray(this.sc.vao);
     }
@@ -5907,8 +6232,9 @@
       this.eventBannerTimer=0;this.cueKey='';
       /* The counter-attack, and the state that decides when it fires. */
       /* How badly he is losing, and whether he was in front last frame. Two
-         values where there were five timers - see the PRESSURE_* block. */
-      this.pressure=0;this.wasLeading=false;this.passSaid=0;
+         value where there were five timers, and now none at all - the whole
+         counter-attack is gone; see the note above RETAKE_CLEAR. */
+      this.wasLeading=false;this.passSaid=0;
       /* The glass run is scored over a DISTANCE, not at one line. */
       this.glassHeld=0;this.glassRun=0;this.glassArmed=false;
       this.events={};for(const e of EVENTS)this.events[e.id]={state:'idle',age:0};
@@ -5917,6 +6243,13 @@
       this.checkpointIndex=0;this.checkpointSnapshot=null;this.failure=null;this.intercept=null;
       this.oilTimer=0;this.shockTimer=0;
       this.taunt={timer:0,boostFor:0,gapAtBoost:0,used:0,lastGap:0,modeSeen:false};
+      /* The stunt course. A ramp is a window installed on the SHARED car, so a
+         restart has to take it off: one left armed would launch the car off a
+         piece of road that the restart has put a long way behind it. The
+         counters live on the game, not here, because driveJumps keeps them and
+         it runs whether or not this director does. */
+      this.g.__jumps={armed:null,live:null,taken:0,clean:0};
+      if(this.g.car&&this.g.car.clearRamp)this.g.car.clearRamp();
       // hand the shared difficulty table back to the driver
       if(this.g.driver&&this.cfg&&this.g.driver.cfg===this.cfg)this.g.driver.setLevel(this.g.driver.levelName||'HARD');
       this.cfg=null;this.baseCfg=null;
@@ -5982,6 +6315,46 @@
       this.updateRule();
       if(this.g.story&&this.g.story.showCompact)this.g.story.showCompact('JAVAS','calculating','Thirty kilometres of Aurora\u2019s own deck. Everything on it is a test, and so is he.',4.2);
     }
+    /* --------------------------------------------------- the stunt course --
+     *
+     * The ramps themselves are not the finale's - see `driveJumps` at the foot
+     * of this file for why they belong to the ROAD rather than to the trial.
+     * What is here is the part that is genuinely the chapter's: what a landing
+     * is worth, and who says so.
+     */
+    announceJump(j){
+      this.eventBanner('STUNT SECTION',j.name+' // LAND IT STRAIGHT',3.0);
+      this.audio('predatorScan',1);
+    }
+    /* WHAT A LANDING WAS WORTH.
+     *
+     * `landing` is the solver's own measurement - the heading error at the
+     * moment of touchdown, squared, times a roll term - so there is nothing to
+     * judge here and no second opinion about it. This turns it into something
+     * the player can see, and into the one thing that makes the trial worth
+     * playing well rather than merely surviving: a clean landing gives boost
+     * back.
+     *
+     * NOTHING HERE FAILS THE RUN. The penalty for a bad landing has already
+     * been paid, in the speed the solver scrubbed off, and a set piece that
+     * can end a thirty-kilometre race because a car came down four degrees out
+     * is a set piece nobody would take twice.
+     */
+    scoreLanding(q){
+      const J=this.g.__jumps||{taken:0,clean:0};
+      if(q>=JUMP_CLEAN){
+        this.toast(q>.9?'PERFECT LANDING // +RESERVE':'CLEAN LANDING // +RESERVE','#91ff31');
+        // a clean one makes him work, the same way a clean maze gate does
+        this.rivalry=clamp(this.rivalry+.03,0,1);
+        if(J.clean===JUMPS.length)
+          this.say('RAPTOR','angry','...Three for three. Fine. You can drive.',3.2);
+      }else{
+        this.toast('LANDED CROOKED // SPEED LOST','#ff6a3a');
+        if(this.g.fx&&this.g.fx.sparks)this.g.fx.sparks(this.g.car,.7);
+        if(this.g.audio&&this.g.audio.crash)this.g.audio.crash(.28);
+      }
+      this.updateRule();
+    }
     /* THE OBJECTIVE LINE, and nothing else.
        It used to carry a percentage as well - see the note above
        confidenceDelta for why that is gone. What is left says where the player
@@ -5990,14 +6363,13 @@
     updateRule(){
       const gap=this.huntGap||0;
       const state=this.modeActive?'SYNC WINDOW'
-        :this.pressure>.55?'COMING BACK AT YOU'
         :gap>18?'YOU LEAD'
         :gap<-18?'HE LEADS'
         :'WHEEL TO WHEEL';
       setText(this.ui.objectiveText,this.trapRun?'SURVIVE THE GAUNTLET':'BEAT THE R-IX');
       setText(this.ui.rule,'R-IX // '+state);
       if(this.ui.objective)this.ui.objective.style.setProperty('--edge',
-        this.pressure>.55?'#ff3b1e':gap>18?'#91ff31':'#ffb400');
+        gap>18?'#91ff31':gap<-18?'#ff3b1e':'#ffb400');
     }
     /* Ryker on the channel.
        He is inside a car that never has to charge a reserve, and he knows what
@@ -6064,19 +6436,14 @@
       // the moment of the pass, which is a step rather than a slope
       if(leading&&!this.wasLeading){
         this.rivalry=clamp(this.rivalry+RIVALRY_PASS,0,1);
-        /* HE ANSWERS ON THIS FRAME.
-           Not after a delay, and not subject to a cooldown that might be
-           running: the pressure model has no states, so being overtaken always
-           does the same thing. The seed puts him straight onto a third of the
-           answer, so the response is felt as part of the overtake rather than
-           arriving later as a separate event. */
-        this.pressure=Math.max(this.pressure,.34);
+        // He still says something about it. What he no longer does is answer
+        // it with a burst; see the note at the foot of this method.
         if(this.passSaid<=0){
           this.passSaid=1;
           this.say('RAPTOR','angry','Past me. That is temporary.',3.0);
         }
       }
-      if(!leading&&this.wasLeading&&lead<-PRESSURE_CLEAR){
+      if(!leading&&this.wasLeading&&lead<-RETAKE_CLEAR){
         // ...and he says so exactly once per exchange, when he takes it back
         this.passSaid=0;
         this.say('RAPTOR','smug','And back where it belongs.',2.6);
@@ -6090,21 +6457,26 @@
         this.rivalry=clamp(this.rivalry-RIVALRY_EASE*dt,0,1);
       }
 
-      /* PRESSURE. One integrator, and the whole of his answer to losing.
-       *
-       * It rises while the player is in front, faster the further in front
-       * they are, and it bleeds away only once he is genuinely clear again -
-       * `PRESSURE_CLEAR` rather than zero, so a car being drafted a metre back
-       * cannot toggle it. There is no timer anywhere in this: how hard he is
-       * trying is a function of the race, not of a clock, which is why it can
-       * never be caught in the passive half of a cycle at the moment it is
-       * needed. */
-      if(lead>2){
-        const bite=.55+.45*clamp(lead/PRESSURE_LEAD,0,1);
-        this.pressure=clamp(this.pressure+PRESSURE_RISE*bite*dt,0,1);
-      }else if(lead<-PRESSURE_CLEAR){
-        this.pressure=clamp(this.pressure-PRESSURE_FALL*dt,0,1);
-      }
+      /* THE COUNTER-ATTACK IS GONE. Removed on request, and the request is
+         worth recording accurately because the reason given for it was not
+         the reason the chapter was misbehaving.
+
+         `pressure` was an integrator of how badly he was losing, and every
+         term it fed was LONGITUDINAL: extra terminal speed (PRESSURE_MATCH),
+         extra ceiling (PRESSURE_TOP), a nudge to skill and grip, and the
+         reheat lamp. None of them could move the car sideways, and the fault
+         it was blamed for - the R-IX dashing left and right across the deck -
+         was in the general overtaking controller in ai::Driver, where the
+         committed pass side was released and re-armed every time the lead
+         changed hands. That is fixed at source; see the long note there.
+
+         What is left answering an overtake is the hunt curve, which is a
+         function of the GAP alone. That is a slower, smoother answer - he
+         comes back over a few hundred units rather than immediately - and it
+         is one fewer system with an opinion about how fast he should be going.
+         Measured on the balance probe, his provoked ceiling drops from 129 to
+         118 units/s; the player's raceMode window is 133, so the counterplay
+         the chapter is built around is untouched. */
       this.updateRule();
     }
 
@@ -6169,9 +6541,7 @@
            is what stops an upgrade being an escape; the second is what makes
            the pickup a corner-exit shove rather than a permanent power gain. */
         playerV:car.vLong||0, ownV:r.vLong||0,
-        // how badly he is losing, which is the whole of his answer - see
-        // updateRivalry and the PRESSURE_* block
-        pressure:this.pressure,
+
         // while he is dropping traps in front of himself, he means to be in
         // front of them
         trapRun:this.trapRun});
@@ -6249,7 +6619,7 @@
            He is never worse than a full HARD driver and is past the top of
            the ladder while he is working. Rivalry moves him between those
            two, and the counter-attack puts him above both. */
-        const push=clamp(this.rivalry+this.pressure*.5,0,1.4);
+        const push=clamp(this.rivalry,0,1.4);
         this.cfg.skill=clamp(this.baseSkill*(.99+push*.05),.40,1);
         this.cfg.react=clamp(.062-.016*push,.044,.09);
         this.cfg.driftSkill=clamp(.92+push*.08,.70,1);
@@ -6268,11 +6638,14 @@
          The one thing kept from them is the visible tell. A player has to be
          able to see that they have provoked him, or the answer is invisible
          until it arrives on their gearbox. */
-      r.boosting=this.pressure>.45;
+      /* The reheat lamp. It used to be the counter-attack's tell; with that
+         gone it says the same thing the drive is actually doing - he is
+         reheating whenever he is chasing a gap worth chasing. */
+      r.boosting=H.pursuit>.28;
       // the defensive line is the personality's job now; see NR.Driver
       const gap=r.sTrack-this.g.car.sTrack;
       // the kit's momentum rings glow with how hard he is pushing
-      this.g.storyRaptorCharge=clamp(this.rivalry+this.pressure*.4,0,1);
+      this.g.storyRaptorCharge=clamp(this.rivalry+H.pursuit*.4,0,1);
       const lock=this.g.car.sTrack>=PRED.lockFrom&&this.g.car.sTrack<=PRED.lockTo;
       if(lock!==this.lockOn){
         this.lockOn=lock;
@@ -6438,7 +6811,7 @@
       /* A rewind puts the two cars back level, so it puts his provocation back
          to nothing as well. Restoring mid-pressure would have him answering an
          overtake that no longer happened. */
-      this.pressure=0;this.wasLeading=false;this.passSaid=0;
+      this.wasLeading=false;this.passSaid=0;
       this.glassHeld=0;this.glassRun=0;this.glassArmed=false;this.updateRule();
       this.g.haveHistory=false;this.g.flash=.16;this.g.shake=.12;
       if(global.document.body)global.document.body.classList.remove('pred7-failure');
@@ -6938,12 +7311,110 @@ PredatorDirector.prototype.updateMazeGates=function(dt){
   /* The R-IX's tuning, published so a harness can assert the hunt curve
      directly instead of having to win a thirty-kilometre race to observe it. */
   NR.PRED=PRED;
+  /* --------------------------------------------------- the stunt course --
+   *
+   * THE RAMPS BELONG TO THE ROAD, NOT TO THE TRIAL.
+   *
+   * This started life inside PredatorDirector, which is where the rest of
+   * Chapter 7's rules live, and that was wrong for a reason worth writing
+   * down: `afterUpdate` returns immediately unless the finale is actually
+   * running as a story chapter. So the ramps were DRAWN on every visit to this
+   * route - they are structure, and structure is not gated on a director - and
+   * were only ARMED during the campaign. A Free Roam tour got three solid
+   * concrete ramps across the carriageway that the car drove through as though
+   * they were painted on.
+   *
+   * A thing that is on the road is on the road. Arming lives here, at the
+   * route's own update, and the finale supplies the scoring and the voice on
+   * top of it when there is a finale to supply them.
+   *
+   * ONE RAMP ARMED AT A TIME, because the solver holds one - which is not a
+   * limitation to work around but the thing that makes this safe. A ramp is an
+   * arc-length window with no lateral extent, so three live at once on a road
+   * the player can drive backwards down would mean a car reversing into the
+   * third one and being launched by it. Arming only the nearest one ahead, and
+   * only while the car is approaching it, is the whole guard.
+   */
+  function driveJumps(g){
+    const car=g.car;
+    if(!car||!car.armRamp)return;
+    const J=g.__jumps||(g.__jumps={armed:null,live:null,taken:0,clean:0});
+    const s=car.sTrack||0;
+    const dir=g.__level7Director;
+    /* THE LANDING IS READ FIRST, and from a flag the solver sets for exactly
+       one frame. Reading the height instead - "it was in the air and now it is
+       not" - misses a landing whenever a frame is long enough to span the
+       whole touchdown, which on a slow machine is most of them. */
+    if(car.landed){
+      car.landed=0;
+      const q=car.landing||0;
+      J.taken++;
+      if(q>=JUMP_CLEAN){
+        J.clean++;
+        /* Boost, and boost is the right currency: it is what the whole chapter
+           is about, the R-IX has an unlimited supply of it, and a ramp taken
+           well is one of the few places the player can make some. Paid here
+           rather than in the director so that it is paid on a free run too. */
+        if(car.boost!==undefined)car.boost=clamp((car.boost||0)+.16+q*.14,0,1);
+      }
+      if(dir&&dir.started)dir.scoreLanding(q);
+    }
+    // the nearest ramp still ahead. -14 rather than 0 so a car a bumper past
+    // the lip is not handed the next one while it is still over this one
+    let next=null;
+    for(const j of JUMPS){
+      if(j.s-s<-14)continue;
+      if(!next||j.s<next.s)next=j;
+    }
+    const arm=!!next&&(next.s-s)<JUMP_TELEGRAPH+next.len&&(next.s-s)>-14;
+    if(arm){
+      if(J.armed!==next.id){
+        J.armed=next.id;
+        car.armRamp(next.s-next.len,next.s,next.h);
+        if(dir&&dir.started)dir.announceJump(next);
+      }
+    }else if(J.armed){
+      J.armed=null;
+      car.clearRamp();
+    }
+    J.live=arm?next:null;
+  }
+
+
+  /* A stable draw order for material coherence.
+   *
+   * Sorting on the part's own identity rather than on anything about the
+   * material: two parts sharing a material must sort adjacent, and that is a
+   * property of the object, not of its colour. The id is handed out lazily on
+   * first sight and then never changes, so the order is stable within a run
+   * and a part cannot swap places with another between frames - which would
+   * make an additive pass flicker even though addition commutes, because the
+   * DEPTH state around it does not.
+   *
+   * The mesh is the outer key: binding a different vertex array is the more
+   * expensive of the two switches, and grouping by it first means the material
+   * runs sit inside mesh runs rather than cutting across them.
+   */
+  let _sortSeq = 0;
+  function sortKey(o) {
+    if (o._sortKey === undefined) o._sortKey = ++_sortSeq;
+    return o._sortKey;
+  }
+  function byMaterial(a, b) {
+    const pa = a.p, pb = b.p;
+    if (pa === pb) return 0;
+    const ma = pa._mesh, mb = pb._mesh;
+    if (ma !== mb) return sortKey(ma || pa) - sortKey(mb || pb);
+    return sortKey(pa.mat || pa) - sortKey(pb.mat || pb);
+  }
+
   function pred(g){return g.__level7Director||new PredatorDirector(g);}
 
   const GP2=NR.Game.prototype,oldUpdate7=GP2.update,oldApply7=GP2.applyLevel,oldMenu7=GP2.toMenu;
   GP2.update=function(dt){
     if(this.scene&&this.scene.ready&&this.story&&pred(this).updateExclusive(dt))return;
     oldUpdate7.call(this,dt);
+    if(this.scene&&this.scene.ready&&this.simulating&&this.level&&this.level.level7)driveJumps(this);
     if(this.scene&&this.scene.ready&&this.story&&this.simulating)pred(this).afterUpdate(dt);
   };
   GP2.applyLevel=function(){oldApply7.call(this);if(this.__level7Director)this.__level7Director.reset();};
@@ -6952,7 +7423,7 @@ PredatorDirector.prototype.updateMazeGates=function(dt){
   NR.Level7World=Level7World;
   NR.chapter7ConfidenceDelta=confidenceDelta;NR.chapter7TelegraphSeconds=telegraphSeconds;
   NR.chapter7HuntPace=huntPace;
-  global.__SYNX_LEVEL7__={version:3,name:'NEON HORIZON',from:ROUTE_FROM,to:FINISH,distanceKm:+((FINISH-ROUTE_FROM)*KM_PER_UNIT).toFixed(2),roadHalf:32,deckHalf:DECK_HALF,cityFloor:FLOOR,pierStep:PIER_STEP,glassway:[GLASS_A,GLASS_B],zones:ZONES,events:EVENTS,checkpoints:CHECKPOINTS,hazards:HAZARDS,chapter:7,predatorLock:[PRED.lockFrom,PRED.lockTo],raceMode:true,eventStates:['idle','arming','active','resolved','failed','cleanup'],confidenceDelta,telegraphSeconds,
+  global.__SYNX_LEVEL7__={version:4,name:'NEON HORIZON',jumps:JUMPS,jumpClean:JUMP_CLEAN,jumpTelegraph:JUMP_TELEGRAPH,from:ROUTE_FROM,to:FINISH,distanceKm:+((FINISH-ROUTE_FROM)*KM_PER_UNIT).toFixed(2),roadHalf:32,deckHalf:DECK_HALF,cityFloor:FLOOR,pierStep:PIER_STEP,glassway:[GLASS_A,GLASS_B],zones:ZONES,events:EVENTS,checkpoints:CHECKPOINTS,hazards:HAZARDS,chapter:7,predatorLock:[PRED.lockFrom,PRED.lockTo],raceMode:true,eventStates:['idle','arming','active','resolved','failed','cleanup'],confidenceDelta,telegraphSeconds,
   /* What the finale actually contains, for the harnesses to assert against. */
   cityTiers:3,hazardVerbs:['AVOID','SLIDE','FALL'],
   hazardTypes:['sky_panel','metal_ball','oil','barrier','slab'],

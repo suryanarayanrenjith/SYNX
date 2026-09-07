@@ -3463,3 +3463,292 @@ body.story-hub #hudCanvas { opacity: 0; }
   color: #ffb020;
   text-shadow: 0 0 10px rgba(255, 176, 32, .55);
 }
+
+/* ============================================================== ADVISORY ==
+   The photosensitivity and beta notice, over everything, before anything.
+
+   MODERN VINTAGE, AND WHAT THAT MEANS HERE. The vintage half is a CRT: a
+   curved vignette, a shadow-mask grille, a rolling scanline and a slow
+   chromatic split on the headline. The modern half is the type and the
+   spacing - Orbitron at a wide track on a strict vertical rhythm, with one
+   accent colour doing the work rather than six.
+
+   ONE RULE THE REST OF THIS FILE DOES NOT HAVE TO FOLLOW: nothing in here may
+   flash. It is a warning about flashing, and the joke of animating it with the
+   thing it warns you about is not one to make. Every animation below is a
+   slow drift, a fade or a sweep - all of them well under 3 Hz, which is the
+   threshold the guidance actually names - and `prefers-reduced-motion` stops
+   all of them dead. */
+
+#advisory {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(120% 90% at 50% 30%, rgba(30, 6, 60, .55), transparent 70%),
+    radial-gradient(90% 70% at 50% 110%, rgba(255, 46, 136, .12), transparent 65%),
+    #04000c;
+  color: var(--ink-body);
+  font-family: var(--font);
+  opacity: 1;
+  transition: opacity 520ms var(--ease-out);
+}
+#advisory.gone { opacity: 0; pointer-events: none; }
+
+/* The tube: a soft corner vignette and the faint bulge of a curved screen. */
+.adv-crt {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(115% 105% at 50% 50%, transparent 55%, rgba(0, 0, 0, .82) 100%);
+  mix-blend-mode: multiply;
+}
+/* The shadow mask. A three-pixel RGB grille is what a CRT actually is up
+   close, and at this opacity it reads as texture rather than as stripes. */
+.adv-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: .16;
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(255, 46, 136, .55) 0 1px,
+    rgba(57, 230, 255, .55) 1px 2px,
+    rgba(139, 92, 246, .55) 2px 3px);
+}
+/* One scanline, drifting down the tube once every eight seconds. Slow enough
+   to be atmosphere; nowhere near anything that could provoke what this screen
+   is warning about. */
+.adv-scan {
+  position: absolute;
+  left: 0; right: 0;
+  height: 22vh;
+  pointer-events: none;
+  opacity: .10;
+  background: linear-gradient(180deg, transparent, rgba(214, 240, 255, .9), transparent);
+  animation: advScan 8s linear infinite;
+}
+@keyframes advScan {
+  from { transform: translateY(-30vh); }
+  to   { transform: translateY(130vh); }
+}
+
+.adv-frame {
+  position: relative;
+  width: min(1000px, 94vw);
+  max-height: 94vh;
+  /* Scrollable only as a last resort - on a short window the notice must
+     still be readable rather than clipped - but sized so it does not need to
+     be at any ordinary size. The first version overflowed at 1254x627 and
+     showed both bars. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(57, 230, 255, .35) transparent;
+  padding: clamp(14px, 3vh, 34px) clamp(20px, 3.4vw, 46px);
+  text-align: center;
+  animation: advIn 700ms var(--ease-out) both;
+}
+#advisory::-webkit-scrollbar, .adv-frame::-webkit-scrollbar { width: 8px; height: 0; }
+.adv-frame::-webkit-scrollbar-thumb { background: rgba(57, 230, 255, .3); }
+.adv-frame::-webkit-scrollbar-track { background: transparent; }
+@keyframes advIn {
+  from { opacity: 0; transform: translateY(14px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* The kicker rule: a hairline either side of a small caption. */
+.adv-rule {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: clamp(10px, 2.2vh, 20px);
+  color: var(--cyan);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .42em;
+  text-indent: .42em;
+}
+.adv-rule i {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(57, 230, 255, .7), transparent);
+}
+
+/* THE HEADLINE, letter by letter.
+   Each glyph fades and lifts on its own delay - sixteen of them over about a
+   second - so the word assembles rather than appearing. The chromatic split is
+   two offset copies behind it, drifting a fraction of a pixel; it is what
+   makes the type read as a signal on a tube rather than as text on a page. */
+/* SIZED TO FIT ON ONE LINE, which is the whole point of a headline. The first
+   pass ran to 74px and broke "PHOTOSENSITIVITY" across two lines at 1254px
+   wide - and a warning whose own title does not fit is not reassuring about
+   the care taken with the rest. Sixteen characters at .05em of tracking is
+   about 0.62em each, so 5.2vw keeps it on one line to well under 900px. */
+.adv-title {
+  position: relative;
+  margin: 0;
+  font-size: clamp(19px, 5.2vw, 58px);
+  font-weight: 900;
+  line-height: 1.06;
+  letter-spacing: .05em;
+  white-space: nowrap;
+  color: #fff;
+  /* THE CHROMATIC SPLIT, AS A SHADOW ON THE GLYPHS THEMSELVES.
+     It used to be two absolutely-positioned copies of the word behind it,
+     drawn from `data-text`. Those are a single text run and the letters are
+     individually animated spans, so the moment the title wrapped the ghosts
+     did not - they ran straight off the side of the panel and put a
+     horizontal scrollbar on the screen. A shadow cannot desync from the text
+     it is under. */
+  text-shadow:
+    -2px 0 0 rgba(255, 46, 136, .55),
+     2px 0 0 rgba(57, 230, 255, .55),
+     0 0 18px rgba(57, 230, 255, .55),
+     0 0 60px rgba(139, 92, 246, .35);
+}
+.adv-title span {
+  display: inline-block;
+  opacity: 0;
+  animation: advGlyph 560ms var(--ease-out) both;
+}
+.adv-title span:nth-child(n)    { animation-delay: calc(160ms + var(--i, 0) * 42ms); }
+@keyframes advGlyph {
+  from { opacity: 0; transform: translateY(.22em) rotateX(40deg); filter: blur(6px); }
+  to   { opacity: 1; transform: none; filter: none; }
+}
+/* The whole title drifts a fraction of a pixel instead, which reads as the
+   same tube instability and cannot overflow anything. */
+.adv-title { animation: advDrift 5.5s ease-in-out infinite alternate; }
+@keyframes advDrift {
+  from { transform: translate3d(-1.5px, 0, 0); }
+  to   { transform: translate3d(1.5px, 0, 0); }
+}
+
+.adv-sub {
+  margin: 14px 0 0;
+  color: var(--amber);
+  font-size: clamp(11px, 1.5vw, 14px);
+  font-weight: 700;
+  letter-spacing: .34em;
+  text-indent: .34em;
+  text-shadow: 0 0 14px rgba(255, 180, 0, .5);
+}
+
+.adv-body {
+  margin: clamp(12px, 2.4vh, 24px) auto 0;
+  max-width: 62ch;
+  font-size: clamp(11px, 1.35vw, 14px);
+  line-height: 1.62;
+  letter-spacing: .012em;
+}
+.adv-body p { margin: 0 0 .7em; }
+.adv-body b { color: var(--ink-key); font-weight: 700; }
+.adv-stop {
+  margin-top: 1.1em;
+  padding: .8em 1em;
+  border: 1px solid rgba(255, 46, 136, .34);
+  border-left: 2px solid var(--pink);
+  background: rgba(255, 46, 136, .07);
+  color: var(--ink-key);
+  text-align: left;
+}
+
+/* The beta strip. Amber rather than pink: this is information, not a hazard,
+   and it must not compete with the medical notice above it. */
+.adv-beta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: clamp(12px, 2.2vh, 20px) auto 0;
+  max-width: 62ch;
+  padding: .75em 1em;
+  border: 1px dashed rgba(255, 180, 0, .38);
+  background: rgba(255, 180, 0, .05);
+  text-align: left;
+}
+.adv-tag {
+  flex: none;
+  padding: .3em .7em;
+  background: var(--amber);
+  color: #1a1000;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .18em;
+}
+.adv-beta p {
+  margin: 0;
+  font-size: clamp(11px, 1.4vw, 13px);
+  line-height: 1.6;
+  color: var(--ink-mute);
+}
+.adv-beta b { color: var(--amber); }
+
+/* The prompt. It breathes rather than blinks - a two-and-a-half second fade,
+   which is about 0.4 Hz. */
+.adv-go {
+  display: block;
+  margin: clamp(14px, 2.6vh, 26px) auto 0;
+  padding: .9em 2.4em;
+  border: 1px solid rgba(57, 230, 255, .45);
+  background: linear-gradient(180deg, rgba(57, 230, 255, .12), rgba(57, 230, 255, .04));
+  color: var(--ink-key);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color var(--t-base) var(--ease), background var(--t-base) var(--ease),
+              transform var(--t-fast) var(--ease);
+  animation: advBreathe 2.5s ease-in-out infinite;
+}
+.adv-go:hover, .adv-go:focus-visible {
+  border-color: var(--cyan);
+  background: linear-gradient(180deg, rgba(57, 230, 255, .22), rgba(57, 230, 255, .08));
+  outline: none;
+  animation: none;
+}
+.adv-go:active { transform: translateY(1px); }
+.adv-go-key {
+  display: block;
+  font-size: clamp(13px, 1.7vw, 16px);
+  font-weight: 900;
+  letter-spacing: .26em;
+  text-indent: .26em;
+  color: var(--cyan);
+  text-shadow: 0 0 16px rgba(57, 230, 255, .6);
+}
+.adv-go-sub {
+  display: block;
+  margin-top: .35em;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .3em;
+  text-indent: .3em;
+  color: var(--ink-faint);
+}
+@keyframes advBreathe {
+  0%, 100% { opacity: .78; }
+  50%      { opacity: 1; }
+}
+
+.adv-foot {
+  margin-top: clamp(12px, 2.2vh, 20px);
+  color: var(--ink-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .28em;
+  text-indent: .28em;
+}
+.adv-dot { margin: 0 .8em; color: var(--pink); }
+
+/* NOTHING MOVES IF THE PLAYER HAS ASKED FOR THAT. A photosensitivity notice
+   is the last screen in the game that should ignore this setting. */
+@media (prefers-reduced-motion: reduce) {
+  #advisory *,
+  #advisory *::before,
+  #advisory *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .adv-title span { opacity: 1; }
+}

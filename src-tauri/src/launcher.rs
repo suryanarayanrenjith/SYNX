@@ -89,9 +89,22 @@ pub struct LauncherSettings {
     /// preference, and a game that silently sits above the player's other
     /// windows is a nuisance.
     pub always_on_top: bool,
-    /// Cap the frame rate. 0 is "no cap"; the game reads this one.
-    pub fps_cap: u32,
-    /// Ask the compositor not to tear. The game reads this one too.
+    /* THE FRAME LIMIT IS NOT HERE ANY MORE.
+
+       It was: a `fps_cap` field, defaulted, clamped in `sanitised`, and
+       covered by a round-trip test. Every one of those was true and none of
+       them mattered, because nothing ever read the value - not this crate, and
+       not the game, which cannot see this entry at all. A cap is enforced by
+       whatever draws the frames, so the row moved to the ordinary settings the
+       renderer already loads. See the note on it in js/settings.js.
+
+       An older save still carries the field; serde ignores what it does not
+       know, so it is simply left behind. */
+    /// Ask the compositor not to tear.
+    ///
+    /// Applied on the webview's command line by `platform::browser_args`,
+    /// which means it is fixed when the environment is created - so changing
+    /// it relaunches the process, exactly as the renderer does.
     pub vsync: bool,
 }
 
@@ -104,7 +117,6 @@ impl Default for LauncherSettings {
             monitor: 0,
             gpu: true,
             always_on_top: false,
-            fps_cap: 0,
             vsync: true,
         }
     }
@@ -134,9 +146,6 @@ impl LauncherSettings {
         }
         self.width = self.width.clamp(MIN_W, 16384.0);
         self.height = self.height.clamp(MIN_H, 16384.0);
-        if self.fps_cap > 1000 {
-            self.fps_cap = 0;
-        }
         self
     }
 }
@@ -217,6 +226,17 @@ fn migrate_from_settings(v: &serde_json::Value) -> LauncherSettings {
 #[derive(Serialize)]
 pub struct MonitorInfo {
     pub name: String,
+    /// Where this display's top-left corner sits on the virtual desktop, in
+    /// physical pixels.
+    ///
+    /// Reported because a size on its own cannot answer the only question
+    /// that matters about a multi-monitor setting: WHICH SCREEN did the window
+    /// actually open on. Two 1920x1080 displays are indistinguishable by size,
+    /// and the launcher had no way to tell them apart or to say where they
+    /// were - so nothing in the tree, and no test, could check that choosing
+    /// one had any effect. tools/checkdisplay.js needs exactly this.
+    pub x: i32,
+    pub y: i32,
     /// Physical pixels.
     pub width: u32,
     pub height: u32,
@@ -309,14 +329,14 @@ mod tests {
         s.height = 720.0;
         s.gpu = false;
         s.monitor = 1;
-        s.fps_cap = 144;
+        s.vsync = false;
         write(&d, serde_json::json!({ "entries": { KEY: serde_json::to_value(&s).unwrap() } }));
 
         let got = load(Some(&d));
         assert_eq!(got.mode, WindowMode::Windowed);
         assert_eq!(got.width, 1280.0);
         assert_eq!(got.monitor, 1);
-        assert_eq!(got.fps_cap, 144);
+        assert!(!got.vsync, "vertical sync did not survive the save file");
         assert_eq!(got.renderer(), Renderer::Cpu);
         let _ = std::fs::remove_dir_all(&d);
     }

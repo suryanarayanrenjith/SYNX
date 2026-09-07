@@ -451,6 +451,45 @@
    * drop every key it did not know about on the next write - so a player who
    * chose 67% and FSR on the launcher, then turned the music down in-game, got
    * NATIVE and BILINEAR back without touching either. */
+
+  /* REDUNDANT VAO BINDS, REMOVED AT THE SOURCE.
+   *
+   * Both chapter worlds draw through a helper that binds a vertex array and
+   * then draws one part: `bindVertexArray(p._mesh.vao); drawPart(p)`. That is
+   * correct and it is also one GL call per draw for a value that almost never
+   * changes - Chapter 7 draws several hundred boxes a frame and every one of
+   * them comes from the same cube. Measured on the release build,
+   * `bindVertexArray` was 75 ms of an eight-second profile, in two separate
+   * entries of the top eighteen.
+   *
+   * WHY THE WRAPPER RATHER THAN THE CALL SITES. There are twenty-odd places
+   * that bind a vertex array across the two chapter files and the scene, and a
+   * cache that any one of them can bypass is a cache that eventually reports
+   * the wrong array bound - which draws one mesh's indices against another
+   * mesh's buffers, and looks like memory corruption rather than like a
+   * missing invalidation. Wrapping the method makes the cache and the GL state
+   * the same thing by construction, so there is no call site that can
+   * disagree with it.
+   *
+   * `deleteVertexArray` clears it because deleting the bound array unbinds it
+   * behind our back. Nothing in the game deletes one today; it is here so that
+   * the day something does, this does not become a bug in an unrelated file.
+   */
+  function memoiseVao(gl) {
+    const bind = gl.bindVertexArray.bind(gl);
+    const del = gl.deleteVertexArray.bind(gl);
+    let cur;                       // undefined, so the first bind always runs
+    gl.bindVertexArray = (v) => {
+      if (v === cur) return;
+      cur = v;
+      bind(v);
+    };
+    gl.deleteVertexArray = (v) => {
+      if (v === cur) cur = undefined;
+      del(v);
+    };
+  }
+
   const STORED_ROWS = SCHEMA.ROWS.filter((r) => !SCHEMA.isHostKey(r.key));
 
   /* ------------------------------------------------------------------------
@@ -797,12 +836,38 @@
     if (d >= 0.99999) { outColor = vec4(0.0); return; }
 
     vec3 P = worldFromDepth(vUv, d);
-    vec3 N = normalize(nr.rgb * 2.0 - 1.0);
-    vec3 V = normalize(P - uCamPos);
+    /* THE ZERO-LENGTH NORMAL, AND WHY IT IS THE WHOLE OF THE BLACK-BOX BUG.
+
+       "normalize" of a zero vector is a division by zero: it returns NaN, and
+       NaN is not a value that goes away. It multiplies through the march,
+       lands in this pass's target, and the bloom prefilter ADDS that target
+       to the scene colour - so a single bad pixel here becomes a NaN texel in
+       bloom mip 0, then a NaN texel in every mip above it, and mip 5 is thirty
+       pixels wide across the whole screen. That is the mechanism behind the
+       large pixelated boxes: not a texture, not a framebuffer, one undefined
+       normal amplified by a mip pyramid.
+
+       The g-buffer's normal is 0.5,0.5,0.5 - which decodes to exactly zero -
+       wherever nothing wrote a normal: unlit and glow materials, and any texel
+       the geometry pass did not cover. Reflectivity is a separate channel and can be
+       non-zero over those, so the early-out above does not catch them.
+
+       The ambient-occlusion pass below has had this guard since it was
+       written. This pass never got one. */
+    vec3 nRaw = nr.rgb * 2.0 - 1.0;
+    if (dot(nRaw, nRaw) < 0.1) { outColor = vec4(0.0); return; }
+    vec3 N = normalize(nRaw);
+    /* ...and the same argument for the view vector. A fragment ON the camera
+       gives a zero-length P - uCamPos, which is rare and is exactly the kind of
+       thing a cutscene camera moving through the car does. */
+    vec3 toP = P - uCamPos;
+    float camDist2 = dot(toP, toP);
+    if (camDist2 < 1e-8) { outColor = vec4(0.0); return; }
+    vec3 V = toP * inversesqrt(camDist2);
     vec3 R = reflect(V, N);
     if (R.y < -0.02) { outColor = vec4(0.0); return; }
 
-    float dist = length(P - uCamPos);
+    float dist = sqrt(camDist2);
     // step scaled by how far away the surface is, so the road keeps a usable
     // ray length all the way to the horizon
     float step0 = max(1.4, dist * 0.035);
@@ -981,8 +1046,12 @@
     if (dot(N, N) < 0.1) { outColor = vec4(1.0); return; }
     N = normalize(N);
     vec3 P = worldFromDepth(vUv, d);
-    vec3 V = normalize(uCamPos - P);
-    float dist = length(P - uCamPos);
+    vec3 toCam = uCamPos - P;
+    float camDist2 = dot(toCam, toCam);
+    // a fragment standing ON the camera has no view vector; see the note below
+    if (camDist2 < 1e-8) { outColor = vec4(1.0); return; }
+    vec3 V = toCam * inversesqrt(camDist2);
+    float dist = sqrt(camDist2);
     // a contact cue, not a global one: past a few hundred units the radius is
     // sub-pixel and the pass only costs noise
     float fade = 1.0 - smoothstep(180.0, 520.0, dist);
@@ -1015,11 +1084,32 @@
          it first and the horizons are measured against THAT - the step a naive
          horizon-based AO leaves out, and the reason its creases sit at the
          wrong angle on a sloped surface. */
-      vec3 dirWorld = normalize(worldFromDepth(vUv + dirUv * 8.0, d) - P);
-      vec3 sliceN = normalize(cross(dirWorld, V));
+      /* Every normalize in this block is a division by a length that CAN be
+         zero, and a NaN produced here reaches the screen as a large block -
+         see the long note in the reflection pass for why the bloom pyramid
+         turns one bad texel into one. So each is guarded on the squared
+         length before the divide rather than after it.
+
+         The cross product is the one that actually fires: it is zero
+         whenever the slice direction is parallel to the view vector, which is
+         what happens at a grazing angle - and grazing angles are most of a
+         frame taken from a camera sitting low behind a car. */
+      vec3 dw = worldFromDepth(vUv + dirUv * 8.0, d) - P;
+      float dwLen2 = dot(dw, dw);
+      if (dwLen2 < 1e-12) continue;
+      vec3 dirWorld = dw * inversesqrt(dwLen2);
+      vec3 slc = cross(dirWorld, V);
+      float slcLen2 = dot(slc, slc);
+      if (slcLen2 < 1e-12) continue;
+      vec3 sliceN = slc * inversesqrt(slcLen2);
       vec3 projN = N - sliceN * dot(N, sliceN);
       float projLen = length(projN);
-      if (projLen < 1e-4) continue;
+      /* WRITTEN AS !(x > eps), NOT AS x < eps.
+         The two are the same for every real number and are NOT the same for
+         NaN: NaN < eps is false, so the plain comparison lets a NaN THROUGH
+         the guard that exists to stop it. This form rejects it. It is the
+         reason the guard that was already here never worked. */
+      if (!(projLen > 1e-4)) continue;
       vec3 pn = projN / projLen;
 
       // signed angle of the projected normal away from the view vector
@@ -1073,7 +1163,13 @@
        back without a second pass to compute it. */
     float x = ao;
     float mb = max(x, ((x * 2.0404 - 3.2401) * x + 2.7552) * x - 0.5556);
-    outColor = vec4(vec3(clamp(mb, 0.0, 1.0)), 1.0);
+    /* The last gate. clamp on a NaN is undefined in GLSL - min/max with NaN
+       may return either operand - so a NaN that survived the loop can walk out
+       of a clamp unchanged on some drivers. mb == mb is false only for NaN
+       and is the one portable test for it. Fully lit is the right fallback:
+       this pass MULTIPLIES the frame, so its failure mode should be "no
+       occlusion", never "a black patch". */
+    outColor = vec4(vec3(mb == mb ? clamp(mb, 0.0, 1.0) : 1.0), 1.0);
   }`;
 
   const VOL_FRAG = `#version 300 es
@@ -1233,6 +1329,23 @@
   uniform float uSsrAmt;
   void main() {
     vec3 c = texture(uTex, vUv).rgb + texture(uSsr, vUv).rgb * uSsrAmt;
+    /* THE BACKSTOP, and the reason it is HERE of all places.
+
+       This is the mouth of the mip pyramid. One NaN or Inf texel entering it
+       is spread by the 13-tap downsample into its whole neighbourhood at every
+       level above, and by the time it comes back up the tent filter it is a
+       block tens of pixels across - which is what the reported large
+       pixelated boxes are. The specific faults that produced them are fixed at
+       source (see the reflection and occlusion passes), but this pass reads
+       from two whole render targets and a future term in either of them would
+       land here the same way.
+
+       A self-comparison is false only for NaN. The clamp then removes Inf, which does
+       not survive a downsample either. Three instructions on a quarter-
+       resolution pass, and it converts a class of whole-screen artefact into a
+       single dark pixel. */
+    c = mix(vec3(0.0), c, vec3(equal(c, c)));
+    c = min(c, vec3(65504.0));
     float l = max(c.r, max(c.g, c.b));
     // soft knee so neon ramps into the bloom instead of popping
     float soft = clamp(l - uThreshold + uKnee, 0.0, 2.0 * uKnee);
@@ -2299,6 +2412,7 @@
         powerPreference: 'high-performance',
       });
       if (!this.gl) throw new Error('WebGL2 is not available in this browser.');
+      memoiseVao(this.gl);
 
       this.gameData = opts.gameData || {};
       this.hud = new global.NR.Hud(opts.hudCanvas, this.gameData);
@@ -3211,6 +3325,20 @@
          NATIVE, where there is nothing to reconstruct - the pass is skipped
          entirely rather than run as an identity. */
       this.upscaler = st.upscaler === undefined ? 2 : st.upscaler;
+
+      /* THE FRAME LIMIT, AND WHO ENFORCES IT.
+
+         The row lived on the launcher's own save entry, which the game never
+         reads, so it was applied by nothing. It is an ordinary setting now and
+         this is the whole of it: a minimum interval the loop will not draw
+         faster than. `0` is UNCAPPED, and UNCAPPED has to mean no arithmetic
+         at all rather than a very large interval - a limiter that is always
+         running is a limiter that can always be wrong. */
+      const CAPS = SCHEMA.FPS_CAPS || [0, 30, 60, 75, 90, 120, 144, 165, 240];
+      const cap = CAPS[st.fps_cap === undefined ? 0 : st.fps_cap] || 0;
+      this.frameInterval = cap > 0 ? 1000 / cap : 0;
+      // ...and the counter that reports what actually came out
+      this.showFps = st.fpsShow === 1;
 
       if (this.driver) {
         this.driver.setLevel(DIFFICULTIES[this.diffIndex] || 'MEDIUM');
@@ -4959,8 +5087,10 @@
          those run through their own depth-only program. That is the number
          that decides whether a route is affordable. */
       this.scene.lastDrawCalls = this.scene.drawCalls;
+      this.scene.lastMatUploads = this.scene.matUploads;
       this.scene.lastCulled = this.scene.culled;
       this.scene.drawCalls = 0;
+      this.scene.matUploads = 0;
       this.scene.culled = 0;
       /* Whichever mode is spending raceMode, published for the one widget that
          draws it. Here rather than in update(), because every director has had
@@ -5600,9 +5730,29 @@
     run() {
       let last = performance.now();
       const frame = (now) => {
+        /* THE FRAME LIMIT.
+
+           A cap is a minimum interval, and the only honest way to hold one in
+           a webview is to decline to draw: there is no swap interval a page
+           can ask for. So a frame that arrives too early is skipped whole -
+           the simulation is not stepped either, because stepping it and not
+           drawing it is just a lower frame rate with extra work in it.
+
+           `- 0.5` of a millisecond, because rAF fires on a display tick and a
+           tick is never exactly the interval asked for: without the slack a
+           60 Hz cap on a 60 Hz screen misses every other frame and runs at 30.
+           Skipping is what makes it a LIMIT rather than a target - the loop
+           never tries to catch up, so a cap can only ever slow the game down
+           to the number asked for, never speed it up past what it can hold. */
+        const gap = this.frameInterval || 0;
+        if (gap > 0 && now - last < gap - 0.5) {
+          requestAnimationFrame(frame);
+          return;
+        }
         let dt = (now - last) / 1000;
         last = now;
         if (!isFinite(dt) || dt < 0) dt = 0;
+        this.fpsSample(dt);
         dt = Math.min(dt, 0.05);
         /* THE DILATION RUNS ON REAL TIME and the simulation runs on scaled
            time, which is the whole point: a slowed frame must not also slow
@@ -5627,6 +5777,31 @@
         requestAnimationFrame(frame);
       };
       requestAnimationFrame(frame);
+    }
+
+    /* WHAT THE COUNTER ACTUALLY COUNTS.
+     *
+     * Two numbers, because one of them is not enough to act on. The average
+     * over the last second is what a frame rate usually means; the SLOWEST
+     * frame in that second is the one the player felt, and a run that averages
+     * 90 with a 40 ms hitch in it is not a smooth run. A counter that reports
+     * only the mean hides exactly the thing it is being read to find.
+     *
+     * Measured on the wall clock and on the RAW delta - before the 50 ms clamp
+     * the simulation uses, and before time dilation - or a slow-motion beat
+     * would read as the game having dropped to a quarter of its frame rate.
+     */
+    fpsSample(dt) {
+      const F = this.fps || (this.fps = { now: 0, worst: 0, n: 0, sum: 0, peak: 0, t: 0 });
+      if (!(dt > 0)) return;
+      F.n++;
+      F.sum += dt;
+      if (dt > F.peak) F.peak = dt;
+      F.t += dt;
+      if (F.t < 0.5) return;
+      F.now = F.n / F.sum;
+      F.worst = F.peak > 0 ? 1 / F.peak : 0;
+      F.n = 0; F.sum = 0; F.peak = 0; F.t = 0;
     }
   }
 

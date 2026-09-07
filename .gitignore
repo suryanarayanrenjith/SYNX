@@ -70,3 +70,7 @@ npm-debug.log*
 #     git lfs track "web/data/*.pak" "web/data/*.bin"
 #
 # Do not add them here - a clone without them is a clone that cannot start.
+
+# Derived: `node tools/pack.js --unpack` writes it, `node tools/pack.js` reads it.
+# The pack is the source of truth; this is the scratch copy you edit in.
+assets-src/

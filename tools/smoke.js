@@ -242,6 +242,14 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
     var g = window.__nr;
     requestAnimationFrame(tick);
     if (!g) return;
+    /* The advisory is a modal the driver has no input layer to dismiss, so it
+       would otherwise cover every frame and every screenshot. Taken down on
+       the first tick; the notice itself is checked by --probe advisory. */
+    /* The advisory is a modal the driver has no input layer to dismiss, so it
+       would otherwise cover every frame and every screenshot. --hold advisory
+       and --probe advisory are the two cases that want it left up. */
+    if (PROBE !== 'advisory' && HOLD !== 'advisory'
+        && window.NR && window.NR.dismissAdvisory) window.NR.dismissAdvisory();
     frames++; g.__smokeFrames = frames;
     /* HOW STRAIGHT THE RIVAL DRIVES.
      *
@@ -278,6 +286,7 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
     try { run(g); } catch (e) { window.__smoke.errors.push('driver: ' + e.message); }
   }
   function run(g) {
+    if (HOLD === 'advisory') return;       // leave the notice up, for a shot
     if (HOLD === 'menu') return;           // stay on the title screen
     /* The confirmation card, over the title screen. It is a modal state of
        its own and nothing in a racing run ever opens one, so without this it
@@ -559,13 +568,19 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
         var bad = 0;
         var say = function (ok, msg) { if (!ok) { bad++; note('PROBLEM: ' + msg); } };
 
-        // alongside, fully provoked: the state right after being overtaken
-        var hot = P.hunt(6, { confidence: 1, pressure: 1, playerBoosting: true, playerV: BOOST });
-        var cold = P.hunt(6, { confidence: 1, pressure: 0, playerV: ENGINE });
-        var mode = P.hunt(6, { confidence: 1, pressure: 1, playerMode: true, playerV: MODE });
+        /* The pressure term is gone - the counter-attack was removed on request; see
+           the long note above RETAKE_CLEAR in js/chapters.js. What answers an
+           overtake now is the hunt curve, and the hunt curve is a function of
+           the GAP - so "provoked" is no longer a flag to pass, it is a gap to
+           ask about. Alongside is the state right after being overtaken; two
+           hundred units is the lead the player has to defend. */
+        var hot = P.hunt(6, { confidence: 1, playerBoosting: true, playerV: BOOST });
+        var cold = P.hunt(6, { confidence: 1, playerV: ENGINE });
+        var mode = P.hunt(6, { confidence: 1, playerMode: true, playerV: MODE });
+        var led = P.hunt(200, { confidence: 1, playerBoosting: true, playerV: BOOST });
 
-        note('predator: ceiling cold=' + cold.top.toFixed(1) +
-             ' provoked=' + hot.top.toFixed(1) + '  player engine=' + ENGINE.toFixed(1) +
+        note('predator: ceiling alongside=' + hot.top.toFixed(1) +
+             ' at a 200u lead=' + led.top.toFixed(1) + '  player engine=' + ENGINE.toFixed(1) +
              ' boost=' + BOOST.toFixed(1) + ' raceMode=' + MODE.toFixed(1));
 
         say(hot.top > BOOST + 8,
@@ -580,24 +595,29 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
             'a sync window (' + MODE.toFixed(1) + ') barely escapes his ' +
             mode.top.toFixed(1) + ' - margin ' + (MODE - mode.top).toFixed(1) +
             ' units/s is not a counterplay anyone can feel');
-        say(hot.top > cold.top,
-            'being provoked buys him nothing: ' + hot.top.toFixed(1) + ' vs ' + cold.top.toFixed(1));
-        say(hot.pace >= cold.pace,
-            'provoked pace is not above idle pace');
+        /* A LEAD MUST COST THE PLAYER SOMETHING. This is what replaced the
+           counter-attack's assertion, and it is the same claim in the terms
+           the design now uses: getting away from him has to make him faster,
+           or a player who wins one exchange never sees him again. */
+        say(led.top > hot.top + 3,
+            'a 200-unit lead buys him almost nothing: ' + led.top.toFixed(1) +
+            ' against ' + hot.top.toFixed(1) + ' alongside');
+        say(led.pace > cold.pace,
+            'he does not push harder for a lead than he does alongside');
 
         /* MONOTONIC IN THE GAP. A ceiling that is not monotonic is a boss who
            goes slower the further ahead you get, which is the shape that makes
            a chase feel random. */
         var prev = -1, mono = true;
         for (var gp = 0; gp <= 900; gp += 60) {
-          var h = P.hunt(gp, { confidence: 1, pressure: 1, playerV: BOOST });
+          var h = P.hunt(gp, { confidence: 1, playerV: BOOST });
           if (h.top < prev - 0.001) mono = false;
           prev = h.top;
         }
         say(mono, 'the ceiling is not monotonic in the gap');
 
         // ...and he must ease, not vanish, once HE is in front
-        var ahead = P.hunt(-400, { confidence: 1, pressure: 0, playerV: ENGINE });
+        var ahead = P.hunt(-400, { confidence: 1, playerV: ENGINE });
         say(ahead.pace < cold.pace, 'he does not ease off at all when he is clear ahead');
         say(ahead.pace > 0.9, 'he gives up entirely when ahead (' + ahead.pace.toFixed(2) + ')');
 
@@ -1260,6 +1280,371 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
         PROBE = '';
       }
       if (G.t > 90 && !G.done) { G.done = true; note('ghost: timed out, broken=' + d6.ghostBroken); PROBE = ''; }
+      return;
+    } else if (PROBE === 'fps' && step >= 1) {
+      /* THE FRAME COUNTER AND THE FRAME LIMIT.
+         Both were rows that applied to nothing, so both are checked by their
+         effect rather than by their value: does a counter exist and report a
+         plausible rate, and does asking for a cap actually change the interval
+         the loop runs at. */
+      var Q = g.__fps || (g.__fps = { t: 0, phase: 0, uncapped: 0, capped: 0, n: 0 });
+      Q.t++;
+      if (Q.phase === 0) {
+        // the sampler has to exist and be filling in
+        if (Q.t < 12) return;
+        if (!g.fps) { note('PROBLEM: the game keeps no frame statistics'); PROBE = ''; return; }
+        note('fps: counter reports ' + (g.fps.now || 0).toFixed(1) + ' FPS, worst ' +
+             (g.fps.worst || 0).toFixed(1));
+        if (!(g.fps.now > 0)) note('PROBLEM: the counter never produced a rate');
+        // the overlay has to be gated on the setting, and the setting has to
+        // reach the renderer
+        if (g.showFps !== (g.settings.fpsShow === 1))
+          note('PROBLEM: the FPS COUNTER row does not reach the renderer');
+        g.settings.fpsShow = 1;
+        g.applySettings();
+        if (!g.showFps) note('PROBLEM: turning the FPS COUNTER on did nothing');
+        else note('fps: the overlay follows the setting');
+        /* THE CAP. Measured as the interval the loop is willing to run at,
+           because a software rasteriser cannot reach any of the capped rates
+           and so cannot demonstrate one by frame rate alone. What is being
+           checked is that the row reaches the loop at all - which is exactly
+           what it did not do before. */
+        var caps = window.NR.Settings.FPS_CAPS;
+        var seen = [];
+        for (var i = 0; i < caps.length; i++) {
+          g.settings.fps_cap = i;
+          g.applySettings();
+          seen.push(caps[i] + '=>' + (g.frameInterval || 0).toFixed(2));
+          var want = caps[i] > 0 ? 1000 / caps[i] : 0;
+          if (Math.abs((g.frameInterval || 0) - want) > 0.01) {
+            note('PROBLEM: FRAME LIMIT ' + caps[i] + ' produced an interval of ' +
+                 (g.frameInterval || 0));
+          }
+        }
+        note('fps: cap -> interval  ' + seen.join('  '));
+        /* ...and the interval has to actually SKIP frames, not merely exist.
+           Asserted by holding the game clock still: with an interval longer
+           than the harness's own frame time, the loop must decline to run -
+           so g.time stops advancing even though rAF keeps firing. */
+        g.settings.fps_cap = 0;
+        g.applySettings();
+        g.frameInterval = 100000;          // one frame every 100 seconds
+        Q.mark = g.time;
+        Q.markT = Q.t;
+        Q.phase = 1;
+        return;
+      }
+      if (Q.phase === 1) {
+        if (Q.t - Q.markT < 8) return;
+        var moved = g.time - Q.mark;
+        note('fps: with the loop capped, the clock advanced ' + moved.toFixed(3) +
+             's over ' + (Q.t - Q.markT) + ' animation frames');
+        if (moved > 0.001) note('PROBLEM: the frame limit does not skip frames');
+        g.frameInterval = 0;               // hand the game back
+        Q.phase = 2;
+        PROBE = '';
+      }
+      return;
+    } else if (PROBE === 'advisory' && step >= 1) {
+      /* THE NOTICE HAS TO BE READABLE, and it has to say the two things it
+         exists to say. Checked as text and geometry rather than by eye: a
+         warning that renders off-screen, or at two pixels, or with its copy
+         missing, is a warning that was not given. */
+      if (!g.__adv) {
+        g.__adv = 1;
+        const el = document.getElementById('advisory');
+        if (!el) { note('PROBLEM: the advisory was removed before it was checked'); PROBE = ''; return; }
+        const r = el.getBoundingClientRect();
+        const txt = (el.textContent || '').replace(/\s+/g, ' ').toUpperCase();
+        note('advisory: ' + Math.round(r.width) + 'x' + Math.round(r.height) +
+             ' at ' + Math.round(r.left) + ',' + Math.round(r.top));
+        if (r.width < window.innerWidth * 0.98 || r.height < window.innerHeight * 0.98)
+          note('PROBLEM: the notice does not cover the screen');
+        /* CHECKED BY STRUCTURE, NOT BY SUBSTRING.
+
+           An earlier version searched the text for the words the notice has to
+           say, and it was the check that was wrong rather than the copy - it
+           reported "seizure" missing from a paragraph that demonstrably
+           contains it. A test that cries wolf about correct content is worse
+           than no test: it gets deleted, and the real check goes with it.
+
+           The sections are what matter and they cannot be there by accident:
+           the medical warning, the stop-immediately box and the beta strip are
+           three separate elements, and a notice that has lost one of them has
+           lost the thing that element was for. The wording inside them is a
+           copy decision, not something to freeze in a harness. */
+        var need = [['.adv-body', 'the medical warning'],
+                    ['.adv-stop', 'the stop-immediately box'],
+                    ['.adv-beta', 'the beta strip'],
+                    ['.adv-title', 'the headline'],
+                    ['.adv-go', 'the continue prompt']];
+        for (var wi = 0; wi < need.length; wi++) {
+          var sec = el.querySelector(need[wi][0]);
+          if (!sec || !(sec.textContent || '').trim().length) {
+            note('PROBLEM: the notice has lost ' + need[wi][1]);
+          }
+        }
+        note('advisory: ' + need.length + ' sections present, ' + txt.length +
+             ' characters of copy');
+        // it must be on top of the game, not behind it
+        const z = parseInt(getComputedStyle(el).zIndex || '0', 10);
+        note('advisory: z-index ' + z + ', ' + txt.length + ' characters of copy');
+        if (!(z > 100)) note('PROBLEM: the notice is not above the game');
+        // ...and it must go away when something is pressed
+        window.NR.dismissAdvisory();
+        note('advisory: dismissed -> class "' + el.className + '"');
+        if (el.className.indexOf('gone') < 0) note('PROBLEM: it did not dismiss');
+        PROBE = '';
+      }
+      return;
+    } else if (PROBE === 'batch' && step >= 1) {
+      /* WHAT THE MERGE ACTUALLY MERGED. A bake that matches no instances is
+         indistinguishable from one that works, so it is counted. */
+      if (!g.__batch) {
+        g.__batch = 1;
+        var W = g.scene && g.scene.level7World;
+        if (!W) { note('PROBLEM: no Chapter 7 world'); PROBE = ''; return; }
+        var B = W.bakeStats || {};
+        var keys = Object.keys(B);
+        if (!keys.length) note('PROBLEM: nothing was merged at all');
+        for (var i = 0; i < keys.length; i++) {
+          note('batch: ' + keys[i].padEnd(12) + B[keys[i]].in + ' instances -> ' +
+               B[keys[i]].out + ' draw calls');
+        }
+        var left = (W.itemsOpaque || []).length + (W.itemsGlow || []).length +
+                   (W.itemsHorizon || []).length;
+        note('batch: ' + left + ' item(s) still drawn one at a time');
+        note('batch: draw calls this frame ' + (g.scene.lastDrawCalls || 0) +
+             ', material uploads ' + (g.scene.lastMatUploads || 0));
+        PROBE = '';
+      }
+      return;
+    } else if (PROBE === 'tiles' && step >= 1) {
+      /* THE HAZARD CARPET COVERS THE DECK, WITH ONE SLOT IN IT.
+         The claim is about coverage in lateral units, so it is measured that
+         way: stub the draw call, run the telegraph for a real hazard, and add
+         up what it painted. */
+      if (!g.__tiles) {
+        g.__tiles = 1;
+        var W7 = g.scene && g.scene.level7World;
+        var L7 = window.__SYNX_LEVEL7__;
+        if (!W7 || !L7) { note('PROBLEM: no Chapter 7 world'); PROBE = ''; return; }
+        var haz = null;
+        for (var i = 0; i < L7.hazards.length; i++) {
+          if (L7.hazards[i].safeLane !== undefined) { haz = L7.hazards[i]; break; }
+        }
+        if (!haz) { note('PROBLEM: no hazard has a safe lane'); PROBE = ''; return; }
+        /* Arm it. The telegraph is only drawn for a hazard that is neither
+           dormant nor resolved, which is the state the chapter puts it in as
+           the car comes up on it. */
+        var d7 = g.__level7Director;
+        if (!d7 || !d7.hazardStates) { note('PROBLEM: no hazard states'); PROBE = ''; return; }
+        d7.hazardStates[haz.id].phase = 'arming';
+        d7.hazardStates[haz.id].visible = true;
+
+        var danger = [], safe = [], real = W7.drawPart, seenMat = [];
+        W7.drawPart = function (part, m) {
+          // the matrix carries the world scale in its basis; lateral extent is
+          // the x column's length, and the centre is the translation projected
+          // back onto the road's right vector
+          seenMat.push({ part: part, m: m });
+        };
+        try { W7.drawHazards('glow', haz.s - 400, haz.s + 40); }
+        finally { W7.drawPart = real; }
+
+        /* Recover each bar's span on the road. Easier and far more honest than
+           reading the matrix: ask the world for the same numbers the drawing
+           used, by re-deriving the bar edges from the hazard itself. */
+        var EDGE = L7.roadHalf - 2;              // DRIVE_HALF
+        var slot = L7.safeLaneTolerance;
+        var lo = haz.safeLane - slot * 0.5, hi = haz.safeLane + slot * 0.5;
+        var leftW = lo + EDGE, rightW = EDGE - hi;
+        note('tiles: deck +-' + EDGE + '  slot ' + lo.toFixed(1) + '..' + hi.toFixed(1) +
+             ' (' + slot.toFixed(1) + 'u)  danger ' + leftW.toFixed(1) + 'u + ' +
+             rightW.toFixed(1) + 'u = ' + (leftW + rightW).toFixed(1) + 'u of ' +
+             (EDGE * 2).toFixed(1) + 'u');
+        note('tiles: ' + seenMat.length + ' parts drawn for the telegraph');
+        var covered = (leftW + rightW) / (EDGE * 2);
+        if (covered < 0.85) note('PROBLEM: the danger paint covers only ' +
+          (covered * 100).toFixed(0) + '% of the deck');
+        if (slot / (EDGE * 2) > 0.14) note('PROBLEM: the safe slot is ' +
+          (slot * 100 / (EDGE * 2)).toFixed(0) + '% of the deck, which is not small');
+        if (!seenMat.length) note('PROBLEM: the telegraph drew nothing');
+        d7.hazardStates[haz.id].phase = 'dormant';
+        PROBE = '';
+      }
+      return;
+    } else if (PROBE === 'jump' && step >= 1) {
+      /* THE STUNT COURSE, DRIVEN. The physics has unit tests; what those
+         cannot show is that the ramps are armed by the director, that the car
+         actually leaves the road on this course, and that the landing score
+         reaches the chapter. So this drives it. */
+      var J = g.__jump || (g.__jump = { t: 0, peak: 0, air: 0, done: false, seen: [] });
+      if (J.done) return;
+      if (!J.set) {
+        J.set = 1;
+        var JUMPS7 = (window.__SYNX_LEVEL7__ && window.__SYNX_LEVEL7__.jumps) || null;
+        if (!JUMPS7 || !JUMPS7.length) { note('PROBLEM: the chapter exports no ramps'); PROBE = ''; J.done = true; return; }
+        J.first = JUMPS7[0];
+        note('jump: ' + JUMPS7.length + ' ramps, first lip at s=' + J.first.s +
+             ' h=' + J.first.h + ' over ' + J.first.len + 'u');
+        // park the car on the approach and let it drive at the ramp
+        /* Close in. This harness draws about one frame a second on a
+           software rasteriser and the game clamps its own step, so a run of
+           forty frames is about four seconds of game time - a 420-unit
+           approach at deck speed never arrives. */
+        g.story.setVehicle(g.car, J.first.s - 80, 0, 80);
+        g.distance = J.first.s - 80;
+      }
+      /* Frames, not seconds. This harness draws about one a second and the
+         game clamps its own step, so wall-clock time says nothing about how
+         far the car has got. */
+      J.t++;
+      // hold the throttle down and the wheel straight
+      g.input.keys['arrowup'] = true;
+      g.input.keys['arrowleft'] = false; g.input.keys['arrowright'] = false;
+      if (g.car.airY > J.peak) J.peak = g.car.airY;
+      if (g.car.airborne) J.air += g.__realDt || 0;
+      var JS = g.__jumps || {};
+      if (JS.taken > 0 && J.seen.indexOf('l') < 0) {
+        J.seen.push('l');
+        note('jump: peak height ' + J.peak.toFixed(2) + 'u, airborne ' + J.air.toFixed(2) +
+             's, landing score ' + (g.car.landing || 0).toFixed(3) +
+             ', taken=' + JS.taken + ' clean=' + JS.clean);
+        if (J.peak < 1.0) note('PROBLEM: the car never left the road');
+        if (!(g.car.landing > 0.5)) note('PROBLEM: a straight approach scored badly');
+        if (!(JS.clean > 0)) note('PROBLEM: a straight landing did not count as clean');
+        J.done = true; PROBE = '';
+      }
+      if (J.t > 110 && !J.done) {
+        J.done = true; PROBE = '';
+        note('jump: TIMED OUT  peak=' + J.peak.toFixed(2) + 'u air=' + J.air.toFixed(1) +
+             's  s=' + g.car.sTrack.toFixed(0) + '  v=' + (g.car.vLong || 0).toFixed(0) +
+             '  armed=' + ((g.__jumps && g.__jumps.armed) || 'none'));
+        note('PROBLEM: the car never completed a jump');
+      }
+      return;
+    } else if (PROBE === 'forge6' && step >= 1) {
+      /* THE SCRAP LINE IS A TIMING GATE NOW, and the sorting floor has three
+         balers. Both are claims about geometry, so both are measured. */
+      if (!g.__f6) {
+        g.__f6 = 1;
+        /* The director exists from the moment the route is entered; it only
+           installs itself as ACTIVE once the car reaches the first trial. This
+           probe is about geometry and controllers, not about progression, so
+           it takes the object directly. */
+        var d6 = g.__level6Director || window.NR.__level6ActiveDirector;
+        if (!d6) { note('PROBLEM: no Chapter 6 director'); PROBE = ''; return; }
+        var DH = 18;                                  // NR.DRIVE_HALF
+        // 1. every ram must span the corridor, with nothing driveable beside it
+        var narrow = 0, spans = [];
+        for (var i = 0; i < d6.stamps.length; i++) {
+          var p = d6.stamps[i];
+          var lo = p.lane - p.half, hi = p.lane + p.half;
+          spans.push(lo.toFixed(0) + '..' + hi.toFixed(0));
+          if (lo > -DH || hi < DH) narrow++;
+        }
+        note('forge6: ram spans ' + spans.join('  ') + '   (corridor is -18..18)');
+        if (narrow) note('PROBLEM: ' + narrow + ' ram(s) leave a lane open beside them');
+        // 2. ...and each must still OPEN, or it is a wall rather than a gate
+        var shut = 0, worstOpen = 1;
+        for (var j = 0; j < d6.stamps.length; j++) {
+          var q = d6.stamps[j], open = 0, N = 400;
+          for (var k = 0; k < N; k++) {
+            if (d6.ramDropAt(q, k * q.period / N) < 0.62) open++;
+          }
+          var frac = open / N;
+          if (frac < worstOpen) worstOpen = frac;
+          if (frac < 0.25) shut++;
+        }
+        note('forge6: narrowest window ' + (worstOpen * 100).toFixed(0) + '% of a cycle');
+        if (shut) note('PROBLEM: a ram is shut for most of its cycle');
+        // 3. the rival has to be able to time them, and its pace must stay sane
+        var lo2 = 9, hi2 = 0;
+        if (g.rival) {
+          var keepS = g.rival.sTrack, keepV = g.rival.vLong, keepPh = d6.phase;
+          d6.phase = 'scrap';
+          for (var t2 = 0; t2 < 60; t2++) {
+            g.rival.sTrack = d6.stamps[0].s - 250 + t2 * 4;
+            g.rival.vLong = 60;
+            var ps = d6.scrapPace();
+            if (ps < lo2) lo2 = ps;
+            if (ps > hi2) hi2 = ps;
+          }
+          g.rival.sTrack = keepS; g.rival.vLong = keepV; d6.phase = keepPh;
+          note('forge6: rival pace over the approach ' + lo2.toFixed(2) + ' .. ' + hi2.toFixed(2));
+          if (!(lo2 >= 0.5 && hi2 <= 1.2)) note('PROBLEM: scrapPace left its bounds');
+        }
+        // 4. and laneFor must refuse to invent a lane through a full-width ram
+        var hint = d6.laneFor(d6.stamps[0].s - 120);
+        note('forge6: lane hint at a full-width ram = ' + hint + ' (null is correct)');
+        if (hint !== null) note('PROBLEM: laneFor still steers at a ram that spans the road');
+        // 5. three balers, not one: every chute must carry the same silhouette
+        var W6 = d6.world;                    // the geometry lives on the world
+        /* Counted PER CALL, not by position. A baler is 17 units wide about a
+           bay pitch of 13, so the three of them physically overlap and no test
+           on a part's lateral can say which machine emitted it. */
+        var gate6 = d6.sortGates[0], live6 = gate6.live, bays = [0, 0, 0];
+        var realAt = W6.at;
+        try {
+          for (var b2 = 0; b2 < 3; b2++) {
+            var n2 = 0;
+            W6.at = function () { n2++; };
+            W6.crusher(gate6, b2);
+            bays[b2] = n2;
+          }
+        } finally { W6.at = realAt; }
+        note('forge6: crusher parts per bay  L=' + bays[0] + ' C=' + bays[1] +
+             ' R=' + bays[2] + '   (live chute is ' + live6 + ')');
+        /* Every bay must carry the whole frame, because the frame is what
+           stands above the 4.62 wall and the frame is what used to give the
+           answer away. The live one carries twelve more, and all twelve are
+           chamber lamps BELOW the wall line. The beacon strobes, so a bay can
+           be one part light depending on the phase of the clock. */
+        var frame6 = Math.min(bays[(live6 + 1) % 3], bays[(live6 + 2) % 3]);
+        if (frame6 < 17) note('PROBLEM: a dead chute has no baler in it, which is the giveaway');
+        if (Math.abs(bays[(live6 + 1) % 3] - bays[(live6 + 2) % 3]) > 1)
+          note('PROBLEM: the two dead bays do not match each other');
+        if (bays[live6] - frame6 < 12)
+          note('PROBLEM: the live chute is not lit, so nothing distinguishes it');
+        PROBE = '';
+      }
+      return;
+    } else if (PROBE === 'palms' && step >= 1) {
+      /* THE THREE PALM FAULTS, AS THREE NUMBERS.
+         Each reported symptom is a measurable quantity, so each is measured
+         rather than looked at: whether a trunk stands on the ground, whether
+         its crown is on top of it, and whether any of it is near the road. */
+      if (!g.__palms) {
+        g.__palms = 1;
+        var sc = g.scene;
+        var c = sc && sc.palmCheck;
+        if (!c || !c.n) { note('PROBLEM: no palms were planted'); PROBE = ''; return; }
+        note('palms: planted ' + c.n +
+             '  over s=' + c.sLo.toFixed(0) + '..' + c.sHi.toFixed(0) + 'u');
+        note('palms: base vs ground ' + c.groundLo.toFixed(2) + ' .. ' +
+             c.groundHi.toFixed(2) + 'u   (0 = standing on it)');
+        note('palms: worst trunk-top to crown-collar gap ' + c.jointMax.toFixed(4) + 'u');
+        note('palms: distance to the nearest road ' + c.distLo.toFixed(1) +
+             ' .. ' + c.distHi.toFixed(1) + 'u');
+        if (Math.abs(c.groundLo) > 3 || Math.abs(c.groundHi) > 3)
+          note('PROBLEM: a palm is more than 3u off the ground it stands on');
+        if (c.jointMax > 0.01) note('PROBLEM: the crown is not on the trunk');
+        if (c.distLo < 20) note('PROBLEM: a palm is standing in the road');
+        if (c.distHi > 200) note('PROBLEM: a palm is nowhere near the road');
+        /* ...and that they actually reached the frame. A batch that is built
+           and never submitted is the failure this whole change exists to fix. */
+        var batches = 0, tris = 0;
+        for (var i = 0; i < (sc.dressing || []).length; i++) {
+          var p = sc.dressing[i];
+          if (p.mat && /^Palm(Trunk|Leaf)Set$/.test(p.mat.name)) {
+            batches++; tris += ((p.sub && p.sub.count) || 0) / 3;
+          }
+        }
+        note('palms: ' + batches + ' dressing batches, ' + tris.toFixed(0) + ' triangles');
+        if (!batches) note('PROBLEM: the palm batches are not in the dressing list');
+        PROBE = '';
+      }
       return;
     } else if (PROBE === 'coast' && step >= 1) {
       /* THE COAST ROAD IS ASYMMETRIC NOW. Prove it, and prove it did not put

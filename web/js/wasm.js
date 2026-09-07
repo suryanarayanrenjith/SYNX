@@ -310,6 +310,18 @@
       return this;
     }
 
+    /* Arm the next launch ramp, or clear it with no arguments.
+
+       The solver holds ONE at a time on purpose - see synx_veh_arm_ramp - so a
+       director arms each one as the car comes up on it. The height is the lip
+       above the road; the two arc lengths are where the incline starts and
+       where it ends. */
+    armRamp(s0, s1, h) {
+      M().synx_veh_arm_ramp(this._id, s0 || 0, s1 || 0, h || 0);
+      return this;
+    }
+    clearRamp() { return this.armRamp(0, 0, 0); }
+
     /** Move onto a lateral without resetting: an arrival is already rolling. */
     placeLateral(s, lateral) {
       M().synx_veh_place_lateral(this._id, s, lateral || 0);
@@ -914,6 +926,56 @@
   NR.ribbonBegin = ribbonBegin;
   NR.ribbonStrip = ribbonStrip;
   NR.ribbonOut = ribbonOut;
+
+
+  /* ---------------------------------------------------------- particles --
+   *
+   * The sprite system's two hot loops live in the core; see
+   * crates/synx-core/src/particles.rs for why. This is the whole of the
+   * bridge: one buffer JavaScript writes when it spawns, and two calls a
+   * frame.
+   *
+   * `fxParticles` hands back a live view rather than a copy. It is re-derived
+   * on every call because `synx_fx_reset` reallocates and, more subtly,
+   * because ANY core allocation can grow linear memory and replace
+   * `memory.buffer` - a view cached across that boundary reads as zeroes and
+   * throws nothing, which is a particle system that silently stops.
+   */
+  function fxReset(max) {
+    const w = M();
+    if (!w || !w.synx_fx_reset) return 0;
+    w.synx_fx_reset(max);
+    return w.synx_fx_stride();
+  }
+  /** The particle buffer, as a live Float32Array view. */
+  function fxParticles(max) {
+    const w = M();
+    if (!w || !w.synx_fx_pptr) return null;
+    M();          // the views are re-derived there; see the note on M
+    const p = w.synx_fx_pptr() >> 2;
+    return F32.subarray(p, p + max * w.synx_fx_stride());
+  }
+  /** One damped Euler step. Returns how many particles are still alive. */
+  function fxIntegrate(dt) {
+    const w = M();
+    if (!w || !w.synx_fx_integrate) return -1;
+    return w.synx_fx_integrate(dt);
+  }
+  /** Expand to triangles and hand back the vertex data, or null. */
+  function fxBuild(right, up, fwd) {
+    const w = M();
+    if (!w || !w.synx_fx_build) return null;
+    const n = w.synx_fx_build(right[0], right[1], right[2],
+      up[0], up[1], up[2], fwd[0], fwd[1], fwd[2]);
+    if (!n) return null;
+    M();          // the views are re-derived there; see the note on M
+    const p = w.synx_fx_optr() >> 2;
+    return F32.subarray(p, p + n * 9);
+  }
+  NR.fxReset = fxReset;
+  NR.fxParticles = fxParticles;
+  NR.fxIntegrate = fxIntegrate;
+  NR.fxBuild = fxBuild;
 
   NR.bakeBegin = bakeBegin;
   NR.bakeRun = bakeRun;

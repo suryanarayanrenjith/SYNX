@@ -241,10 +241,16 @@ function connect(wsUrl) {
     const saved = await evalIn(
       '(async () => { const t = window.__TAURI__.core.invoke;' +
       ' await t("launcher_store", { settings: { mode: "windowed", width: 1280,' +
-      ' height: 720, monitor: 0, gpu: true, always_on_top: false, fps_cap: 60, vsync: true } });' +
+      ' height: 720, monitor: 1, gpu: true, always_on_top: false, vsync: false } });' +
       ' const s = await t("save_load"); return JSON.stringify(s["synx.launcher.v1"] || null); })()');
     const back = JSON.parse(saved || 'null');
-    if (!back || back.fps_cap !== 60 || back.mode !== 'windowed') {
+    /* Checked on rows the HOST actually reads. This used to assert `fps_cap`,
+       which round-tripped perfectly and meant nothing: `launcher_store` writes
+       the object verbatim, so the test passed on a field no code anywhere
+       consumed. A round trip is only worth testing for a value something acts
+       on - `vsync` reaches the webview's command line, `monitor` decides which
+       screen the window opens on, and both have their own checks besides. */
+    if (!back || back.vsync !== false || back.monitor !== 1 || back.mode !== 'windowed') {
       fail('a launcher setting did not survive the save file: ' + saved);
     } else {
       ok('settings round-trip through the save file');

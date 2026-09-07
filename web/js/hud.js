@@ -1093,6 +1093,43 @@
         || g.state === 'startcard' || g.state === 'confirm';
       this.drawToasts(dt, !modal, g.state);
       if (g.fade > 0.001) this.scrim(Math.min(1, g.fade));
+      /* LAST, AND OVER EVERYTHING INCLUDING THE FADE. A counter that is hidden
+         by the thing being measured is a counter nobody can use during the one
+         moment it matters - a transition is exactly where frames are dropped. */
+      if (g.showFps) this.drawFps(g);
+    }
+
+    /* THE FRAME COUNTER.
+     *
+     * Two numbers, because the average alone hides the thing it is read to
+     * find: 90 FPS with one 40 ms hitch in it is not a smooth second, and it
+     * reports as 90. `MIN` is the slowest frame of the last half second, which
+     * is the one the player actually felt.
+     *
+     * Top-left, small, and outside every other widget's box - the HUD's own
+     * instruments live along the bottom and down the right, and the corner it
+     * uses is the one nothing else has claimed. Colour is the reading rather
+     * than decoration: green while it is holding, amber under 50, red under
+     * 30. A number that changes colour can be read without being read.
+     */
+    drawFps(g) {
+      const F = g.fps;
+      if (!F || !F.now) return;
+      const hue = (v) => (v >= 50 ? '#91ff31' : v >= 30 ? '#ffb400' : '#ff3b1e');
+      const now = Math.round(F.now), low = Math.round(F.worst);
+      const c = this.ctx;
+      c.save();
+      // a plate under it, or a bright number over a bright road is unreadable
+      c.globalAlpha = 0.55;
+      c.fillStyle = '#05010f';
+      /* TOP LEFT. The virtual space is 1280x720 about its own centre with y
+         UP, so this corner is (-640, +360) - and it is the one corner nothing
+         else in this file draws in. The instruments are along the bottom and
+         down the right; the story cards come in from the middle. */
+      c.fillRect(this.vx(-628), this.vy(344), this.vs(150), this.vs(46));
+      c.restore();
+      this.label(now + ' FPS', -620, 330, 20, hue(now), 'left', 900);
+      this.label('MIN ' + low, -620, 310, 13, hue(low), 'left', 700, 0.85);
     }
 
     drawLoading(g) {
