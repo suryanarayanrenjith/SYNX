@@ -55,6 +55,10 @@ const FREEROAM = arg('freeroam', '');
    reflection probe are the two passes that submit the world again - so the
    number is only meaningful next to the preset it was taken at. */
 const PRESET = parseInt(arg('preset', '0'), 10);
+/* Which camera view to drive in: 0 chase, 1 bonnet, 2 drone. The bonnet and
+   the drone are the two the harness cannot otherwise reach - the key that
+   cycles them is a key, and this driver has no keyboard. */
+const CAMERA = arg('cam', '');
 /* Which document to open. The launcher is a page of its own with its own
    markup and its own script, and nothing in the game ever navigates to it - so
    without this it has no coverage at all, which is exactly how the mode
@@ -229,7 +233,7 @@ const PAGE_REPORTER = `
   };
 `;
 
-const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, scale, upscaler) => `
+const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, scale, upscaler, camera) => `
 (function () {
   var HOLD = '${hold}';
   var FREEROAM = '${freeroam}';
@@ -238,18 +242,23 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
   var LOOK = '${look}';
   var step = 0, at = 0, frames = 0;
   var note = function (t) { window.__smoke.notes.push(t); };
+  // proof of life for the report: see the noreport branch in the runner
+  if (window.__smoke) window.__smoke.driver = 1;
   function tick() {
-    var g = window.__nr;
     requestAnimationFrame(tick);
-    if (!g) return;
-    /* The advisory is a modal the driver has no input layer to dismiss, so it
-       would otherwise cover every frame and every screenshot. Taken down on
-       the first tick; the notice itself is checked by --probe advisory. */
     /* The advisory is a modal the driver has no input layer to dismiss, so it
        would otherwise cover every frame and every screenshot. --hold advisory
-       and --probe advisory are the two cases that want it left up. */
+       and --probe advisory are the two cases that want it left up.
+
+       BEFORE THE GAME EXISTS, NOT AFTER. This used to sit under the guard
+       below, and the guard is window.__nr - which main.js does not create
+       until the notice has been dismissed. The harness was waiting for a game
+       that was waiting for the harness, so every run reported a game that
+       never started and no frames at all, on a page that was working fine. */
     if (PROBE !== 'advisory' && HOLD !== 'advisory'
         && window.NR && window.NR.dismissAdvisory) window.NR.dismissAdvisory();
+    var g = window.__nr;
+    if (!g) return;
     frames++; g.__smokeFrames = frames;
     /* HOW STRAIGHT THE RIVAL DRIVES.
      *
@@ -422,6 +431,10 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
       }
       g.startCountdown();
       g.countdown = 0.05;          // software rendering has no time for lights
+      if ('${camera}' !== '') {
+        g.camMode = parseInt('${camera}', 10) | 0;
+        note('camera view ' + g.camMode);
+      }
       note('entered route ${route}: ' + (g.level && g.level.name));
       step = 1; at = 0;
     } else if (PROBE === 'sink' && step >= 1) {
@@ -1345,6 +1358,350 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
         PROBE = '';
       }
       return;
+    } else if (PROBE === 'bonnet' && step >= 1) {
+      /* THE BONNET VIEW, MEASURED.
+       *
+       * This replaced two probes - cabin and cockpit - that measured a
+       * generated interior against the frame. There is no interior any more:
+       * the shipped car is an exterior model whose cabin volume is shorter
+       * than a seated person, so the first-person eye was moved onto the nose
+       * where the car has geometry that is meant to be looked at.
+       *
+       * Three questions, and a view that fails any of them looks broken in a
+       * way the other two cannot tell you about:
+       *
+       *   Is the eye ON the car - ahead of its centre, above its bodywork?
+       *   Is the car's own front in the frame, below the axis, not filling it?
+       *   Is the near plane close enough not to eat the bonnet?
+       */
+      /* SET THE VIEW, THEN LET THE GAME RUN A FRAME. camMode is an input to
+         the camera update, not the camera: setting it and measuring g.eye in
+         the same tick reads where the CHASE camera left the eye last frame,
+         which is eleven units behind the car and reports a bonnet view that
+         is nowhere near the bonnet. */
+      var N = g.__bn || (g.__bn = { t: 0 });
+      N.t++;
+      if (N.t === 1) { g.camMode = 1; return; }
+      if (N.t < 3) return;
+      if (!N.done) {
+        N.done = 1;
+        var sc = g.scene;
+        var real = sc.drawPart, tally = [];
+        sc.drawPart = function (p, m) {
+          var mm = m || (p && p.m);
+          if (mm) tally.push({ n: (p.mat && p.mat.name) || '?', x: mm[12], y: mm[13], z: mm[14] });
+          return real.call(sc, p, m);
+        };
+        try { g.draw(1 / 60); } finally { sc.drawPart = real; }
+        var e = g.eye, tg = g.target, car = g.car;
+        var fx = tg[0] - e[0], fy = tg[1] - e[1], fz = tg[2] - e[2];
+        var fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+        // where the eye sits relative to the car it is riding
+        var dx = e[0] - car.x, dy = e[1] - car.y, dz = e[2] - car.z;
+        var along = dx * Math.sin(car.yaw) + dz * Math.cos(car.yaw);
+        note('bonnet: eye is ' + along.toFixed(2) + 'u ahead of the car centre, ' +
+             dy.toFixed(2) + 'u above it, fov ' + (g.fov || 0).toFixed(0) +
+             ', near ' + (g.camNear || 0).toFixed(3));
+        if (!(along > 1.0 && along < 3.2)) note('PROBLEM: the eye is not on the nose');
+        if (!(dy > 0.0 && dy < 1.6)) note('PROBLEM: the eye is not just above the bodywork');
+        // ...and how much of the car is in shot, in degrees below the axis
+        var vfov = (g.fov || 70) / 2;
+        var lo = 999, hi = -999, seen = 0;
+        for (var i = 0; i < tally.length; i++) {
+          var q = tally[i];
+          var qx = q.x - e[0], qy = q.y - e[1], qz = q.z - e[2];
+          var f = qx * fx + qy * fy + qz * fz;
+          if (f < 0.02 || f > 6) continue;         // only the car the eye is on
+          var v = Math.atan2(qy - fy * f, f) * 180 / Math.PI;
+          lo = Math.min(lo, v); hi = Math.max(hi, v); seen++;
+        }
+        note('bonnet: ' + seen + ' parts of the car within 6u, ' +
+             (seen ? lo.toFixed(0) + ' to ' + hi.toFixed(0) + ' deg vertically' : 'none') +
+             ' against a half-frame of ' + vfov.toFixed(0) + ' deg');
+        if (!seen) note('PROBLEM: no bodywork in front of the eye - the view is floating');
+        else if (hi > 0) note('PROBLEM: the car is up in the sky part of the frame');
+        else if (lo < -vfov) note('bonnet: some of the car is below the frame, which is fine');
+        PROBE = '';
+      }
+      return;
+    } else if (PROBE === 'driver' && step >= 1) {
+      /* DOES THE DRIVER'S HEAD COME THROUGH THE ROOF?
+       *
+       * It did: the helmet was a shell of scale 0.42 centred at y 0.20 in
+       * figure space, so its crown reached 0.41 against a roof that is between
+       * 0.323 and 0.385 over the seat. This walks the real figure through the
+       * real matrices and reports the highest point of it against the highest
+       * point of the car, in world space, which is the only version of the
+       * question that cannot be argued with.
+       */
+      if (!g.__drv) {
+        g.__drv = 1;
+        var sc = g.scene;
+        var real = sc.drawPart, body = -1e9, head = -1e9, parts = 0;
+        var cx = g.car.x, cz = g.car.z;
+        /* The top of a part, in world space, from whatever its shape gives:
+           an imported mesh carries its own AABB and the eight corners of it
+           go through the matrix exactly; a generated driver piece does not,
+           and every one of them is a unit shape centred on its origin, so
+           half the length of the matrix column IS its half height. Compare
+           an origin against a top and the answer is meaningless, which is
+           what the first version of this probe did. */
+        function topOf(mm, mesh) {
+          var bb = mesh && mesh.aabb;
+          if (!bb) return mm[13] + Math.hypot(mm[4], mm[5], mm[6]) * 0.5;
+          var hi = -1e9;
+          for (var c = 0; c < 8; c++) {
+            var x = (c & 1) ? bb[3] : bb[0];
+            var y = (c & 2) ? bb[4] : bb[1];
+            var z = (c & 4) ? bb[5] : bb[2];
+            var wy = mm[1] * x + mm[5] * y + mm[9] * z + mm[13];
+            if (wy > hi) hi = wy;
+          }
+          return hi;
+        }
+        sc.drawPart = function (p, m) {
+          var mm = m || (p && p.m);
+          var nm = (p.mat && p.mat.name) || '';
+          if (mm && Math.hypot(mm[12] - cx, mm[14] - cz) < 4) {
+            var top = topOf(mm, p.mesh);
+            if (/^Driver(Helmet|Visor|Peak)/.test(nm)) { head = Math.max(head, top); parts++; }
+            else if (!/^Driver/.test(nm)) body = Math.max(body, top);
+          }
+          return real.call(sc, p, m);
+        };
+        try { g.draw(1 / 60); } finally { sc.drawPart = real; }
+        note('driver: ' + parts + ' head parts, crown at y ' + head.toFixed(3) +
+             ', the roof of the car at y ' + body.toFixed(3) +
+             ' (clearance ' + (body - head).toFixed(3) + 'u)');
+        /* DO THE HANDS ACTUALLY GO ROUND THE WHEEL?
+         *
+         * They used to turn on the spot: each glove was rotated about its own
+         * origin by the steering angle, which spins a hand in place and leaves
+         * it exactly where it was. From outside the car it reads as a driver
+         * who is not holding anything.
+         *
+         * Two draws at opposite lock, and two questions about them. Did the
+         * gloves MOVE - a hand on a rim at half a radian of wheel travels a
+         * good fraction of the rim - and did they stay the same distance from
+         * the hub, which is what tells a rotation about the hub apart from any
+         * other way of moving a hand.
+         */
+        var poses = [];
+        for (var pass = 0; pass < 2; pass++) {
+          var hub = null, grip = [];
+          sc.drawPart = function (q, m) {
+            var mm = m || (q && q.m);
+            var qn = (q.mat && q.mat.name) || '';
+            var mn = (q.mesh && q.mesh.name) || '';
+            if (mm && Math.hypot(mm[12] - g.car.x, mm[14] - g.car.z) < 4) {
+              /* THE RIM, BY ITS MESH. The wheel, its spokes and the column
+                               all wear the same material, and the column is drawn first -
+                               so keying on the material name anchors the measurement to a
+                               point on the steering column that does not move, and every
+                               hand then looks like it is leaving the rim. Only the rim is
+                               the rim. */
+              if (mn === 'DriverRim' && !hub) hub = [mm[12], mm[13], mm[14]];
+              /* ONE PASS ONLY. A frame draws this car more than once - the shadow
+                               cascades and the reflection probe each submit it again - so a
+                               collector that keeps taking gloves ends up comparing a hand
+                               from one pass against a hub from another. The figure is drawn
+                               hands-first, so the first two gloves and the first hub after
+                               them are one pass by construction. */
+                            else if (/^DriverGloveP$/.test(qn) && grip.length < 2) {
+                              grip.push([mm[12], mm[13], mm[14]]);
+                            }
+            }
+            return real.call(sc, q, m);
+          };
+          var was = g.car.steer;
+          g.car.steer = pass ? 0.30 : -0.30;
+          try { g.draw(1 / 60); } finally { sc.drawPart = real; g.car.steer = was; }
+          poses.push({ hub: hub, grip: grip });
+        }
+        var A = poses[0], Bp = poses[1];
+        if (!A.hub || A.grip.length < 2 || Bp.grip.length < 2) {
+          note('PROBLEM: the wheel or the gloves were not drawn');
+        } else {
+          var moved = 0, radiusDrift = 0;
+          for (var gi = 0; gi < 2; gi++) {
+            var p0 = A.grip[gi], p1 = Bp.grip[gi];
+            moved = Math.max(moved, Math.hypot(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]));
+            var r0 = Math.hypot(p0[0] - A.hub[0], p0[1] - A.hub[1], p0[2] - A.hub[2]);
+            var r1 = Math.hypot(p1[0] - Bp.hub[0], p1[1] - Bp.hub[1], p1[2] - Bp.hub[2]);
+            radiusDrift = Math.max(radiusDrift, Math.abs(r1 - r0));
+            if (gi === 0) note('driver: grip radius ' + r0.toFixed(3) + 'u from the hub');
+          }
+          note('driver: lock to lock the gloves travel ' + moved.toFixed(3) +
+               'u, and their radius changes by ' + radiusDrift.toFixed(4) + 'u');
+          if (moved < 0.15) {
+            note('PROBLEM: the hands barely move with the wheel - they are turning on the spot');
+          }
+          if (radiusDrift > 0.01) {
+            note('PROBLEM: the hands leave the rim as the wheel turns');
+          }
+        }
+        if (!parts) note('PROBLEM: the driver has no head');
+        else if (head > body) note('PROBLEM: the head is through the roof by ' +
+                                   (head - body).toFixed(3) + 'u');
+        PROBE = '';
+      }
+      return;
+    } else if (PROBE === 'warnings' && step >= 1) {
+      /* THE NETWORK WARNINGS, AND THE POPUP THEY ARRIVE IN.
+       *
+       * Three separate claims, and the first two are what the player
+       * actually experiences:
+       *
+       *   A machine with no network is told so AT ONCE. It used to sit
+       *   through two thirty-second attempts at a server it had no route to
+       *   before saying anything, which reads as a game that has hung.
+       *
+       *   The card that says so is a real modal: it takes the keyboard, it
+       *   traps it, and ESC gives it back. A warning that cannot be
+       *   dismissed with a pad or a keyboard is a dead end.
+       *
+       *   The typewriter finishes. A message that stops halfway because its
+       *   frame budget ran out is worse than one that never animated.
+       */
+      var W = g.__warn || (g.__warn = { t: 0 });
+      W.t++;
+      if (W.t === 1) {
+        // the browser will not let this be assigned, but it can be shadowed
+        try {
+          Object.defineProperty(window.navigator, "onLine",
+            { configurable: true, get: function () { return false; } });
+          note("warnings: navigator.onLine forced to false");
+        } catch (e) { note("warnings: could not fake onLine - " + e.message); }
+        return;
+      }
+      if (W.t === 2) {
+        if (!window.NR || !window.NR.UI) { note("PROBLEM: NR.UI was never loaded"); PROBE = ""; return; }
+        // the net layer has to answer without waiting on a socket
+        W.t0 = performance.now();
+        window.NR.Net.probe("https://example.invalid").then(function (r) {
+          var ms = performance.now() - W.t0;
+          note("warnings: probe answered in " + ms.toFixed(0) + "ms, offline=" + !!r.offline
+               + " why=" + JSON.stringify(r.why));
+          if (!r.offline) note("PROBLEM: with no network, probe did not say so");
+          if (ms > 2000) note("PROBLEM: probe took " + ms.toFixed(0) + "ms to notice there is no network");
+          W.probed = 1;
+        });
+        // ...and the card itself
+        window.NR.UI.alert({
+          kind: "warn", title: "NO NETWORK",
+          body: "This machine reports no connection, so there is nothing to reach.",
+          note: "Reconnect and press TRY AGAIN.",
+          actions: [{ label: "TRY AGAIN", value: "retry", primary: true },
+                    { label: "BACK", value: "close" }],
+          onClose: function (r) { W.closed = r === null ? "escape" : r; },
+        });
+        return;
+      }
+      if (W.t === 3) {
+        var card = document.querySelector(".ui-modal .ui-card");
+        if (!card) { note("PROBLEM: the warning card did not render"); PROBE = ""; return; }
+        var r = card.getBoundingClientRect();
+        note("warnings: card is " + Math.round(r.width) + "x" + Math.round(r.height) + " at " +
+             Math.round(r.left) + "," + Math.round(r.top));
+        if (r.width < 200 || r.height < 120) note("PROBLEM: the card rendered too small to read");
+        var focused = document.activeElement;
+        var hasKeys = !!(focused && card.contains(focused));
+        note("warnings: the keyboard is " + (hasKeys ? "on " + focused.textContent : "NOT in the card"));
+        if (!hasKeys) note("PROBLEM: the card did not take the keyboard");
+        var body = card.querySelector(".ui-body");
+        W.mid = body ? body.textContent.length : -1;
+        return;
+      }
+      if (W.t >= 4 && !W.typed) {
+        /* WAITED OUT IN FRAMES, NOT SECONDS. This harness draws about one
+           frame a second on a software rasteriser, and the typewriter is
+           driven off requestAnimationFrame - so it advances in whole
+           chunks here rather than character by character, and a check on
+           the frame straight after it starts catches it one letter in and
+           calls a working animation broken. Give it frames until it stops
+           growing. */
+        var body2 = document.querySelector(".ui-modal .ui-body");
+        var full = "This machine reports no connection, so there is nothing to reach.";
+        var got = body2 ? body2.textContent : "";
+        if (got !== full && W.t < 10) { W.last = got.length; return; }
+        note("warnings: the message typed " + got.length + " of " + full.length +
+             " characters over " + (W.t - 2) + " frames");
+        if (got !== full) note("PROBLEM: the typewriter did not finish: " + JSON.stringify(got));
+        // and ESC has to give the keyboard back
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        W.typed = W.t;
+        return;
+      }
+      if (W.typed && W.t > W.typed) {
+        var still = document.querySelector(".ui-modal:not(.ui-gone)");
+        note("warnings: after ESC the card is " + (still ? "STILL UP" : "gone") +
+             ", onClose said " + JSON.stringify(W.closed));
+        if (still) note("PROBLEM: ESC did not dismiss the warning");
+        if (W.closed !== "escape") note("PROBLEM: the caller was not told how it closed");
+        if (!W.probed) note("PROBLEM: the offline probe never answered at all");
+        PROBE = "";
+        return;
+      }
+      return;
+    } else if (PROBE === 'camera' && step >= 1) {
+      /* THE THREE VIEWS, MEASURED. Each is a claim about where the eye is
+         relative to the car, and each is checkable: a bonnet eye must be on
+         the car's own nose, a drone eye a long way above it, and a chase eye
+         behind it.
+
+         The drone also has to say WHERE IN THE FRAME the car ends up, which is
+         the thing that was wrong with it: the eye was so nearly overhead and
+         led the road so far that the car sat at 31 degrees below the view axis
+         against a 34 degree half-frame - on the bottom edge, behind the boost
+         bar. Anything under about 25 leaves it clear of the HUD band. */
+      var C = g.__cam || (g.__cam = { t: 0, seen: {} });
+      C.t++;
+      if (C.t < 2) return;   // one frame for the new view to settle, not six
+      var car = g.car;
+      var d = Math.hypot(g.eye[0] - car.x, g.eye[2] - car.z);
+      var up = g.eye[1] - car.y;
+      var name = ['CHASE', 'BONNET', 'DRONE'][g.camMode];
+      if (!C.seen[name]) {
+        C.seen[name] = 1;
+        note('camera: ' + name.padEnd(8) + ' eye is ' + d.toFixed(1) +
+             'u from the car horizontally, ' + up.toFixed(1) + 'u above it, fov ' +
+             (g.fov || 0).toFixed(0));
+        if (name === 'BONNET' && !(d < 3.2 && up > -0.2 && up < 2.5))
+          note('PROBLEM: the bonnet eye is not on the car');
+        if (name === 'DRONE') {
+          /* HOW HIGH IS HIGH ENOUGH DEPENDS ON THE ROUTE. Two of the seven
+             run under a roof and cap the climb - see droneCeiling in LEVELS -
+             so a flat threshold reports the Forge and Neon Horizon as broken
+             for doing exactly what they are told. At the cap, being at the
+             cap is the pass. */
+          var ceil = (g.level && g.level.droneCeiling) || 0;
+          var high = ceil ? up > ceil - 2.5 : up > 18;
+          if (!high) note('PROBLEM: the drone is only ' + up.toFixed(1) + 'u up' +
+            (ceil ? ' against a ceiling of ' + ceil : ''));
+          else if (ceil) note('camera: DRONE is under a roof, at its ' + ceil + 'u ceiling');
+          // how far below the view axis the car sits, against the half-frame
+          var ex = g.eye[0] - car.x, ey = g.eye[1] - car.y, ez = g.eye[2] - car.z;
+          var tx = g.target[0] - g.eye[0], ty = g.target[1] - g.eye[1], tz = g.target[2] - g.eye[2];
+          var el = Math.hypot(ex, ey, ez) || 1, tl = Math.hypot(tx, ty, tz) || 1;
+          var dot = (-ex * tx - ey * ty - ez * tz) / (el * tl);
+          var below = Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI;
+          var half = (g.fov || 68) / 2;
+          note('camera: DRONE puts the car ' + below.toFixed(1) +
+               ' deg below the view axis, against a ' + half.toFixed(0) + ' deg half-frame' +
+               ' (' + (50 + 50 * below / half).toFixed(0) + '% down the screen)');
+          if (below > 25) note('PROBLEM: the car is on the bottom edge, behind the HUD');
+        }
+        if (name === 'CHASE' && !(d > 5 && up > 1))
+          note('PROBLEM: the chase camera is not behind and above');
+        g.cycleCamera();
+        C.t = 0;
+        return;
+      }
+      if (Object.keys(C.seen).length >= 3) {
+        note('camera: all three views reachable by cycling');
+        PROBE = '';
+      }
+      return;
     } else if (PROBE === 'advisory' && step >= 1) {
       /* THE NOTICE HAS TO BE READABLE, and it has to say the two things it
          exists to say. Checked as text and geometry rather than by eye: a
@@ -1996,6 +2353,30 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
 `;
 
 // --------------------------------------------------------------- server ---
+/* THE DRIVER HAS TO PARSE, and it is a template literal, so nothing checks
+   that except the browser - which reports it as a page that never started,
+   with no error attached, because the reporter it would have used is inside
+   the script that failed.
+
+   The trap is escapes. A backslash in a template literal is resolved when
+   the template is evaluated, so a probe that writes an apostrophe as
+   backslash-quote inside a single-quoted string ships a bare quote to the
+   page and ends the string early. Same family as the backticks rule.
+
+   `new Function` compiles without running, which is exactly the question
+   being asked, and it costs a millisecond. */
+{
+  const script = DRIVER(ROUTE, HOLD, FREEROAM, PRESET, NOCULL, PROBE, AT, LOOK,
+    NOBAKE, SCALE, UPSCALER, CAMERA);
+  try {
+    new Function(script);
+  } catch (e) {
+    console.error('the injected driver does not parse: ' + e.message);
+    console.error('nothing was launched. Look for an escape inside the DRIVER template.');
+    process.exit(2);
+  }
+}
+
 const server = http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split('?')[0]);
   const file = path.join(WEB, url === '/' ? 'index.html' : url);
@@ -2015,7 +2396,7 @@ const server = http.createServer((req, res) => {
       '<script>' + COLLECTOR + '</script>';
     if (html.indexOf(gameAnchor) >= 0) {
       html = html.replace(gameAnchor, preamble + '\n' + gameAnchor);
-      html = html.replace('</body>', '<script>' + DRIVER(ROUTE, HOLD, FREEROAM, PRESET, NOCULL, PROBE, AT, LOOK, NOBAKE, SCALE, UPSCALER) + '</script>\n</body>');
+      html = html.replace('</body>', '<script>' + DRIVER(ROUTE, HOLD, FREEROAM, PRESET, NOCULL, PROBE, AT, LOOK, NOBAKE, SCALE, UPSCALER, CAMERA) + '</script>\n</body>');
     } else {
       html = html.replace('</head>', preamble + '<script>' + PAGE_REPORTER + '</script>' +
         (EXERCISE ? '<script>' + EXERCISER + '</script>' : '') + '\n</head>');
@@ -2151,6 +2532,15 @@ function connect(url) {
        reporting those as failures would make the one command that covers it
        always fail. What still applies everywhere is what matters most -
        console errors and failed requests. */
+    /* A PAGE THAT NEVER ATTACHED IS NOT A GAME THAT FAILED, and the two used
+       to print identically: every field undefined and a game that did not
+       reach a running state. Say which it is - they are fixed in completely
+       different places. */
+    if (rep.noreport) {
+      console.error('  the collector never attached to the page - no report to read');
+    } else if (!rep.driver && PAGE === 'index.html') {
+      console.error('  the collector is there but the DRIVER script never ran');
+    }
     const isGame = PAGE === 'index.html';
     console.log('  page         ' + PAGE);
     if (isGame) console.log('  started      ' + !!rep.started);

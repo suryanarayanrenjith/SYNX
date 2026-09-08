@@ -48,19 +48,58 @@ const SRC = path.join(ROOT, 'assets-src');
 const OUT = path.join(WEB, 'data', 'synx.pak');
 
 /* What goes in, and the path each entry is addressed by inside the archive -
-   which is the path the game already used, so no call site had to change. */
+   which is the path the game already used, so no call site had to change.
+
+   WHAT IS DELIBERATELY ABSENT is documented below the list, because "why is
+   this not packed" is the question somebody will have, and an empty space
+   answers it badly. */
 const DIRS = [
   { src: 'textures', as: 'assets/textures' },
   { src: 'audio', as: 'assets/audio' },
   { src: 'audio/radio', as: 'assets/audio/radio' },
   { src: 'sprites', as: 'sprites' },
-  { src: 'fonts', as: 'assets/fonts' },
-  /* The scene itself. It is eleven megabytes of vertex data and a manifest,
+  { src: 'models', as: 'assets/models' },
+];
+
+/* Paths an OLDER pack may contain that this build no longer produces. They are
+   recognised so `--unpack` and `--check` can say what they are looking at
+   instead of failing on them: a pack written before the fonts and the scene
+   came out is still a valid pack, and a tool that crashes on one is a tool
+   that cannot be used to inspect the thing it is complaining about. */
+const RETIRED = {
+  'assets/fonts/': 'the launcher needs these loose; see web/fonts and css/launcher.css',
+  'data/': 'scene.bin and scene.json ship loose; see the note below',
+};
+
+/* THE FONTS ARE NOT IN HERE, and they were.
+
+     `web/fonts/` has to exist as loose files whatever this archive contains,
+     because launcher.html is a document of its own that opens BEFORE the pack
+     is loaded and declares the faces in launcher.css by relative path. Packing
+     them as well shipped both copies inside the executable for no gain: the
+     game now installs the same two loose files, which the host serves from the
+     same place the launcher already got them from. */
+  /* THE SCENE IS NOT IN HERE EITHER, for the same reason and a bigger number.
+
+     What follows is the note from when it was, and the reasoning was sound at
+     the time - it just stopped applying. `web/data/scene.{bin,json}` cannot
+     leave the tree: `mkcourse` reads the manifest at build time, `trimscene`
+     rewrites both, and the loader falls back to fetching them for a checkout
+     with no pack. So packing them put a SECOND copy of the same bytes inside
+     the executable.
+
+     It used to be eleven megabytes and the zero-copy load was worth having
+     twice. tools/trimscene.js took it to two, and two megabytes of duplication
+     costs more than one extra request saves. The loader's fetch path is not a
+     fallback nobody runs - it is what every browser session already used.
+
+     The old note follows, because the trade-off it describes is real and would
+     come back if the scene ever grew again:
+
+     The scene itself. It is eleven megabytes of vertex data and a manifest,
      and it was the last thing still being fetched separately. `Pak.buffer`
      hands it over as a view on bytes that are already in memory, so putting it
      here removes a request AND a copy rather than adding one. */
-  { src: 'data', as: 'data' },
-];
 
 const MIME = {
   '.png': 'image/png',
@@ -94,6 +133,12 @@ function dirFor(rel) {
              .sort((a, b) => b.as.length - a.as.length)[0];
 }
 
+/** Why an entry has no source directory, if it is one this build retired. */
+function retiredReason(rel) {
+  for (const k of Object.keys(RETIRED)) if (rel.indexOf(k) === 0) return RETIRED[k];
+  return null;
+}
+
 function readPack() {
   const buf = fs.readFileSync(OUT);
   if (buf.slice(0, 8).toString('ascii') !== 'SYNXPAK1') throw new Error('bad magic');
@@ -118,15 +163,22 @@ if (process.argv.includes('--list')) {
 if (process.argv.includes('--unpack')) {
   const { buf, toc, base } = readPack();
   let n = 0;
+  let skipped = 0;
   for (const e of toc) {
     const d = dirFor(e.n);
-    if (!d) { console.error('  no source directory for ' + e.n); continue; }
+    if (!d) {
+      const why = retiredReason(e.n);
+      console.log('  skipped ' + e.n + (why ? '  (' + why + ')' : '  (no source directory)'));
+      skipped++;
+      continue;
+    }
     const dest = path.join(SRC, d.src, path.basename(e.n));
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, buf.slice(base + e.o, base + e.o + e.l));
     n++;
   }
-  console.log('unpacked ' + n + ' files -> ' + path.relative(ROOT, SRC));
+  console.log('unpacked ' + n + ' files -> ' + path.relative(ROOT, SRC)
+    + (skipped ? '  (' + skipped + ' retired entr' + (skipped === 1 ? 'y' : 'ies') + ' left alone)' : ''));
   process.exit(0);
 }
 
@@ -168,12 +220,19 @@ if (process.argv.includes('--check')) {
      truncated one texture would not be found until somebody drove past it. */
   const { buf, toc: back, base } = readPack();
   let bad = 0;
+  let unchecked = 0;
   for (const e of back) {
-    const got = buf.slice(base + e.o, base + e.o + e.l);
     const d = dirFor(e.n);
-    const src = fs.readFileSync(path.join(SRC, d.src, path.basename(e.n)));
-    if (!got.equals(src)) { console.error('  MISMATCH ' + e.n); bad++; }
+    /* An entry with no source directory cannot be compared against one. That
+       used to throw here - `d.src` on undefined - which turned "this pack has
+       an entry I retired" into a stack trace. */
+    if (!d) { unchecked++; continue; }
+    const srcPath = path.join(SRC, d.src, path.basename(e.n));
+    if (!fs.existsSync(srcPath)) { console.error('  MISSING SOURCE ' + e.n); bad++; continue; }
+    const got = buf.slice(base + e.o, base + e.o + e.l);
+    if (!got.equals(fs.readFileSync(srcPath))) { console.error('  MISMATCH ' + e.n); bad++; }
   }
+  if (unchecked) console.log('  ' + unchecked + ' entry/entries had no source to compare against');
   console.log(bad ? '  ' + bad + ' ENTRIES CORRUPT'
                   : '  verified: all ' + back.length + ' entries match their source byte for byte');
   if (bad) process.exit(1);

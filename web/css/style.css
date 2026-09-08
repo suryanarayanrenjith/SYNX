@@ -1,7 +1,26 @@
-/* Orbitron is installed at runtime from the asset pack - see Pak.installFonts
-   in js/pak.js. It cannot be declared here, because a stylesheet cannot ask
-   JavaScript to resolve a path and the typefaces live inside data/synx.pak
-   along with every other asset. */
+/* Orbitron, from the same two loose files launcher.css uses.
+
+   It used to be installed at runtime out of the asset pack, which meant the
+   pack carried a second copy of typefaces that had to exist loose anyway: the
+   launcher is a document of its own, it opens before any pack is loaded, and
+   it declares these faces by relative path. One copy, one declaration, and the
+   interface has its typeface before a single byte of the archive has arrived -
+   which also means the loading screen is no longer the one screen in the game
+   drawn in a fallback face. */
+@font-face {
+  font-family: "Orbitron";
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url("../fonts/Orbitron-600.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Orbitron";
+  font-style: normal;
+  font-weight: 900;
+  font-display: block;
+  src: url("../fonts/Orbitron-900.ttf") format("truetype");
+}
 
 :root {
   /* The canvas HUD's palette, from the constants at the top of js/hud.js. The
@@ -3467,18 +3486,23 @@ body.story-hub #hudCanvas { opacity: 0; }
 /* ============================================================== ADVISORY ==
    The photosensitivity and beta notice, over everything, before anything.
 
-   MODERN VINTAGE, AND WHAT THAT MEANS HERE. The vintage half is a CRT: a
-   curved vignette, a shadow-mask grille, a rolling scanline and a slow
-   chromatic split on the headline. The modern half is the type and the
-   spacing - Orbitron at a wide track on a strict vertical rhythm, with one
-   accent colour doing the work rather than six.
+   WHAT WENT WRONG THE FIRST TIME, because it is the whole design brief now.
+   The letters animated in with `filter: blur(6px)`, and a screenshot taken
+   mid-flight - which is most of the time it is on screen - caught the tail of
+   the word as a smear with a coloured ghost hanging off it. It did not read as
+   a chromatic split on a CRT. It read as a rendering bug, which is the worst
+   thing a warning screen can look like.
 
-   ONE RULE THE REST OF THIS FILE DOES NOT HAVE TO FOLLOW: nothing in here may
-   flash. It is a warning about flashing, and the joke of animating it with the
-   thing it warns you about is not one to make. Every animation below is a
-   slow drift, a fade or a sweep - all of them well under 3 Hz, which is the
-   threshold the guidance actually names - and `prefers-reduced-motion` stops
-   all of them dead. */
+   So: NOTHING BLURS. Every edge here is crisp at every frame of every
+   animation. The retro is carried by structure rather than by softness - a
+   terminal frame with corner brackets, a hard scanline grille, a phosphor
+   glow that sits BEHIND solid type instead of smearing it, and a two-pixel
+   chroma offset with no blur radius at all.
+
+   ONE RULE THE REST OF THIS FILE DOES NOT HAVE TO FOLLOW: nothing may flash.
+   It is a warning about flashing, and animating it with the thing it warns
+   about is not a joke to make. Every animation below is under 3 Hz - the
+   threshold the guidance names - and `prefers-reduced-motion` stops them all. */
 
 #advisory {
   position: fixed;
@@ -3487,84 +3511,97 @@ body.story-hub #hudCanvas { opacity: 0; }
   display: grid;
   place-items: center;
   background:
-    radial-gradient(120% 90% at 50% 30%, rgba(30, 6, 60, .55), transparent 70%),
-    radial-gradient(90% 70% at 50% 110%, rgba(255, 46, 136, .12), transparent 65%),
-    #04000c;
+    radial-gradient(120% 90% at 50% 34%, rgba(38, 8, 74, .60), transparent 68%),
+    radial-gradient(90% 70% at 50% 112%, rgba(255, 46, 136, .14), transparent 62%),
+    #03000a;
   color: var(--ink-body);
   font-family: var(--font);
   opacity: 1;
-  transition: opacity 520ms var(--ease-out);
+  transition: opacity 480ms var(--ease-out);
 }
 #advisory.gone { opacity: 0; pointer-events: none; }
 
-/* The tube: a soft corner vignette and the faint bulge of a curved screen. */
+/* The tube. A corner vignette and nothing else - the curvature is implied by
+   the grille and the frame, which is cheaper and reads better than a filter. */
 .adv-crt {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(115% 105% at 50% 50%, transparent 55%, rgba(0, 0, 0, .82) 100%);
-  mix-blend-mode: multiply;
+  background: radial-gradient(118% 108% at 50% 50%, transparent 52%, rgba(0, 0, 0, .88) 100%);
 }
-/* The shadow mask. A three-pixel RGB grille is what a CRT actually is up
-   close, and at this opacity it reads as texture rather than as stripes. */
+/* The shadow mask: a hard two-pixel scanline grille. Hard, not soft - a
+   blurred scanline is a grey wash, and the whole point of the texture is that
+   it has an edge. */
 .adv-grid {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  opacity: .16;
+  opacity: .40;
   background-image: repeating-linear-gradient(
-    90deg,
-    rgba(255, 46, 136, .55) 0 1px,
-    rgba(57, 230, 255, .55) 1px 2px,
-    rgba(139, 92, 246, .55) 2px 3px);
+    0deg, rgba(0, 0, 0, .55) 0 1px, transparent 1px 3px);
 }
-/* One scanline, drifting down the tube once every eight seconds. Slow enough
-   to be atmosphere; nowhere near anything that could provoke what this screen
-   is warning about. */
+/* One bright band drifting down the tube every nine seconds. */
 .adv-scan {
   position: absolute;
   left: 0; right: 0;
-  height: 22vh;
+  height: 26vh;
   pointer-events: none;
-  opacity: .10;
-  background: linear-gradient(180deg, transparent, rgba(214, 240, 255, .9), transparent);
-  animation: advScan 8s linear infinite;
+  opacity: .07;
+  background: linear-gradient(180deg, transparent, rgba(190, 232, 255, 1), transparent);
+  animation: advScan 9s linear infinite;
 }
 @keyframes advScan {
   from { transform: translateY(-30vh); }
   to   { transform: translateY(130vh); }
 }
 
+/* THE FRAME. A terminal card with corner brackets, which is the single
+   cheapest thing that turns a page of centred text into a piece of hardware. */
 .adv-frame {
   position: relative;
-  width: min(1000px, 94vw);
+  width: min(1020px, 94vw);
   max-height: 94vh;
-  /* Scrollable only as a last resort - on a short window the notice must
-     still be readable rather than clipped - but sized so it does not need to
-     be at any ordinary size. The first version overflowed at 1254x627 and
-     showed both bars. */
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: rgba(57, 230, 255, .35) transparent;
-  padding: clamp(14px, 3vh, 34px) clamp(20px, 3.4vw, 46px);
+  /* Vertical rhythm sized so the whole card fits a 627-pixel window without
+     scrolling - which is a 1366x768 laptop once the chrome is taken off, and
+     the most common screen this will ever open on. A safety notice that has to
+     be scrolled to be finished is a safety notice that will not be. */
+  padding: clamp(12px, 2.4vh, 32px) clamp(24px, 4vw, 54px);
   text-align: center;
-  animation: advIn 700ms var(--ease-out) both;
+  border: 1px solid rgba(57, 230, 255, .22);
+  background:
+    linear-gradient(180deg, rgba(57, 230, 255, .045), transparent 40%),
+    rgba(4, 0, 14, .55);
+  box-shadow: 0 0 0 1px rgba(255, 46, 136, .10), 0 0 90px rgba(0, 0, 0, .8) inset;
+  animation: advIn 560ms var(--ease-out) both;
 }
-#advisory::-webkit-scrollbar, .adv-frame::-webkit-scrollbar { width: 8px; height: 0; }
+.adv-frame::-webkit-scrollbar { width: 8px; }
 .adv-frame::-webkit-scrollbar-thumb { background: rgba(57, 230, 255, .3); }
 .adv-frame::-webkit-scrollbar-track { background: transparent; }
+/* The brackets, drawn as two corner-only borders on pseudo-elements. */
+.adv-frame::before,
+.adv-frame::after {
+  content: "";
+  position: absolute;
+  width: 26px; height: 26px;
+  pointer-events: none;
+  border: 2px solid var(--cyan);
+}
+.adv-frame::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.adv-frame::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
 @keyframes advIn {
-  from { opacity: 0; transform: translateY(14px) scale(.985); }
+  from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: none; }
 }
 
-/* The kicker rule: a hairline either side of a small caption. */
 .adv-rule {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-bottom: clamp(10px, 2.2vh, 20px);
+  margin-bottom: clamp(6px, 1.4vh, 16px);
   color: var(--cyan);
   font-size: 11px;
   font-weight: 700;
@@ -3577,16 +3614,11 @@ body.story-hub #hudCanvas { opacity: 0; }
   background: linear-gradient(90deg, transparent, rgba(57, 230, 255, .7), transparent);
 }
 
-/* THE HEADLINE, letter by letter.
-   Each glyph fades and lifts on its own delay - sixteen of them over about a
-   second - so the word assembles rather than appearing. The chromatic split is
-   two offset copies behind it, drifting a fraction of a pixel; it is what
-   makes the type read as a signal on a tube rather than as text on a page. */
-/* SIZED TO FIT ON ONE LINE, which is the whole point of a headline. The first
-   pass ran to 74px and broke "PHOTOSENSITIVITY" across two lines at 1254px
-   wide - and a warning whose own title does not fit is not reassuring about
-   the care taken with the rest. Sixteen characters at .05em of tracking is
-   about 0.62em each, so 5.2vw keeps it on one line to well under 900px. */
+/* THE HEADLINE.
+   Solid white type with a hard two-pixel chroma either side and a phosphor
+   bloom BEHIND it. No blur on the glyphs themselves at any point, which is the
+   whole fix - the previous version blurred them in and looked broken for the
+   half second anybody was likely to screenshot it. */
 .adv-title {
   position: relative;
   margin: 0;
@@ -3596,75 +3628,66 @@ body.story-hub #hudCanvas { opacity: 0; }
   letter-spacing: .05em;
   white-space: nowrap;
   color: #fff;
-  /* THE CHROMATIC SPLIT, AS A SHADOW ON THE GLYPHS THEMSELVES.
-     It used to be two absolutely-positioned copies of the word behind it,
-     drawn from `data-text`. Those are a single text run and the letters are
-     individually animated spans, so the moment the title wrapped the ghosts
-     did not - they ran straight off the side of the panel and put a
-     horizontal scrollbar on the screen. A shadow cannot desync from the text
-     it is under. */
   text-shadow:
-    -2px 0 0 rgba(255, 46, 136, .55),
-     2px 0 0 rgba(57, 230, 255, .55),
-     0 0 18px rgba(57, 230, 255, .55),
-     0 0 60px rgba(139, 92, 246, .35);
+    -2px 0 0 rgba(255, 46, 136, .85),
+     2px 0 0 rgba(57, 230, 255, .85),
+     0 0 26px rgba(57, 230, 255, .40),
+     0 0 70px rgba(139, 92, 246, .28);
+  animation: advDrift 6s ease-in-out infinite alternate;
 }
+/* The letters arrive one at a time, by opacity and a two-pixel lift. That is
+   the entire effect: no scale, no rotation, no filter. */
 .adv-title span {
   display: inline-block;
   opacity: 0;
-  animation: advGlyph 560ms var(--ease-out) both;
+  animation: advGlyph 340ms var(--ease-out) both;
+  animation-delay: calc(120ms + var(--i, 0) * 34ms);
 }
-.adv-title span:nth-child(n)    { animation-delay: calc(160ms + var(--i, 0) * 42ms); }
 @keyframes advGlyph {
-  from { opacity: 0; transform: translateY(.22em) rotateX(40deg); filter: blur(6px); }
-  to   { opacity: 1; transform: none; filter: none; }
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: none; }
 }
-/* The whole title drifts a fraction of a pixel instead, which reads as the
-   same tube instability and cannot overflow anything. */
-.adv-title { animation: advDrift 5.5s ease-in-out infinite alternate; }
 @keyframes advDrift {
-  from { transform: translate3d(-1.5px, 0, 0); }
-  to   { transform: translate3d(1.5px, 0, 0); }
+  from { transform: translate3d(-1px, 0, 0); }
+  to   { transform: translate3d(1px, 0, 0); }
 }
 
 .adv-sub {
-  margin: 14px 0 0;
+  margin: 9px 0 0;
   color: var(--amber);
   font-size: clamp(11px, 1.5vw, 14px);
   font-weight: 700;
   letter-spacing: .34em;
   text-indent: .34em;
-  text-shadow: 0 0 14px rgba(255, 180, 0, .5);
+  text-shadow: 0 0 18px rgba(255, 180, 0, .45);
 }
 
 .adv-body {
-  margin: clamp(12px, 2.4vh, 24px) auto 0;
-  max-width: 62ch;
-  font-size: clamp(11px, 1.35vw, 14px);
-  line-height: 1.62;
+  margin: clamp(8px, 1.8vh, 20px) auto 0;
+  max-width: 66ch;
+  font-size: clamp(11px, 1.3vw, 13.5px);
+  line-height: 1.56;
   letter-spacing: .012em;
 }
-.adv-body p { margin: 0 0 .7em; }
+.adv-body p { margin: 0 0 .55em; }
 .adv-body b { color: var(--ink-key); font-weight: 700; }
 .adv-stop {
-  margin-top: 1.1em;
-  padding: .8em 1em;
+  margin-top: .8em;
+  padding: .65em .9em;
   border: 1px solid rgba(255, 46, 136, .34);
-  border-left: 2px solid var(--pink);
+  border-left: 3px solid var(--pink);
   background: rgba(255, 46, 136, .07);
   color: var(--ink-key);
   text-align: left;
 }
 
-/* The beta strip. Amber rather than pink: this is information, not a hazard,
-   and it must not compete with the medical notice above it. */
 .adv-beta {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin: clamp(12px, 2.2vh, 20px) auto 0;
-  max-width: 62ch;
-  padding: .75em 1em;
+  margin: clamp(8px, 1.6vh, 16px) auto 0;
+  max-width: 66ch;
+  padding: .6em .9em;
   border: 1px dashed rgba(255, 180, 0, .38);
   background: rgba(255, 180, 0, .05);
   text-align: left;
@@ -3686,24 +3709,24 @@ body.story-hub #hudCanvas { opacity: 0; }
 }
 .adv-beta b { color: var(--amber); }
 
-/* The prompt. It breathes rather than blinks - a two-and-a-half second fade,
-   which is about 0.4 Hz. */
+/* The prompt breathes rather than blinks: 0.4 Hz, well under the threshold. */
 .adv-go {
+  position: relative;
   display: block;
-  margin: clamp(14px, 2.6vh, 26px) auto 0;
-  padding: .9em 2.4em;
+  margin: clamp(10px, 2vh, 22px) auto 0;
+  padding: .7em 2.6em;
   border: 1px solid rgba(57, 230, 255, .45);
-  background: linear-gradient(180deg, rgba(57, 230, 255, .12), rgba(57, 230, 255, .04));
+  background: linear-gradient(180deg, rgba(57, 230, 255, .14), rgba(57, 230, 255, .04));
   color: var(--ink-key);
   font: inherit;
   cursor: pointer;
   transition: border-color var(--t-base) var(--ease), background var(--t-base) var(--ease),
               transform var(--t-fast) var(--ease);
-  animation: advBreathe 2.5s ease-in-out infinite;
+  animation: advBreathe 2.6s ease-in-out infinite;
 }
 .adv-go:hover, .adv-go:focus-visible {
   border-color: var(--cyan);
-  background: linear-gradient(180deg, rgba(57, 230, 255, .22), rgba(57, 230, 255, .08));
+  background: linear-gradient(180deg, rgba(57, 230, 255, .24), rgba(57, 230, 255, .08));
   outline: none;
   animation: none;
 }
@@ -3715,7 +3738,7 @@ body.story-hub #hudCanvas { opacity: 0; }
   letter-spacing: .26em;
   text-indent: .26em;
   color: var(--cyan);
-  text-shadow: 0 0 16px rgba(57, 230, 255, .6);
+  text-shadow: 0 0 18px rgba(57, 230, 255, .55);
 }
 .adv-go-sub {
   display: block;
@@ -3727,12 +3750,12 @@ body.story-hub #hudCanvas { opacity: 0; }
   color: var(--ink-faint);
 }
 @keyframes advBreathe {
-  0%, 100% { opacity: .78; }
+  0%, 100% { opacity: .82; }
   50%      { opacity: 1; }
 }
 
 .adv-foot {
-  margin-top: clamp(12px, 2.2vh, 20px);
+  margin-top: clamp(8px, 1.6vh, 16px);
   color: var(--ink-faint);
   font-size: 10px;
   font-weight: 600;
@@ -3741,8 +3764,8 @@ body.story-hub #hudCanvas { opacity: 0; }
 }
 .adv-dot { margin: 0 .8em; color: var(--pink); }
 
-/* NOTHING MOVES IF THE PLAYER HAS ASKED FOR THAT. A photosensitivity notice
-   is the last screen in the game that should ignore this setting. */
+/* NOTHING MOVES IF THE PLAYER HAS ASKED FOR THAT. A photosensitivity notice is
+   the last screen in the game that should ignore this setting. */
 @media (prefers-reduced-motion: reduce) {
   #advisory *,
   #advisory *::before,
@@ -3751,4 +3774,230 @@ body.story-hub #hudCanvas { opacity: 0; }
     transition: none !important;
   }
   .adv-title span { opacity: 1; }
+}
+
+/* ================================================================== UI ====
+   The shared modal and the typewriter, and the entrance animations every
+   section gets for free. See js/ui.js.
+
+   ONE RULE ABOVE THE OTHERS: nothing here flashes. The game opens behind a
+   photosensitivity notice, and an interface that strobes once the player has
+   accepted that notice is worse than one that never warned them. Everything
+   below is under 3 Hz and every last animation stops under
+   prefers-reduced-motion. */
+
+.ui-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 8600;
+  display: grid;
+  place-items: center;
+  padding: 5vh 4vw;
+  background:
+    radial-gradient(90% 70% at 50% 40%, rgba(8, 2, 22, .72), rgba(2, 0, 8, .90));
+  animation: uiFade 200ms var(--ease-out, ease) both;
+}
+.ui-modal.ui-gone { animation: uiFade 220ms var(--ease-out, ease) reverse both; pointer-events: none; }
+@keyframes uiFade { from { opacity: 0; } to { opacity: 1; } }
+
+.ui-card {
+  position: relative;
+  width: min(560px, 92vw);
+  padding: clamp(20px, 3vh, 34px) clamp(22px, 3.4vw, 40px);
+  border: 1px solid var(--ui-line, rgba(57, 230, 255, .30));
+  background:
+    linear-gradient(180deg, rgba(57, 230, 255, .05), transparent 42%),
+    rgba(4, 0, 14, .92);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 26px 80px rgba(0, 0, 0, .70);
+  text-align: center;
+  animation: uiCard 260ms var(--ease-out, cubic-bezier(.2, .8, .3, 1)) both;
+}
+@keyframes uiCard {
+  from { opacity: 0; transform: translateY(12px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+/* The corner brackets, which is the cheapest thing that turns a box of text
+   into a piece of equipment. Two pseudo-elements, two corners each. */
+.ui-card::before,
+.ui-card::after {
+  content: "";
+  position: absolute;
+  width: 22px; height: 22px;
+  pointer-events: none;
+  border: 2px solid var(--ui-accent, var(--cyan, #39e6ff));
+}
+.ui-card::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.ui-card::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+
+/* The three moods. Only the accent changes; the structure never does, so a
+   warning and a notice are recognisably the same object. */
+.ui-info  { --ui-accent: var(--cyan, #39e6ff);  --ui-line: rgba(57, 230, 255, .30); }
+.ui-warn  { --ui-accent: var(--amber, #ffb400); --ui-line: rgba(255, 180, 0, .32); }
+.ui-error { --ui-accent: var(--pink, #ff2e88);  --ui-line: rgba(255, 46, 136, .34); }
+
+.ui-rule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: clamp(10px, 1.8vh, 18px);
+  color: var(--ui-accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .38em;
+  text-indent: .38em;
+}
+.ui-rule i {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  opacity: .55;
+}
+
+.ui-title {
+  margin: 0;
+  font-size: clamp(17px, 2.6vw, 26px);
+  font-weight: 900;
+  letter-spacing: .04em;
+  color: #fff;
+  /* A hard two-pixel chroma and a glow behind, never a blur on the glyphs:
+     type that blurs while it animates photographs as a rendering fault. */
+  text-shadow:
+    -1px 0 0 rgba(255, 46, 136, .55),
+     1px 0 0 rgba(57, 230, 255, .55),
+     0 0 24px rgba(57, 230, 255, .28);
+}
+
+.ui-body {
+  min-height: 3.2em;
+  margin: clamp(10px, 1.6vh, 16px) auto 0;
+  max-width: 46ch;
+  color: var(--ink-body, #c8d2e8);
+  font-size: clamp(12px, 1.4vw, 14px);
+  line-height: 1.66;
+  text-align: left;
+}
+/* The caret. 1.6 Hz, which is a cursor rather than a strobe. */
+.ui-typing::after {
+  content: "";
+  display: inline-block;
+  width: .58em;
+  height: 1.02em;
+  margin-left: .12em;
+  vertical-align: -.16em;
+  background: var(--ui-accent, #39e6ff);
+  animation: uiCaret 1.25s steps(1, end) infinite;
+}
+@keyframes uiCaret { 0%, 55% { opacity: .95; } 56%, 100% { opacity: 0; } }
+
+.ui-note {
+  margin: 1em auto 0;
+  max-width: 46ch;
+  padding: .7em .9em;
+  border-left: 3px solid var(--ui-accent);
+  background: rgba(255, 255, 255, .035);
+  color: var(--ink-mute, #91a0bd);
+  font-size: clamp(11px, 1.25vw, 12.5px);
+  line-height: 1.6;
+  text-align: left;
+  /* The notes carry a line per fact - the address on one, the reason on the
+     next - and a collapsed newline runs them together. */
+  white-space: pre-line;
+}
+
+.ui-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: clamp(14px, 2.2vh, 24px);
+  flex-wrap: wrap;
+}
+.ui-btn {
+  padding: .72em 1.9em;
+  border: 1px solid rgba(255, 255, 255, .18);
+  background: rgba(255, 255, 255, .04);
+  color: var(--ink-key, #e8eeff);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .2em;
+  text-indent: .2em;
+  cursor: pointer;
+  transition: border-color 160ms var(--ease, ease), background 160ms var(--ease, ease),
+              transform 90ms var(--ease, ease);
+}
+.ui-btn:hover, .ui-btn:focus-visible {
+  border-color: var(--ui-accent);
+  background: rgba(255, 255, 255, .09);
+  outline: none;
+}
+.ui-btn:active { transform: translateY(1px); }
+.ui-btn.is-primary {
+  border-color: var(--ui-accent);
+  background: color-mix(in srgb, var(--ui-accent) 16%, transparent);
+  color: #fff;
+}
+
+/* ------------------------------------------------- entrance animations ----
+   Hung on aria-hidden, which every screen in the game already sets when it
+   opens - so this reaches the mode select, free roam, multiplayer and the
+   story layers without a line of script and without touching their markup.
+
+   The panel arrives, and then its rows arrive after it. That second part is
+   what makes a screen feel built rather than switched on: six delays, applied
+   by position, no JavaScript and nothing to keep in sync. */
+section[aria-hidden="false"] > .mp-panel,
+section[aria-hidden="false"] > .mode-panel,
+section[aria-hidden="false"] > .freeroam-panel {
+  animation: uiPanel 340ms var(--ease-out, cubic-bezier(.2, .8, .3, 1)) both;
+}
+@keyframes uiPanel {
+  from { opacity: 0; transform: translateY(14px) scale(.994); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* The cards on the mode select, which arrive after the panel they sit in.
+   That second beat is what makes a screen feel built rather than switched on.
+
+   ONLY THE LISTS THAT ARE BUILT ONCE. The multiplayer room list is rebuilt on
+   every status message the server sends, and an entrance animation on that is
+   a flicker rather than an animation - so the network screens get the panel
+   and the header, and nothing that re-runs underneath them. */
+section[aria-hidden="false"] .mode-card {
+  animation: uiRow 300ms var(--ease-out, cubic-bezier(.2, .8, .3, 1)) both;
+}
+section[aria-hidden="false"] .mode-card:nth-child(1) { animation-delay: 40ms; }
+section[aria-hidden="false"] .mode-card:nth-child(2) { animation-delay: 90ms; }
+section[aria-hidden="false"] .mode-card:nth-child(3) { animation-delay: 140ms; }
+section[aria-hidden="false"] .mode-card:nth-child(4) { animation-delay: 190ms; }
+section[aria-hidden="false"] .mode-card:nth-child(5) { animation-delay: 240ms; }
+section[aria-hidden="false"] .mode-card:nth-child(n+6) { animation-delay: 280ms; }
+@keyframes uiRow {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* The heading rule that draws itself across when a screen opens. */
+section[aria-hidden="false"] .mp-head small,
+section[aria-hidden="false"] .mode-head small,
+section[aria-hidden="false"] .freeroam-head small {
+  animation: uiWipe 460ms var(--ease-out, ease) both;
+}
+@keyframes uiWipe {
+  from { opacity: 0; clip-path: inset(0 100% 0 0); }
+  to   { opacity: 1; clip-path: inset(0 0 0 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-modal, .ui-card,
+  section[aria-hidden="false"] > .mp-panel,
+  section[aria-hidden="false"] > .mode-panel,
+  section[aria-hidden="false"] > .freeroam-panel,
+  section[aria-hidden="false"] .mode-card,
+  section[aria-hidden="false"] .mp-head small,
+  section[aria-hidden="false"] .mode-head small,
+  section[aria-hidden="false"] .freeroam-head small,
+  .ui-typing::after {
+    animation: none !important;
+  }
+  .ui-typing::after { display: none; }
 }

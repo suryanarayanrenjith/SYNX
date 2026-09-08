@@ -21,9 +21,70 @@
     baseFov: 70,
     boostFov: 12,
     near: 1.0,
+    /* THE BONNET NEEDS A NEARER NEAR PLANE.
+
+       A chase camera is eleven units behind the car, so a one-unit near plane
+       costs nothing and buys depth precision across fifty kilometres of road -
+       which is the right trade for that view and the reason it is set there.
+
+       The bonnet eye sits ON the car: the nose is 1.3 units in front of it and
+       the bodywork it is standing on is a few centimetres below. At near = 1.0
+       the entire front of the car falls in front of the near plane and is
+       clipped away, and the view loses the one thing that makes it read as
+       first person rather than as a camera flying a metre off the ground - its
+       own bonnet arriving at the road.
+
+       Eight centimetres is close enough that none of that is clipped and far
+       enough that the depth buffer still resolves the road: precision goes
+       with the RATIO of far to near, and this view does not need to see 48 km
+       down the course - the fog has closed long before that. */
+    nearBonnet: 0.08,
     far: 50000.0,
   };
 
+  /* THE THREE VIEWS, and what each one is for.
+   *
+   *   CHASE    the default. A boom behind and above the car, damped, with the
+   *            whole speed-and-shake rig on it. It is the view the game is
+   *            balanced around: you can see the car's attitude, which is how
+   *            you read a slide.
+   *   BONNET   from the nose of the car, looking down the road. No boom, no
+   *            distance, and the body's pitch and roll go straight into the
+   *            eye rather than being damped out - which is most of why it
+   *            feels faster without being faster.
+   *   DRONE    high above and slightly behind, looking down. Reads the road
+   *            ahead like a map, and is the only view that shows what the
+   *            corner after the next one is doing.
+   *
+   * Ordered so C walks outward from the car: the bonnet is on the nose, the
+   * drone is furthest, chase is where you start and where you return.
+   */
+  const CAM_MODES = ['CHASE', 'BONNET', 'DRONE'];
+  /* THE BONNET CAMERA, AND WHY IT IS NOT A COCKPIT CAMERA.
+   *
+   * A cockpit view was built first and it was the wrong answer for this car.
+   * The model is an EXTERIOR one: its whole cabin volume is 1.2 units tall,
+   * which is less than a seated person needs from hip to eye, so nothing
+   * placed anatomically inside it could see its own dashboard. A cabin was
+   * generated to fix that, and a generated cabin in a space the wrong size is
+   * a generated cabin that looks it.
+   *
+   * A bonnet camera has none of that problem and is the more honest first-
+   * person view for a car with no interior: it sits ON the nose, ahead of
+   * everything, and what it shows is the road and the car's own bodywork falling
+   * away beneath it. Nothing has to be modelled for it to be right.
+   *
+   * Measured off the shipped meshes: the chassis runs z -2.73 to 3.35 with
+   * the body top at y 0.40, so this sits just above the bonnet line and about
+   * a metre back from the nose - far enough forward that the screen and roof
+   * are behind the eye, far enough back that a strip of bodywork stays in the
+   * bottom of the frame and gives the speed something to be measured against.
+   */
+  const BONNET_EYE = [0.0, 0.36, 2.05];
+  /* A few degrees of downward bias, so the road sits in the upper two thirds
+     rather than dead centre. The difference between looking AT the horizon
+     and driving toward it. */
+  const BONNET_PITCH = -0.045;
   const BLOOM_LEVELS = 6;
   /* The highest texture unit any pass binds to. 0 albedo, 1 environment,
      2 normal, 3 headlight cookie, 4 emissive, 5-7 the shadow cascades,
@@ -173,6 +234,20 @@
       name: 'AURORA FORGE',
       from: 112080, to: 131300,
       level6: true,
+      /* THIS ROUTE HAS A ROOF ON IT.
+
+         Reported: the drone view on Aurora Forge shows the top of the
+         production hall and not the car. It is not a camera bug - the camera
+         is exactly where it was asked to be, twenty-six units up, and the
+         hall's roof panels are at 17.35 with the ridge at 21.2. The drone was
+         simply outside the building.
+
+         Fourteen keeps it under the roof and well over the tallest thing on
+         the floor - the balers' beacons top out at 14.1 and the stamping
+         gantries at 14.7, so this rides just above the machinery and below the
+         structure. A route with open sky leaves this undefined and gets the
+         full height. */
+      droneCeiling: 13.6,
       palette: {
         edge: [0.04, 0.46, 0.72], cap: [0.06, 0.22, 0.38],
         barrier: [0.032, 0.042, 0.050], barrierGlow: [0.002, 0.010, 0.015],
@@ -187,6 +262,12 @@
       name: 'NEON HORIZON',
       from: 132070, to: 173000,
       level7: true,
+      /* The expressway is open above, but every arch, gate and portal on it
+         spans the deck with RING_CLEAR of headroom - so a drone above them
+         watches the car through a row of rings. Just under that clearance puts
+         the camera inside the架 structure with the car, which is what a
+         top-down view of this route should be. */
+      droneCeiling: 11.5,
       coursePreview: true,
       distanceKm: 30.00,
       roadHalf: 32,
@@ -408,6 +489,12 @@
   const MENU_STATES = new Set(['loading', 'menu', 'controls', 'modeselect', 'freeroam', 'multiplayer']);
   const PROGRESS_KEY = 'synx.progress.v1';
   const SETTINGS_KEY = 'synx.settings.v1';
+  /* The camera view, remembered between runs. Its own key rather than a
+     settings row: it is changed mid-corner with one key, not configured on a
+     screen, and putting it in the options table would put it on the launcher
+     as well - where a view whose effect you cannot see is a row nobody can
+     answer. */
+  const CAM_KEY = 'synx.camera.v1';
 
   /* THE SETTINGS, AND WHERE THEY ARE DECLARED.
    *
@@ -528,6 +615,8 @@
       hint: 'Spends the blue reserve. It refills off the throttle, not on a timer.' },
     { key: 'raceMode', label: 'RACE MODE / RESTART', def: ['r'],
       hint: 'Fires raceMode where a chapter has awarded it, and restarts the run everywhere else.' },
+    { key: 'camera', label: 'CAMERA VIEW', def: ['c'],
+      hint: 'Cycles CHASE, BONNET and DRONE. Bonnet rides the nose of the car for a true first-person view; drone looks down on the road from above.' },
     { key: 'pause', label: 'PAUSE', def: ['escape', 'p'],
       hint: 'ESC always pauses whatever this is set to, because it is the one key nobody has to be told.' },
     { key: 'fullscreen', label: 'FULLSCREEN', def: ['f'],
@@ -1230,6 +1319,15 @@
     float above = max(0.0, dir.y + uHeadDip * 0.55);
     cone *= 1.0 - smoothstep(0.01, 0.16, above);
     cone *= 1.0 - smoothstep(1.2, 5.0, d.y);
+    /* NOTHING IN THE FIRST FEW UNITS. A hard cut at 0.4 was fine while the
+       nearest eye was eleven units behind the car, and wrong the moment one
+       sat on the bonnet: the march then starts a metre from the lamp, inside
+       the cone, where the inverse-square term is at its largest and the
+       cookie is being read at the middle of its profile - so the bottom of
+       the frame washed to white. Ramped in over five units instead, which is
+       also the honest answer: the air right at the lens has no path length
+       through the beam to scatter with. */
+    cone *= smoothstep(0.4, 5.0, dist);
     return cone * (0.35 + 1.4 * pow(profile, 0.45))
          / (1.0 + dist * dist * uHeadFall * 0.6);
   }
@@ -2537,6 +2635,15 @@
       this.fov = CAM.baseFov;
       this.camYaw = 0;
       this.camHeight = CAM.height;
+      /* WHICH VIEW THE PLAYER IS DRIVING FROM. See CAM_MODES and cycleCamera.
+         Held on the game rather than in the settings because it is a thing
+         changed mid-corner, not a preference configured once - but it is
+         persisted, because coming back to a different camera than the one you
+         left in is the kind of small wrongness nobody reports and everybody
+         notices. */
+      const savedCam = readNum(CAM_KEY);
+      this.camMode = (savedCam !== null && savedCam >= 0 && savedCam < CAM_MODES.length)
+        ? savedCam | 0 : 0;
 
       // scoring
       this.score = 0;
@@ -4464,6 +4571,11 @@
          So in a multiplayer race the key asks the one question that is
          actually available - leave, or keep driving - over a world that is
          still running. */
+      /* THE VIEW KEY, before the pause key and outside every state test: it
+         is legal on the grid, mid-race, in a cutscene and on a finish card,
+         because there is no state in which "I would like to see this from
+         somewhere else" is the wrong request. */
+      if (inp.actHit('camera')) this.cycleCamera();
       if (inp.actHit('pause') || inp.hit('escape')) {
         const mp = this.multiplayer;
         if (mp && mp.racing) {
@@ -4907,6 +5019,12 @@
         this.lookPitch = M.damp(this.lookPitch, 0, 6, dt);
         this.lookYawWant = 0; this.lookPitchWant = 0;
       }
+      /* THE TWO VIEWS THAT ARE NOT A BOOM. Both return before the chase rig
+         below, because almost none of it applies to them: a bonnet camera has
+         no distance to damp and no boom to contain, and a drone has no reason
+         to shake when the car does. */
+      if (this.camMode === 1) { this.bonnetCamera(car, dt); return; }
+      if (this.camMode === 2) { this.droneCamera(car, dt); return; }
       this.camYaw += M.angDiff(this.camYaw, car.yaw) * (1 - Math.exp(-CAM.rotationDamping * dt));
 
       this.camHeight = M.damp(this.camHeight, CAM.height, CAM.heightDamping, dt);
@@ -4989,6 +5107,163 @@
       this.fov += (this.shake || 0) * 2.0;
       // a slow-motion beat pinches in, which is what says "look at this"
       this.fov -= (this.slowFov || 0) * 9.0;
+    }
+
+
+    /* ------------------------------------------------------ the cameras --
+     *
+     * CHASE is above; these are the other two. Both are written against the
+     * CAR's own basis rather than against `camYaw`: that integrator exists to
+     * lag the car's heading, which is exactly what a camera bolted to the car
+     * must not do.
+     */
+
+    /** Cycle CHASE -> BONNET -> DRONE, and say which. */
+    cycleCamera() {
+      this.camMode = ((this.camMode || 0) + 1) % CAM_MODES.length;
+      /* The look-around offsets are the chase rig's, and they mean something
+         different in a fixed view - a bonnet camera that starts eight degrees
+         off axis because the mouse was moved a minute ago is a camera that
+         looks broken. */
+      this.lookYaw = 0; this.lookPitch = 0;
+      this.lookYawWant = 0; this.lookPitchWant = 0;
+      this.camPull = undefined;
+      if (this.hud && this.hud.toast) this.hud.toast('VIEW // ' + CAM_MODES[this.camMode], '#39e6ff');
+      writeNum(CAM_KEY, this.camMode);
+      return this.camMode;
+    }
+
+    /** True while the camera is riding the car's own bodywork. */
+    onBonnet() { return this.camMode === 1; }
+
+    /* THE BONNET.
+     *
+     * The eye is a point in the car's own space put through the car's own
+     * model matrix, so it inherits the yaw, the road pitch, the body pitch and
+     * the roll for free - and inheriting them is the whole point. A chase
+     * camera damps that motion out because you are watching the car; on the
+     * nose you ARE the car, and a bonnet view that does not lean into a corner
+     * or dip under braking is a photograph of a bonnet.
+     */
+    bonnetCamera(car, dt) {
+      const m = this.model;
+      const e = BONNET_EYE;
+      const ex = m[0] * e[0] + m[4] * e[1] + m[8] * e[2] + m[12];
+      const ey = m[1] * e[0] + m[5] * e[1] + m[9] * e[2] + m[13];
+      const ez = m[2] * e[0] + m[6] * e[1] + m[10] * e[2] + m[14];
+      /* Two units of head shake at speed, and none at a standstill. A fixed
+         camera is the one that most needs it: with no boom to absorb anything,
+         a perfectly still eye at two hundred is what makes a fixed view read
+         as a still image with a road texture scrolling past it. */
+      const rush = this.speedRush || 0, boost = this.boostFx || 0;
+      const j = (this.shake || 0) * 0.9 + rush * 0.004 + boost * 0.010
+        + (car.offroad ? Math.min(0.05, car.speed * 0.0009) : 0);
+      const t = this.time;
+      V3.set(this.eye,
+        ex + Math.sin(t * 33.0) * j,
+        ey + Math.sin(t * 41.0 + 1.1) * j * 0.7,
+        ez + Math.cos(t * 29.0) * j);
+      /* Looking down the car's own nose, with the free-look offsets applied
+         about the car rather than about the world - so glancing left in a
+         corner looks out of the side window, not off into the sky. */
+      const yaw = car.yaw + (this.lookYaw || 0);
+      const pitch = (car.pitch || 0) + (car.roadPitch || 0)
+        + (this.lookPitch || 0) * 0.9 + BONNET_PITCH;
+      const fx = Math.sin(yaw), fz = Math.cos(yaw);
+      const AHEAD = 30;
+      V3.set(this.target,
+        this.eye[0] + fx * AHEAD,
+        this.eye[1] + Math.tan(pitch) * AHEAD,
+        this.eye[2] + fz * AHEAD);
+      this.camS = this.cameraArc(car, 0);
+      const cp = this.track.at(this.camS, this._camProbe || (this._camProbe = {}));
+      this.camTunnel = cp.tunnel ? 1 : 0;
+      /* A tighter lens than the chase view. The eye is already on the car, and
+         a wide angle from here bends the bonnet away at the edges and puts the
+         horizon in the middle of a very empty frame. It still opens up with
+         speed - that is the one cue this view cannot get from a boom it does
+         not have. */
+      this.fov = M.damp(this.fov,
+        Math.min(88, 62 + this.speedFx * 2.2 + rush * 1.4 + boost * 7.0
+          + (this.raceModeFx || 0) * 3.0), 4.8, dt);
+      this.fov += (this.shake || 0) * 2.0;
+      this.fov -= (this.slowFov || 0) * 9.0;
+    }
+
+    /* THE DRONE.
+     *
+     * Straight up and a little behind, looking down. Deliberately the calmest
+     * of the three: no shake, no speed FOV, and the yaw comes off the damped
+     * `camYaw` rather than the car - a map that snapped round every time the
+     * car twitched would be unreadable, which is the one thing this view is
+     * for.
+     */
+    droneCamera(car, dt) {
+      this.camYaw += M.angDiff(this.camYaw, car.yaw)
+        * (1 - Math.exp(-CAM.rotationDamping * 0.55 * dt));
+      const fx = Math.sin(this.camYaw), fz = Math.cos(this.camYaw);
+      /* WHERE THE CAR SITS IN THE FRAME, which is what these six numbers are
+         really choosing and what the first pass got wrong.
+
+         The eye is up and behind, the aim point is up the road, so the car is
+         always BELOW the view axis by the difference of two angles: the one
+         down to the car, atan(lift / back), and the one down to the aim point,
+         atan(lift / (back + ahead)). The old numbers - lift 51, back 16, ahead
+         40 at speed - made that difference 31 degrees against a 34 degree half
+         angle, which put the car within a whisker of the bottom edge of the
+         frame and therefore behind the boost bar.
+
+         These make it 17 degrees at every speed: half way between the centre
+         of the frame and the bottom of it, clear above the HUD band, with the
+         road ahead still filling the two thirds above the car. The distance to
+         the car is deliberately unchanged - 52 units at speed against the old
+         53 - so the car is the same size on screen as before. It is the same
+         shot from a lower, further-back drone, not a closer one.
+
+         All three still rise with speed, because what this view is worth is
+         how far up the road it can see and that has to grow with how fast the
+         road is arriving. They rise in proportion, which is what holds the 17
+         degrees steady from a standstill to two hundred. */
+      /* A ROUTE WITH A ROOF CAPS THE CLIMB. See `droneCeiling` in LEVELS: on
+         Aurora Forge the camera was going straight through the production
+         hall's roof and filming it. */
+      const ceil = (this.level && this.level.droneCeiling) || Infinity;
+      const lift = Math.min(ceil, 27 + M.clamp(car.speed, 0, 90) * 0.32);
+      /* Under a roof the camera has to come BACK as well as stay down, or a
+         near-vertical view from thirteen units is looking at the car's roof
+         from so close that none of the road around it is in shot - which is
+         the one thing this view exists to show. */
+      const back = ceil < 20 ? 13 : 12.5 + M.clamp(car.speed, 0, 90) * 0.18;
+      this.droneLift = M.damp(this.droneLift === undefined ? lift : this.droneLift, lift, 2.2, dt);
+      this.droneBack = M.damp(this.droneBack === undefined ? back : this.droneBack, back, 2.2, dt);
+      V3.set(this.eye,
+        car.x - fx * this.droneBack + (this.lookYaw || 0) * 8,
+        car.y + this.droneLift,
+        car.z - fz * this.droneBack);
+      /* Aimed a long way up the road rather than at the car. Looking straight
+         down puts the car in the middle of a frame with no information in it;
+         leading it is what turns the height into notice. */
+      /* How far up the road the camera leads the car - see the note above. A
+         roofed route is a fixed rig rather than a scaling one: the lift cannot
+         grow, so neither may the set-back or the lead, or the same climb in
+         speed that used to lift the camera would instead flatten it into a
+         very distant chase. Nine and thirteen against a capped 13.6 of lift
+         come out at the same 16 degrees the open figures do. */
+      const ahead = ceil < 20 ? 9 : 11 + M.clamp(car.speed, 0, 90) * 0.15;
+      V3.set(this.target,
+        car.x + fx * ahead,
+        car.y + 0.6,
+        car.z + fz * ahead);
+      this.camS = this.cameraArc(car, 0);
+      const cp = this.track.at(this.camS, this._camProbe || (this._camProbe = {}));
+      /* NEVER IN A TUNNEL. Twenty-six units up inside a nineteen-unit bore is
+         a camera in the rock, so the drone drops to a low chase inside one and
+         the atmosphere is told it is not in the open. */
+      this.camTunnel = cp.tunnel ? 1 : 0;
+      if (cp.tunnel) {
+        this.eye[1] = Math.min(this.eye[1], (cp.y || 0) + 9.0);
+      }
+      this.fov = M.damp(this.fov, 68, 4.0, dt);
     }
 
     /* Where the camera is, as an arc length.
@@ -5098,7 +5373,12 @@
          the frame is updated. */
       this.syncRaceMode();
 
-      M4.perspectiveLH(this.proj, this.fov * Math.PI / 180, this.w / this.h, CAM.near, CAM.far);
+      /* See CAM.nearBonnet: from the nose the car's own bodywork is nearer than
+         the chase view's near plane, and would be clipped away. */
+      const near = this.camMode === 1 ? CAM.nearBonnet : CAM.near;
+      this.camNear = near;   // read by tools/smoke.js --probe bonnet
+      M4.perspectiveLH(this.proj, this.fov * Math.PI / 180, this.w / this.h, near, CAM.far);
+      this.nearPlane = near;
       /* Sub-pixel jitter for the temporal resolve. Halton(2,3) over eight
          frames covers the pixel evenly without the clumping a random offset
          gives, and the offset is in NDC, so it is two pixels wide over the
@@ -5257,9 +5537,15 @@
         for (let i = 8; i < 11; i++) this.model[i] *= sq[2];
         this.model[13] -= (1 - sq[1]) * 0.55;
       }
+      /* The player's own car, whole, in every view. The bonnet camera sits on
+         the nose looking forward, so everything it can see of the car is meant
+         to be seen from outside - there is nothing to hide. */
       this.scene.drawCar(this.model, false,
         { livery: 'player', steer: this.car.steer || 0, damage: this.damage,
-          brake: lampOf(this.car), ...wheelsOf(this.car, dt) });
+          brake: lampOf(this.car),
+          // nobody sees the flare of their own lamps from the driving seat
+          noFlare: this.camMode === 1,
+          ...wheelsOf(this.car, dt) });
 
       /* Trails and particles are additive light and must not disturb the
          normal buffer - a smoke puff writing a normal makes the reflection
@@ -5322,7 +5608,7 @@
           U.m4(gl, u.uInvVP, this.invVP);
           U.v3v(gl, u.uCamPos, this.eye);
           U.v2(gl, u.uRes, this.rtSsr.w, this.rtSsr.h);
-          U.f(gl, u.uNear, CAM.near);
+          U.f(gl, u.uNear, this.nearPlane || CAM.near);
           U.f(gl, u.uFar, CAM.far);
           U.f(gl, u.uTime, this.time);
         });
@@ -5360,7 +5646,7 @@
           U.m4(gl, u.uVP, this.vp);
           U.m4(gl, u.uInvVP, this.invVP);
           U.v3v(gl, u.uCamPos, this.eye);
-          U.f(gl, u.uNear, CAM.near);
+          U.f(gl, u.uNear, this.nearPlane || CAM.near);
           U.f(gl, u.uFar, CAM.far);
           U.f(gl, u.uRadius, FX.aoRadius);
           // LOW asks for less of the same pass rather than a different one, so
@@ -5580,7 +5866,7 @@
         U.v2(gl, u.uRes, this.w, this.h);
         U.f(gl, u.uGrain, this.useGrain === false ? 0 : 1);
         U.f(gl, u.uMotion, this.useMotionBlur === false ? 0 : 1);
-        U.f(gl, u.uNear, CAM.near);
+        U.f(gl, u.uNear, this.nearPlane || CAM.near);
         U.f(gl, u.uFar, CAM.far);
         { const sc = this.scene.sunColor || SUN_COL; U.v3(gl, u.uSunCol, sc[0], sc[1], sc[2]); }
       });

@@ -5666,8 +5666,20 @@
       const h = this.head;
       h.on = on;
       const sy = Math.sin(car.yaw), cy = Math.cos(car.yaw);
-      // the lamp quads sit at (+-0.83, -0.22, 3.26) in body space
-      const lx = 0.83, ly = -0.22, lz = 3.26;
+      /* WHERE THE LAMPS ACTUALLY ARE, measured off the shipped meshes rather
+         than off the flare billboards that stand in front of them.
+
+         This used to aim from the centre of the FLARE quad, at body y -0.22.
+         The lamp units - LightFrontL and LightFrontR - are at y 0.48 to 0.64
+         above the road, which is body y -0.49: the beam was being cast from a
+         point a quarter of a unit above the car's own nose, so from the
+         bonnet view the light visibly started in mid-air above the bodywork
+         instead of coming out of the lamps.
+
+         x 0.70 and z 3.18 are those meshes' centres too. The pool on the
+         road moves with it, because the scene pass and the volumetrics read
+         this same point. */
+      const lx = 0.70, ly = -0.493, lz = 3.18;
       h.fwd = [sy, 0, cy];
       h.right = [cy, 0, -sy];
       h.L = [car.x - cy * lx + sy * lz, car.y + ly, car.z + sy * lx + cy * lz];
@@ -5675,7 +5687,8 @@
       /* One source behind the tail panel. Normally the red of the lamps; on
          reheat the exhaust is by far the brightest thing back there, so it
          turns blue-white and the plume lights the road it is passing over. */
-      h.tail = [car.x - sy * 2.9, car.y - 0.45, car.z - cy * 2.9];
+      // ...and the tail lamps, at the height the tail lamp meshes sit at
+      h.tail = [car.x - sy * 2.9, car.y - 0.50, car.z - cy * 2.9];
       const burn = car.boosting ? 1 : 0;
       this.burn = M.damp(this.burn === undefined ? 0 : this.burn, burn, 12, 1 / 60);
       const b = this.burn;
@@ -6295,12 +6308,35 @@
         M4.mul(tmp, p.wheel ? p.wheel.world : model, p.m);
         return tmp;
       };
+      /* THE WHOLE CAR - except the one thing that is not FOR this car.
+
+         There used to be a cabin filter here, and a generated interior to go
+         with it, because the first-person view was a COCKPIT view and the
+         eye sat inside the shell. That view is gone - see BONNET_EYE in
+         js/game.js: a bonnet camera sits on the nose looking forward, and
+         every solid part of the car it can see is a part that is meant to
+         be seen from outside.
+
+         THE BEAM FLARES ARE NOT SOLID PARTS. `HeadLightFlare` is a pair of
+         additive billboards that stand IN the beam - measured off the model,
+         they run from z 1.64 to z 4.88 and up to y 1.21, which is a volume
+         the bonnet eye is sitting inside. Seen from behind the car they are
+         the light in the air; seen from within, they are an additive quad
+         across the whole lower frame with the road washed out behind it,
+         which is what the bonnet view was showing.
+
+         Nobody sees the flare of their own headlights from the driving seat,
+         so `noFlare` drops them for the car the camera is riding and for
+         that car only - a rival ahead still has its beams. */
+      const noFlare = !!(who && who.noFlare);
       for (const p of opaque) {
+        if (noFlare && p.mat && p.mat.name === 'HeadLightFlare') continue;
         this.drawPart(p, place(p));
       }
       gl.enable(gl.BLEND);
       gl.depthMask(false);
       for (const p of blend) {
+        if (noFlare && p.mat && p.mat.name === 'HeadLightFlare') continue;
         if (p.mode === 2 || p.mode === 7) gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
         else gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         this.drawPart(p, place(p));
@@ -6333,8 +6369,9 @@
    * what is on screen is an empty shell being steered by nobody.
    *
    * Measured against the shipped cabin rather than guessed: SEATS occupies
-   * x -0.89..0.89, y -0.79..0.27, z -0.28..0.69 and the glass caps out at
-   * y 0.40, so a helmet any higher than about 0.36 comes through the roof.
+   * x -0.89..0.89, y -0.79..0.27, z -0.28..0.69, and directly over the seat
+   * the roof - headliner, side glass and screen alike - is between y 0.323 and
+   * y 0.385, so a helmet whose crown clears 0.32 comes through it.
    * Local +X is the car's right - the left lamp sits at x -0.83 - which puts
    * the driver at x -0.42 and leaves the passenger seat empty, because a
    * street racer runs alone.
@@ -6360,29 +6397,6 @@
     return { V, I };
   }
 
-  /* A rounded body, for the parts of a person that are not boxes. */
-  function driverBlob(rings, segs) {
-    const V = [], I = [];
-    for (let r = 0; r <= rings; r++) {
-      const phi = Math.PI * (r / rings);
-      const y = Math.cos(phi) * 0.5, rad = Math.sin(phi) * 0.5;
-      for (let g = 0; g <= segs; g++) {
-        const th = Math.PI * 2 * (g / segs);
-        const x = Math.cos(th) * rad, z = Math.sin(th) * rad;
-        const l = Math.hypot(x, y, z) || 1;
-        V.push(x, y, z, x / l, y / l, z / l, g / segs, r / rings);
-      }
-    }
-    const w = segs + 1;
-    for (let r = 0; r < rings; r++) {
-      for (let g = 0; g < segs; g++) {
-        const a = r * w + g, b = a + w;
-        I.push(a, b, b + 1, a, b + 1, a + 1);
-      }
-    }
-    return { V, I };
-  }
-
   /* The wheel: a band swept round, so it reads as a rim rather than a disc,
      and double-sided because it is thin enough to be seen from behind. */
   function driverRim(segs, thick) {
@@ -6397,6 +6411,198 @@
       const a = i * 2;
       I.push(a, a + 1, a + 3, a, a + 3, a + 2);
       I.push(a, a + 3, a + 1, a, a + 2, a + 3);
+    }
+    return { V, I };
+  }
+
+
+  /* ------------------------------------------------ the driver's anatomy --
+   *
+   * WHY THE FIGURE WAS REBUILT.
+   *
+   * Every part of it was an axis-aligned box: hips, torso, shoulders, neck,
+   * upper arms, forearms, gloves. Fifteen of them, each a cube scaled to a
+   * different rectangle. That is a perfectly good way to block out a figure
+   * and it is exactly what it looks like - a driver assembled out of bricks,
+   * which is what the report said.
+   *
+   * The three primitives below are what the boxes are replaced with, and they
+   * are chosen for the three things a box gets wrong about a body:
+   *
+   *   A LIMB HAS ENDS. `driverCapsule` is a cylinder with hemispherical caps,
+   *   so an upper arm meeting a shoulder is a joint rather than two corners
+   *   crossing. It also TAPERS, because an arm is thicker at the shoulder than
+   *   at the wrist and a constant section is the single clearest tell that
+   *   something was made from a cube.
+   *
+   *   A TORSO HAS A SECTION. `driverLoft` sweeps a rounded rectangle through a
+   *   list of stations, so the chest can be wide and deep, the waist narrow,
+   *   and the shoulders can round off - none of which a scaled cube can do.
+   *
+   *   A HELMET IS NOT A SPHERE. `driverShell` is a sphere squashed and cut:
+   *   longer front-to-back than side-to-side, flattened underneath where the
+   *   collar is, with the brow line the visor sits under.
+   *
+   * All three are generated, none is imported, and all three are cheap: the
+   * whole figure is about 1,400 triangles against the old one's 400. There are
+   * at most five drivers in a frame and they are only drawn when a car is.
+   */
+
+  /** A tapered capsule along +Z, unit shaft length, radius r0 at the back
+      and r1 at the front, with hemispherical caps.
+
+      ALONG Z, NOT Y, ON PURPOSE: every placement in this figure was authored
+      for boxes whose long axis is their local z (an upper arm is a box with
+      sz 0.34), and the whole point of this change is to swap the primitive
+      without re-deriving fifteen positions and two rotations each. */
+  function driverCapsule(segs, rings, r0, r1) {
+    const V = [], I = [];
+    const n = segs || 10, m = rings || 6;
+    const push = (x, y, z, nx, ny, nz, u, v) => V.push(x, y, z, nx, ny, nz, u, v);
+    /* The stations, bottom cap first. The shaft runs y -0.5 to +0.5 and each
+       cap is a hemisphere of that end's radius sitting outside it, so a
+       capsule asked for radius r is (1 + r0 + r1) tall overall - which the
+       placement below accounts for by scaling length separately from section. */
+    const rows = [];
+    for (let i = 0; i <= m; i++) {                 // bottom hemisphere, -90..0
+      const a = -Math.PI / 2 + (Math.PI / 2) * (i / m);
+      rows.push({ y: -0.5 + r0 * Math.sin(a), r: r0 * Math.cos(a), ny: Math.sin(a) });
+    }
+    rows.push({ y: 0.5, r: r1, ny: 0 });           // the top of the shaft
+    for (let i = 1; i <= m; i++) {                 // top hemisphere, 0..90
+      const a = (Math.PI / 2) * (i / m);
+      rows.push({ y: 0.5 + r1 * Math.sin(a), r: r1 * Math.cos(a), ny: Math.sin(a) });
+    }
+    for (let k = 0; k < rows.length; k++) {
+      const R = rows[k];
+      for (let s = 0; s <= n; s++) {
+        const th = Math.PI * 2 * (s / n), c = Math.cos(th), sn = Math.sin(th);
+        const nx = c * (1 - Math.abs(R.ny)), nz = sn * (1 - Math.abs(R.ny));
+        const l = Math.hypot(nx, R.ny, nz) || 1;
+        // the ring lies in XY and the axis is Z; see the note above
+        push(c * R.r, sn * R.r, R.y, nx / l, nz / l, R.ny / l, s / n, k / rows.length);
+      }
+    }
+    const w = n + 1;
+    for (let k = 0; k < rows.length - 1; k++) {
+      for (let s = 0; s < n; s++) {
+        const a = k * w + s, b = a + w;
+        I.push(a, b, b + 1, a, b + 1, a + 1);
+      }
+    }
+    return { V, I };
+  }
+
+  /** A body sweep. `stations` is a list of {y, w, d, r} - half width, half
+      depth and how rounded the corners are - swept in order up +y. */
+  function driverLoft(stations, corners) {
+    const V = [], I = [];
+    const n = corners || 12;
+    for (let k = 0; k < stations.length; k++) {
+      const S = stations[k];
+      for (let s = 0; s <= n; s++) {
+        const th = Math.PI * 2 * (s / n);
+        /* A superellipse: `r` at 0 is a rectangle and at 1 an ellipse. It is
+           what lets one station be a squared-off hip and the next a rounded
+           shoulder without changing primitive. */
+        const c = Math.cos(th), sn = Math.sin(th);
+        const p = 2 / Math.max(0.05, S.r === undefined ? 0.6 : S.r);
+        const kx = Math.sign(c) * Math.pow(Math.abs(c), 2 / p);
+        const kz = Math.sign(sn) * Math.pow(Math.abs(sn), 2 / p);
+        V.push(kx * S.w, S.y, kz * S.d, kx, 0.15, kz, s / n, k / stations.length);
+      }
+    }
+    const w = n + 1;
+    for (let k = 0; k < stations.length - 1; k++) {
+      for (let s = 0; s < n; s++) {
+        const a = k * w + s, b = a + w;
+        I.push(a, b, b + 1, a, b + 1, a + 1);
+      }
+    }
+    /* Cap both ends, or the torso is a tube you can see down from the seat
+       behind. A fan from the centre of the end station is enough at this size. */
+    for (const [base, dir] of [[0, -1], [(stations.length - 1) * w, 1]]) {
+      const S = stations[base ? stations.length - 1 : 0];
+      const c0 = V.length / 8;
+      V.push(0, S.y, 0, 0, dir, 0, 0.5, 0.5);
+      for (let s = 0; s < n; s++) {
+        if (dir > 0) I.push(c0, base + s, base + s + 1);
+        else I.push(c0, base + s + 1, base + s);
+      }
+    }
+    return { V, I };
+  }
+
+  /** A crash helmet: a sphere stretched front-to-back and cut off below the
+      jaw, with a brow the visor sits under. */
+  function driverShell(rings, segs) {
+    const V = [], I = [];
+    const m = rings || 12, n = segs || 16;
+    for (let r = 0; r <= m; r++) {
+      /* Only the top 78% of the sphere - a helmet stops at the collar, and a
+         full sphere reads as a ball balanced on the shoulders. */
+      const phi = Math.PI * 0.78 * (r / m);
+      const y = Math.cos(phi) * 0.5, rad = Math.sin(phi) * 0.5;
+      for (let g = 0; g <= n; g++) {
+        const th = Math.PI * 2 * (g / n);
+        const c = Math.cos(th), s = Math.sin(th);
+        /* Longer front-to-back than across, and a slight brow where the shell
+           overhangs the visor aperture. */
+        const brow = 1 + 0.10 * Math.max(0, s) * Math.max(0, Math.sin(phi * 1.6));
+        const x = c * rad * 0.92, z = s * rad * 1.12 * brow;
+        const l = Math.hypot(x, y, z) || 1;
+        V.push(x, y, z, x / l, y / l, z / l, g / n, r / m);
+      }
+    }
+    const w = n + 1;
+    for (let r = 0; r < m; r++) {
+      for (let g = 0; g < n; g++) {
+        const a = r * w + g, b = a + w;
+        I.push(a, b, b + 1, a, b + 1, a + 1);
+      }
+    }
+    return { V, I };
+  }
+
+  /* A PATCH OF THE HELMET'S OWN SURFACE, and why the visor is not a box.
+
+     The visor and the peak used to be flat cubes placed at a guessed depth,
+     and neither of them was ever on screen: the shell's front face is at
+     z 0.45 in figure space and the two boxes were sitting at 0.37 and 0.14,
+     entirely inside it. Every driver in the game has been wearing a plain
+     egg with no aperture in it, which is a good part of why the heads read as
+     bare blocks - a helmet is legible because of its visor and nothing else.
+
+     A box cannot be fixed by moving it, either: pushed out far enough for its
+     middle to clear the shell, its corners stand off the sides of the head by
+     six centimetres, because the shell is curved and the box is not.
+
+     So a band is generated from the SAME surface equation the shell uses,
+     between two latitudes and around the front, and pushed out radially by a
+     few per cent. It hugs the head exactly at every point by construction, at
+     a cost of about 200 triangles for both bands together. */
+  function driverBand(p0, p1, half, k, rings, segs) {
+    const V = [], I = [];
+    const m = rings || 6, n = segs || 14;
+    for (let r = 0; r <= m; r++) {
+      const phi = p0 + (p1 - p0) * (r / m);
+      const y = Math.cos(phi) * 0.5, rad = Math.sin(phi) * 0.5;
+      for (let g = 0; g <= n; g++) {
+        // centred on the front of the head, which is +z, and swept both ways
+        const th = Math.PI / 2 + half * (g / n * 2 - 1);
+        const c = Math.cos(th), s = Math.sin(th);
+        const brow = 1 + 0.10 * Math.max(0, s) * Math.max(0, Math.sin(phi * 1.6));
+        const x = c * rad * 0.92 * k, z = s * rad * 1.12 * brow * k, yk = y * k;
+        const l = Math.hypot(x, yk, z) || 1;
+        V.push(x, yk, z, x / l, yk / l, z / l, g / n, r / m);
+      }
+    }
+    const w = n + 1;
+    for (let r = 0; r < m; r++) {
+      for (let g = 0; g < n; g++) {
+        const a = r * w + g, b = a + w;
+        I.push(a, b, b + 1, a, b + 1, a + 1);
+      }
     }
     return { V, I };
   }
@@ -6420,14 +6626,43 @@
   /* One assembled figure. Every piece is placed in the car's BODY space and
      multiplied by the car's own model matrix at draw time, which is what makes
      the driver lean with the chassis instead of floating inside it. */
+
   class DriverFigure {
     constructor(scene) {
       const gl = scene.gl;
       this.sc = scene; this.gl = gl;
       this.cube = driverUpload(gl, driverCube(), 'DriverBox');
-      this.blob = driverUpload(gl, driverBlob(9, 14), 'DriverBlob');
+      /* THE FIGURE IS NOT MADE OF BOXES ANY MORE. See the note above
+         `driverCapsule`. Three shapes replace fifteen scaled cubes:
+
+           limb     a tapered capsule, thicker at the shoulder than the wrist
+           torso    one lofted sweep from hips to shoulders, so the body has a
+                    section instead of three rectangles stacked on each other
+           helmet   a shell rather than a sphere - longer front to back, cut
+                    off at the collar, with a brow over the visor
+
+         The cube stays for the visor band and the wheel spokes, which are
+         flat, hard-edged objects that a box is the right answer for. */
+      this.limb = driverUpload(gl, driverCapsule(10, 5, 0.30, 0.21), 'DriverLimb');
+      this.fore = driverUpload(gl, driverCapsule(10, 5, 0.25, 0.30), 'DriverForearm');
+      this.grip = driverUpload(gl, driverCapsule(8, 4, 0.38, 0.34), 'DriverGlove');
+      this.torso = driverUpload(gl, driverLoft([
+        { y: -0.50, w: 0.46, d: 0.40, r: 0.50 },   // hips, square in the seat
+        { y: -0.22, w: 0.41, d: 0.36, r: 0.60 },   // waist, drawn in
+        { y:  0.08, w: 0.47, d: 0.39, r: 0.72 },   // chest
+        { y:  0.34, w: 0.56, d: 0.35, r: 0.84 },   // shoulders, the widest point
+        { y:  0.50, w: 0.30, d: 0.26, r: 0.95 },   // the collar the neck leaves
+      ], 14), 'DriverTorso');
+      this.helmet = driverUpload(gl, driverShell(12, 18), 'DriverHelmet');
+      /* The aperture and the lip over it, both patches of the helmet's own
+         surface pushed out by three and eight per cent. Latitudes chosen off
+         the placement below: the visor covers y 0.09 to 0.17 in figure space,
+         which is the eye line of a head whose crown is at 0.30. */
+      this.visor = driverUpload(gl, driverBand(1.27, 1.72, 1.15, 1.03, 6, 16), 'DriverVisor');
+      this.peak = driverUpload(gl, driverBand(1.12, 1.29, 1.05, 1.08, 3, 16), 'DriverPeak');
       this.rim = driverUpload(gl, driverRim(20, 0.055), 'DriverRim');
       this.m = M4.make();
+      this.tmp2 = M4.make();   // the wheel rotation, applied after a placement
       this.tmp = M4.make();
       this.liveries = {};
       this.build();
@@ -6463,29 +6698,49 @@
       const B = (mesh, slot, x, y, z, sx, sy, sz, pitch, roll, spin) =>
         ({ mesh, slot, t: [x, y, z], s: [sx, sy, sz],
            r: [0, pitch || 0, roll || 0], spin: !!spin });
+      /* The same positions the boxed figure used, because they were right -
+         what was wrong was the shape at each of them. Three parts become one
+         torso, the sphere becomes a shell, and every limb becomes a tapered
+         capsule whose long axis is its local z, which is what the old boxes'
+         `sz` already was. */
       this.parts = [
-        // hips and thighs, pressed into the seat
-        B(this.cube, 'suit', X, -0.60, 0.34, 0.44, 0.24, 0.62, -0.20),
-        // torso, leaning back the way a racing seat puts you
-        B(this.cube, 'suit', X, -0.30, 0.19, 0.54, 0.52, 0.32, -0.20),
-        // shoulders
-        B(this.cube, 'suit', X, -0.05, 0.20, 0.66, 0.19, 0.28, -0.14),
-        // neck
-        B(this.cube, 'suit', X, 0.05, 0.20, 0.13, 0.10, 0.13),
-        // helmet, and the peak over the visor
-        B(this.blob, 'helmet', X, 0.19, 0.22, 0.37, 0.39, 0.39),
-        B(this.cube, 'helmet', X, 0.26, 0.13, 0.33, 0.05, 0.17, -0.30),
-        // the visor: a band across the front of the shell, a hair proud of it
-        B(this.cube, 'visor', X, 0.175, 0.372, 0.265, 0.105, 0.05),
-        // upper arms, reaching out to the rim
-        B(this.cube, 'suit', X - 0.20, -0.07, 0.44, 0.13, 0.13, 0.34, -0.55, 0.18),
-        B(this.cube, 'suit', X + 0.20, -0.07, 0.44, 0.13, 0.13, 0.34, -0.55, -0.18),
-        // forearms, which follow the wheel
-        B(this.cube, 'suit', X - 0.25, -0.15, 0.70, 0.11, 0.11, 0.26, -0.20, 0.10, true),
-        B(this.cube, 'suit', X + 0.25, -0.15, 0.70, 0.11, 0.11, 0.26, -0.20, -0.10, true),
+        // hips to shoulders in one sweep, leaning back the way a seat puts you
+        B(this.torso, 'suit', X, -0.30, 0.26, 0.56, 0.74, 0.42, -0.20),
+        /* THE HEAD, WHICH USED TO COME THROUGH THE ROOF.
+
+           Measured off the shipped body rather than eyeballed: over the
+           driver's seat - the column x -0.72..-0.12, z -0.10..0.55 - the
+           headliner, the side glass and the screen all sit between y 0.323 and
+           y 0.385. The old helmet was a shell of scale 0.42 centred at y 0.20,
+           so its crown reached 0.41 and stood two and a half centimetres out
+           through the roof of the car, which is exactly what was reported.
+
+           This one is centred at 0.115 at scale 0.37: the crown is at 0.30,
+           two centimetres clear of the lowest part of the headliner, and the
+           base at -0.028 is inside the torso's collar station so there is no
+           gap at the neck. The head is 0.33 tall against a 0.74 torso, which
+           is the ratio a person actually has.
+
+           All three pieces share one transform because the visor and the peak
+           are patches of this shell's own surface - see driverBand. */
+        B(this.helmet, 'helmet', X, 0.115, 0.20, 0.35, 0.37, 0.37),
+        B(this.visor, 'visor', X, 0.115, 0.20, 0.35, 0.37, 0.37),
+        B(this.peak, 'helmet', X, 0.115, 0.20, 0.35, 0.37, 0.37),
+        /* FOREARMS AND GLOVES RIDE THE RIM.
+
+           They are flagged for the wheel, and what that used to mean was that
+           each one turned about its OWN origin - a glove twisting on the spot
+           while the wheel went round underneath it, and a forearm doing the
+           same. It reads as a mannequin with a loose wrist.
+
+           They now ORBIT the wheel: see spinAbout. A hand at ten o'clock ends
+           up at eight when the wheel is turned two hours, which is what a hand
+           on a rim does. */
+        B(this.fore, 'suit', X - 0.25, -0.15, 0.70, 0.13, 0.13, 0.27, -0.20, 0.10, true),
+        B(this.fore, 'suit', X + 0.25, -0.15, 0.70, 0.13, 0.13, 0.27, -0.20, -0.10, true),
         // gloves on the rim at ten and two
-        B(this.cube, 'glove', X - 0.27, -0.10, 0.84, 0.10, 0.12, 0.10, 0, 0, true),
-        B(this.cube, 'glove', X + 0.27, -0.10, 0.84, 0.10, 0.12, 0.10, 0, 0, true),
+        B(this.grip, 'glove', X - 0.27, -0.10, 0.84, 0.115, 0.135, 0.13, 0, 0, true),
+        B(this.grip, 'glove', X + 0.27, -0.10, 0.84, 0.115, 0.135, 0.13, 0, 0, true),
       ];
       // the wheel on its raked column
       this.wheel = B(this.rim, 'rim', X, -0.12, 0.86, 0.60, 0.60, 0.60, 0.42, 0, true);
@@ -6494,37 +6749,161 @@
         return p;
       });
       this.column = B(this.cube, 'rim', X, -0.26, 0.68, 0.06, 0.06, 0.34, 1.05);
+
+      /* THE WHEEL'S OWN AXIS, which every orbiting part turns about. The rim
+         sits at this point with this much rake on it, and a rake is a rotation
+         about x - so the axis is z tipped by the rake, and turning the wheel
+         is a rotation about that. */
+      this.hub = [X, -0.12, 0.86];
+      this.rake = 0.42;
+
+      /* THE UPPER ARMS ARE NOT PLACED, THEY ARE SOLVED.
+
+         The shoulder does not move and the hand does, so the arm between them
+         cannot be a fixed pose: with the hands orbiting the rim, an upper arm
+         with a hard-coded angle detaches from the elbow the moment the wheel
+         turns more than a few degrees.
+
+         Each one is a bone from a fixed shoulder to wherever the forearm's
+         inner end has ended up, rebuilt every frame. The shoulder points are
+         where the old fixed upper arms had their shoulder ends, so the figure
+         at rest is the figure that was there before - it is only what happens
+         when the wheel moves that is new.
+
+         A capsule is a unit shaft along its local z with a cap at each end, so
+         a bone is a rotation taking +z onto the shoulder-to-elbow line and a z
+         scale of exactly that length. The caps then overlap into the shoulder
+         and the elbow, which is what makes a joint look like a joint rather
+         than two tubes meeting. */
+      const arm = (sgn, fore) => {
+        // the shoulder end of the upper arm the fixed rig used to draw
+        const t = [X + sgn * 0.20, -0.07, 0.44], pitch = -0.55, sz = 0.34;
+        const ax = [0, -Math.sin(pitch), Math.cos(pitch)];   // the capsule's own axis
+        return {
+          slot: 'suit',
+          mesh: this.limb,
+          s: [0.15, 0.15],
+          shoulder: [t[0] - ax[0] * 0.5 * sz, t[1] - ax[1] * 0.5 * sz, t[2] - ax[2] * 0.5 * sz],
+          fore,
+        };
+      };
+      /* Found by mesh rather than by index: the parts list is edited often
+         enough that two hard-coded positions in it is a bug waiting for the
+         next person to add a pocket. */
+      const fores = this.parts.filter((q) => q.mesh === this.fore)
+        .sort((q, w) => q.t[0] - w.t[0]);
+      this.upper = [arm(-1, fores[0]), arm(1, fores[1])];
     }
 
-    /* `spin` is the wheel angle in radians; anything flagged for it turns with
-       the rim, which is the difference between a driver and a mannequin. */
-    place(out, model, part, spin) {
+    /* The rotation the wheel applies to everything holding it, as a matrix in
+       figure space: move to the hub, undo the rake so the axis is z, turn, put
+       the rake back, move out again. */
+    spinAbout(out, s) {
+      const ca = Math.cos(this.rake), sa = Math.sin(this.rake);
+      const cs = Math.cos(s), ss = Math.sin(s);
+      // Rx(rake) . Rz(s) . Rx(-rake), multiplied out rather than composed
+      const m00 = cs, m01 = -ss * ca, m02 = -ss * sa;
+      const m10 = ca * ss, m11 = ca * cs * ca + sa * sa, m12 = ca * cs * sa - sa * ca;
+      const m20 = sa * ss, m21 = sa * cs * ca - ca * sa, m22 = sa * cs * sa + ca * ca;
+      const h = this.hub;
+      out[0] = m00; out[1] = m10; out[2] = m20; out[3] = 0;
+      out[4] = m01; out[5] = m11; out[6] = m21; out[7] = 0;
+      out[8] = m02; out[9] = m12; out[10] = m22; out[11] = 0;
+      out[12] = h[0] - (m00 * h[0] + m01 * h[1] + m02 * h[2]);
+      out[13] = h[1] - (m10 * h[0] + m11 * h[1] + m12 * h[2]);
+      out[14] = h[2] - (m20 * h[0] + m21 * h[1] + m22 * h[2]);
+      out[15] = 1;
+      return out;
+    }
+
+    /** Where one end of a capsule sits in figure space once the wheel has been
+        turned. `end` is -0.5 for the back of the shaft, +0.5 for the front. */
+    endOf(out, part, end, spinM) {
+      const r = part.r, sz = part.s[2];
+      // a yaw-free trs puts a capsule's own z axis here
+      const ax = [0, -Math.sin(r[1]), Math.cos(r[1])];
+      const x = part.t[0] + ax[0] * end * sz;
+      const y = part.t[1] + ax[1] * end * sz;
+      const z = part.t[2] + ax[2] * end * sz;
+      out[0] = spinM[0] * x + spinM[4] * y + spinM[8] * z + spinM[12];
+      out[1] = spinM[1] * x + spinM[5] * y + spinM[9] * z + spinM[13];
+      out[2] = spinM[2] * x + spinM[6] * y + spinM[10] * z + spinM[14];
+      return out;
+    }
+
+    /** A capsule stretched between two points in figure space. */
+    boneBetween(out, a, b, sx, sy) {
+      let dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+      const len = Math.hypot(dx, dy, dz) || 1e-4;
+      dx /= len; dy /= len; dz /= len;
+      /* Any pair of axes across the bone will do - nothing about an arm is
+         keyed to its roll - so world up is the reference, unless the bone is
+         nearly vertical, where it stops being a usable one. */
+      let ux = 0, uy = 1, uz = 0;
+      if (Math.abs(dy) > 0.98) { ux = 1; uy = 0; }
+      let rx = uy * dz - uz * dy, ry = uz * dx - ux * dz, rz = ux * dy - uy * dx;
+      const rl = Math.hypot(rx, ry, rz) || 1e-4;
+      rx /= rl; ry /= rl; rz /= rl;
+      const nx = dy * rz - dz * ry, ny = dz * rx - dx * rz, nz = dx * ry - dy * rx;
+      out[0] = rx * sx; out[1] = ry * sx; out[2] = rz * sx; out[3] = 0;
+      out[4] = nx * sy; out[5] = ny * sy; out[6] = nz * sy; out[7] = 0;
+      out[8] = dx * len; out[9] = dy * len; out[10] = dz * len; out[11] = 0;
+      out[12] = (a[0] + b[0]) * 0.5; out[13] = (a[1] + b[1]) * 0.5;
+      out[14] = (a[2] + b[2]) * 0.5; out[15] = 1;
+      return out;
+    }
+
+    /* `spinM` is the wheel's rotation as a matrix - see spinAbout. A part
+       flagged for the wheel is put through it AFTER its own placement, so it
+       swings about the hub instead of twisting about itself. */
+    place(out, model, part, spinM) {
       const r = part.r;
-      M4.trs(this.tmp, part.t[0], part.t[1], part.t[2],
-        0, r[1], r[2] + (part.spin ? spin : 0));
+      M4.trs(this.tmp, part.t[0], part.t[1], part.t[2], 0, r[1], r[2]);
       const s = part.s;
       for (let i = 0; i < 4; i++) this.tmp[i] *= s[0];
       for (let i = 4; i < 8; i++) this.tmp[i] *= s[1];
       for (let i = 8; i < 12; i++) this.tmp[i] *= s[2];
-      M4.mul(out, model, this.tmp);
+      if (part.spin) {
+        M4.mul(this.tmp2, spinM, this.tmp);
+        M4.mul(out, model, this.tmp2);
+      } else {
+        M4.mul(out, model, this.tmp);
+      }
     }
 
+    /* The whole figure, every time. There used to be a `cabin` flag here that
+       dropped everything above the shoulder when the camera was inside this
+       car; the first-person view is now on the bonnet, ahead of the driver and
+       facing away, so there is nothing to drop. */
     draw(model, key, steer) {
       const gl = this.gl, L = this.liveryFor(key);
       /* `steer` is the ROAD-WHEEL angle, a third of a radian at full lock. A
          real rack is about fourteen turns of wheel to one of tyre; three and a
          half is the readable version of that. */
       const spin = Math.max(-1, Math.min(1, (steer || 0) * 3.4)) * 1.45;
+      const S = this.spinAbout(this.spinM || (this.spinM = M4.make()), spin);
       gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
       let bound = null;
+      const submit = (mesh, slot) => {
+        if (bound !== mesh) { gl.bindVertexArray(mesh.vao); bound = mesh; }
+        this.sc.drawPart({ mesh: { iOff: 0, vCount: 0, name: mesh.name },
+          sub: { start: 0, count: mesh.count }, mode: 0,
+          mat: L[slot], m: this.m }, this.m);
+      };
       const emit = (part) => {
-        if (bound !== part.mesh) { gl.bindVertexArray(part.mesh.vao); bound = part.mesh; }
-        this.place(this.m, model, part, spin);
-        this.sc.drawPart({ mesh: { iOff: 0, vCount: 0, name: part.mesh.name },
-          sub: { start: 0, count: part.mesh.count }, mode: 0,
-          mat: L[part.slot], m: this.m }, this.m);
+        this.place(this.m, model, part, S);
+        submit(part.mesh, part.slot);
       };
       for (const part of this.parts) emit(part);
+      /* ...and the two arms holding the wheel, which have to be solved rather
+         than placed because one end of each is now moving. See this.upper. */
+      const e = this.elbow || (this.elbow = [0, 0, 0]);
+      for (const a of this.upper) {
+        this.endOf(e, a.fore, -0.5, S);
+        this.boneBetween(this.tmp, a.shoulder, e, a.s[0], a.s[1]);
+        M4.mul(this.m, model, this.tmp);
+        submit(a.mesh, a.slot);
+      }
       emit(this.column);
       emit(this.wheel);
       for (const sp of this.spokes) emit(sp);

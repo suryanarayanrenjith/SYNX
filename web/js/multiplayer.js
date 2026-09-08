@@ -402,6 +402,13 @@
       }
       this.setView(NR.Net.inRoom ? 'room' : (NR.Net.online ? 'browse' : 'connecting'));
       this.build();
+      // installed once, on the first visit, and left running afterwards:
+      // a link can die long after this screen has been closed
+      this.watchLink();
+      // the status line is typed on the way in, once - see modeselect.js
+      if (NR.UI && this.ui.status) {
+        NR.UI.type(this.ui.status, this.ui.status.textContent || this.status || "");
+      }
       this.link();
       this.syncPoll();
       return true;
@@ -477,15 +484,67 @@
       g.toMenu();
     }
 
+    /* IS THERE AN INTERNET AT ALL?
+     *
+     * `navigator.onLine` is a weak signal and is treated as one: false is
+     * trustworthy - the machine knows it has no route - while true only means
+     * a network interface is up, which a captive portal or a dead uplink also
+     * satisfies. So it is used to say NO early and never to say yes.
+     *
+     * Saying no early matters here more than it usually would. The wake path
+     * deliberately waits thirty seconds per attempt because a free host takes
+     * most of a minute to come out of sleep, so a player with the wifi off
+     * used to sit and watch "waking the grid" count up to half a minute before
+     * being told anything at all. */
+    offline() {
+      try {
+        return global.navigator && global.navigator.onLine === false;
+      } catch (e) { return false; }
+    }
+
+    /* THE POPUP, AND WHEN IT IS WORTH ONE.
+     *
+     * The connecting screen already carries the status line and the refusal
+     * box, and a modal on top of a screen that is already explaining itself is
+     * noise. This is for the two cases the screen cannot handle: there is no
+     * network at all, and the link died under a player who was doing something
+     * else at the time. */
+    warn(kind, title, body, note, retry) {
+      if (!NR.UI || NR.UI.busy()) return;
+      const actions = [];
+      if (retry) actions.push({ label: 'TRY AGAIN', value: 'retry', primary: true });
+      actions.push({ label: retry ? 'BACK' : 'OK', value: 'close', primary: !retry });
+      NR.UI.alert({
+        kind, title, body, note, actions,
+        onClose: (r) => {
+          if (r === 'retry') this.link();
+          else if (r === 'close' && retry && this.shown && !NR.Net.online) this.back();
+        },
+      });
+    }
+
     /** Wake the server if it is asleep, then register and connect. */
     link() {
       if (NR.Net.online || NR.Net.state === 'connecting' || NR.Net.state === 'registering') return;
       this.setView('connecting');
-      this.status = 'reaching the grid';
       /* Cleared on every attempt. A refusal describes the attempt that earned
          it, and leaving a stale one on screen while the next one is in flight
          reads as the new attempt having already failed. */
       this.refusal = '';
+
+      if (this.offline()) {
+        this.status = 'this machine is not connected to a network';
+        this.refusal = 'offline';
+        this.build();
+        this.warn('warn', 'NO NETWORK',
+          'This machine reports no connection, so there is nothing to reach. '
+          + 'Everything else in SYNX runs offline - the campaign, free roam and '
+          + 'the time trials are all local.',
+          'Reconnect and press TRY AGAIN. The grid will be waiting.', true);
+        return;
+      }
+
+      this.status = 'reaching the grid';
       this.build();
       NR.Net.wake((p) => {
         const s = Math.round(p.elapsed / 1000);
@@ -507,6 +566,48 @@
         this.status = (e && e.message) || 'could not reach the grid';
         this.refusal = (e && e.code) || '';
         if (this.shown) this.build();
+        /* THE SERVER IS THERE OR IT IS NOT, and the player cannot tell which
+           from a status line they have already stopped reading. The address is
+           named because the most common cause by far is a custom one that has
+           been typed in and is wrong. */
+        if (this.shown) {
+          this.warn('error', 'THE GRID DID NOT ANSWER',
+            'SYNX could not open a link to the server. It may be asleep, it may '
+            + 'be down, or this network may be blocking the connection.',
+            'Server: ' + (NR.Net.server || 'the default grid') + '\n'
+            + (this.status || 'no reason given'), true);
+        }
+      });
+    }
+
+    /* THE LINK CAN ALSO DIE WHILE NOBODY IS LOOKING AT THIS SCREEN, which is
+       the case that most needs telling: a player halfway down a straight with
+       three other cars around them, and then nothing. Wired to the browser's
+       own connection events and to the net layer's, so both a pulled cable and
+       a server that walks away are covered. */
+    watchLink() {
+      if (this._watching) return;
+      this._watching = true;
+      const drop = () => {
+        if (!this.shown && !NR.Net.inRoom) return;
+        this.warn('error', 'LINK LOST',
+          'The connection to the grid has gone. Any race in progress has ended '
+          + 'for this car; the others are still out there.',
+          this.offline() ? 'This machine is no longer on a network.'
+            : 'The server stopped answering.', true);
+      };
+      global.addEventListener('offline', () => {
+        if (NR.Net.online || NR.Net.inRoom || this.shown) drop();
+      });
+      global.addEventListener('online', () => {
+        /* Coming back is not a warning, it is an offer. Only made when the
+           player is on the network screen and still unconnected - anywhere
+           else it would be a popup nobody asked for. */
+        if (this.shown && !NR.Net.online && NR.UI && !NR.UI.busy()) {
+          this.warn('info', 'NETWORK IS BACK',
+            'This machine is connected again. The grid can be reached from here.',
+            null, true);
+        }
       });
     }
 

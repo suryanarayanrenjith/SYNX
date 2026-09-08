@@ -228,11 +228,9 @@
       .then(function () {
         // the handful of portraits the title and hub markup carries statically
         NR.Pak.resolveDom();
-        // ...and the typefaces, which the stylesheet cannot resolve for itself
-        NR.Pak.installFonts([
-          { family: 'Orbitron', weight: 600, file: 'assets/fonts/Orbitron-600.ttf' },
-          { family: 'Orbitron', weight: 900, file: 'assets/fonts/Orbitron-900.ttf' },
-        ]);
+        /* The typefaces are declared in css/style.css now, against the same
+           two loose files launcher.css already uses - so they are not in the
+           pack, not installed at runtime, and present before this even runs. */
         return NR.loadCore('wasm/synx_core.wasm?v=rust-1');
       })
       .then(function () {

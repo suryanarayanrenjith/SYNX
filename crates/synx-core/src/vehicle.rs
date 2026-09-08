@@ -49,6 +49,52 @@ const DAMP_REB_R: f64 = 3700.0;
 const ARB_F: f64 = 14000.0;
 const ARB_R: f64 = 8000.0;
 const TRAVEL: f64 = 0.16;
+/* BUMP STOPS. Past this much compression beyond the static ride height the
+   spring is not the only thing left: the rubber stop closes and the rate goes
+   up as the square of how far into it the corner is.
+
+   The car had a linear rate to the end of its travel and then a hard clamp,
+   which is a wall - the load stops rising at the exact moment the road is
+   asking the tyre for the most it will ever give. It is why a landing off the
+   stunt ramp used to arrive with no weight in it: the springs bottomed, the
+   loads froze at their bottomed value, and the tyres had nothing extra to grip
+   with at the one moment the car most needed it. */
+const BUMP_GAP: f64 = 0.11;
+const BUMP_STOP: f64 = 1_400_000.0;
+
+/* SUSPENSION GEOMETRY: the transfer that does NOT go through the springs.
+
+   Every gram of load transfer in this model used to be elastic - the body had
+   to physically roll or pitch on its springs before a tyre saw any of it, and
+   the roll mode takes about a fifth of a second to get there. Real suspension
+   does not work like that. A wishbone points at a roll centre above the road,
+   and the part of the cornering force that acts through that point is fed
+   straight into the tyre by the links, arriving in the same instant the force
+   does. The same geometry resists dive and squat.
+
+   Splitting it matters to how the car FEELS more than to what it can do:
+   turn-in gets its load immediately instead of a fifth of a second late, the
+   nose stops diving so far under brakes, and the springs are left carrying
+   only the part of the moment that is genuinely above the roll centre. */
+const RC_FRONT: f64 = 0.085;
+const RC_REAR: f64 = 0.125;
+const ANTI_DIVE: f64 = 0.55;
+const ANTI_SQUAT: f64 = 0.35;
+
+/* THE LIMITED-SLIP DIFFERENTIAL. The rear axle used to be a bare 50/50 torque
+   split with nothing tying the two wheels together, so the inner rear was free
+   to light up on its own on every corner exit and take its half of the torque
+   with it into a wheelspin the other side could do nothing about.
+
+   A clutch-pack diff resists a speed DIFFERENCE with a torque that rises with
+   how hard the axle is being driven: preload always, plus a ramp fraction of
+   the axle torque, capped where the pack is fully clamped. Torque is moved
+   from the faster wheel to the slower one, which is a transfer and not an
+   addition - the axle total is untouched. */
+const DIFF_PRELOAD: f64 = 120.0;
+const DIFF_RAMP: f64 = 0.16;
+const DIFF_MAX: f64 = 1600.0;
+const DIFF_SLIP: f64 = 4.0;
 
 // --- engine ----------------------------------------------------------------
 const IDLE_RPM: f64 = 950.0;
@@ -87,6 +133,11 @@ const DAMAGE_DRAG: f64 = 0.42;
 const DAMAGE_BOOST: f64 = 0.22;
 const ROLL_RESIST: f64 = 0.014;
 const DOWNFORCE: f64 = 0.62;
+/* ...and how much of it lands on the front axle. Deliberately less than the
+   car's own 45% static split: a rearward aero balance is what makes a fast car
+   calm at the top of sixth, because the axle that decides whether a twitch
+   becomes a spin is the one gaining grip fastest with speed. */
+const AERO_FRONT: f64 = 0.38;
 
 // --- tyres -----------------------------------------------------------------
 const LAT_STIFF: f64 = 8.6;
@@ -142,6 +193,10 @@ const B_ARM: f64 = WHEELBASE * FRONT_WEIGHT;
 const YAW_I: f64 = MASS * A_ARM * B_ARM;
 const PITCH_I: f64 = MASS * 0.29 * WHEELBASE * WHEELBASE;
 const ROLL_I: f64 = MASS * 0.30 * TRACK_WIDTH * TRACK_WIDTH;
+/// The share of each transfer the links take, averaged over the two axles by
+/// weight. What is left is what the springs are asked for. See RC_FRONT.
+const ANTI_MEAN: f64 = ANTI_DIVE * FRONT_WEIGHT + ANTI_SQUAT * (1.0 - FRONT_WEIGHT);
+const RC_MEAN: f64 = RC_FRONT * FRONT_WEIGHT + RC_REAR * (1.0 - FRONT_WEIGHT);
 const TARGET_LAT: f64 = STEER_TARGET_G * G / UNIT_METRES;
 const RPM_PER_RAD: f64 = 60.0 / (2.0 * core::f64::consts::PI);
 const HW: f64 = TRACK_WIDTH * 0.5;
@@ -898,17 +953,42 @@ impl Vehicle {
             } else {
                 DAMP_REB_R
             };
-            let spring = k_s * x + c_d * rate_up;
+            // ...and the rubber, once this corner has used up its travel
+            let into_stop = x - (s0 + BUMP_GAP);
+            let stop = if into_stop > 0.0 { BUMP_STOP * into_stop * into_stop } else { 0.0 };
+            let spring = k_s * x + stop + c_d * rate_up;
             // aero pushes the whole car down and is not carried by the
             // springs' static travel, so it goes straight to the contact load
             let load = spring
-                + aero * (if k.front { FRONT_WEIGHT } else { 1.0 - FRONT_WEIGHT }) * 0.5;
+                + aero * (if k.front { AERO_FRONT } else { 1.0 - AERO_FRONT }) * 0.5;
             self.w[i].load = load.max(0.0);
             self.w[i].contact = self.w[i].load > 1.0;
             sum_f += spring;
             pitch_m += k.l * spring;
             roll_m += k.w * spring;
         }
+        /* THE TRANSFER THE LINKS CARRY, which arrives in the same instant the
+           force that causes it does - see RC_FRONT. Both terms read the
+           PREVIOUS sub-step's accelerations, four milliseconds old at 240 Hz,
+           because this sub-step's are not known until its tyre forces are, and
+           its tyre forces need these loads. Four milliseconds of lag on a
+           fifth of a second of body motion is not a lag anybody can feel.
+
+           Positive lateral acceleration is to the right of the car, and load
+           moves to the OUTSIDE of the turn - the wheels at negative track
+           offset. Positive longitudinal acceleration moves it rearward. */
+        let geo_f = m * self.accel_lat * FRONT_WEIGHT * RC_FRONT / TRACK_WIDTH;
+        let geo_r = m * self.accel_lat * (1.0 - FRONT_WEIGHT) * RC_REAR / TRACK_WIDTH;
+        let geo_l = m * self.accel_long * CG_HEIGHT / WHEELBASE;
+        for i in 0..4 {
+            let k = &WHEELS[i];
+            let lat = if k.front { geo_f } else { geo_r };
+            let lon = if k.front { -geo_l * ANTI_DIVE } else { geo_l * ANTI_SQUAT };
+            let side = if k.w < 0.0 { 1.0 } else { -1.0 };
+            self.w[i].load = (self.w[i].load + side * lat + lon * 0.5).max(0.0);
+            self.w[i].contact = self.w[i].load > 1.0;
+        }
+
         // Anti-roll bars: a torsion bar pushes back on whichever side is
         // compressed further, so the compressed side gains load. Adding it to
         // the lighter side inverts the whole distribution and the car leans
@@ -989,6 +1069,15 @@ impl Vehicle {
             0.0
         };
 
+        /* The differential, read before the wheels are stepped so both of them
+           see the same locking torque. It is a TRANSFER: whatever is taken off
+           the faster wheel is given to the slower one, so the axle total is
+           exactly what the engine sent it and no torque is invented. See
+           DIFF_PRELOAD. */
+        let axle_t = (drive_torque + reverse).abs() + eng_brake;
+        let lock = (DIFF_PRELOAD + DIFF_RAMP * axle_t).min(DIFF_MAX);
+        let lsd = -lock * ((self.w[2].omega - self.w[3].omega) / DIFF_SLIP).tanh();
+
         for i in 0..4 {
             let k = &WHEELS[i];
             // velocity of this contact patch, in body axes
@@ -1056,6 +1145,8 @@ impl Vehicle {
             let mut tq = 0.0;
             if !k.front {
                 tq += (drive_torque + reverse) * 0.5 - eng_brake * 0.5;
+                // negative track offset is the left wheel, which the sign is for
+                tq += if k.w < 0.0 { lsd } else { -lsd };
             }
             // Brake proportioning follows the load this wheel is actually
             // carrying. Under heavy braking the rear goes light, and a fixed
@@ -1189,9 +1280,14 @@ impl Vehicle {
         self.yaw += self.yaw_rate * h;
 
         // ---- body: heave, pitch and roll ----------------------------------
+        /* Only the moment the SPRINGS are left with. Everything the links took
+           above has already reached the tyre; asking the body for it as well
+           would count the same load transfer twice - once instantly at the
+           contact patch and once again, a fifth of a second later, as roll. */
         let d_heave = (sum_f - m * G) / m;
-        let d_pitch = (pitch_m + m * self.accel_long * CG_HEIGHT) / PITCH_I;
-        let d_roll = (roll_m + m * self.accel_lat * CG_HEIGHT) / ROLL_I;
+        let d_pitch =
+            (pitch_m + m * self.accel_long * CG_HEIGHT * (1.0 - ANTI_MEAN)) / PITCH_I;
+        let d_roll = (roll_m + m * self.accel_lat * (CG_HEIGHT - RC_MEAN)) / ROLL_I;
         self.heave_v = (self.heave_v + d_heave * h) * 0.999;
         self.pitch_v = (self.pitch_v + d_pitch * h) * 0.999;
         self.roll_v = (self.roll_v + d_roll * h) * 0.999;
@@ -2100,4 +2196,174 @@ mod tests {
         );
     }
 
+    /* THE LINKS BEAT THE BODY TO IT.
+     *
+     * Every gram of load transfer used to be elastic: the body had to roll on
+     * its springs before an outside tyre saw any extra load, and the roll mode
+     * takes about a fifth of a second to get anywhere. The car turned in on
+     * whatever grip it had at the instant the wheel moved, and the grip it was
+     * going to have arrived afterwards.
+     *
+     * With the roll centres in, the part of the cornering force that acts
+     * through them is fed to the tyre by the wishbones in the same instant the
+     * force exists. Seventeen milliseconds after a step input - four sub-steps,
+     * before the body has rolled a twentieth of a degree - the front axle is
+     * already carrying three times the load split it used to.
+     */
+    #[test]
+    fn the_links_carry_load_before_the_body_rolls() {
+        let t = straight_track(20_000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 100.0, 0.0);
+        car.v_long = 40.0;
+        drive(&mut car, &t, 1.0, Input { throttle: 0.55, ..Default::default() });
+
+        for _ in 0..4 {
+            car.update(
+                &t,
+                1.0 / 240.0,
+                Input { throttle: 0.55, steer: 1.0, ..Default::default() },
+                true,
+            );
+        }
+        let split = car.w[0].load - car.w[1].load;
+        assert!(
+            car.roll.abs() < 0.001,
+            "the body has already rolled {:.4} rad - this is not the instant being tested",
+            car.roll
+        );
+        assert!(
+            split > 180.0,
+            "seventeen milliseconds in, the front axle has moved only {split:.0} N across \
+             while the body is still flat: the links are carrying nothing"
+        );
+    }
+
+    /* A LANDING HAS TO BE CAUGHT BY THE CAR, NOT BY A CLAMP.
+     *
+     * `heave` is limited to the suspension's travel so the body cannot sink
+     * through the floor, and before the bump stops existed a hard arrival went
+     * straight to that limit and sat on it: the spring was linear all the way
+     * down, ran out of rate, and the limiter took the rest. That is a collision
+     * with a number, and it is why a big jump used to land dead.
+     *
+     * With a progressive stop the rate climbs as the square of how far into the
+     * rubber the corner is, so the energy goes into force - which is load,
+     * which is grip - instead of into travel. The same landing now stops a
+     * third of the way down.
+     */
+    #[test]
+    fn a_landing_is_caught_by_the_bump_stops() {
+        let t = straight_track(4000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 400.0, 0.0);
+        car.v_long = 72.0;
+        car.arm_ramp(500.0, 546.0, 4.2);
+
+        let (mut peak, mut lowest, mut after) = (0.0f64, 0.0f64, 0usize);
+        for _ in 0..(12 * 240) {
+            let air = car.airborne;
+            car.update(&t, 1.0 / 240.0, Input { throttle: 1.0, ..Default::default() }, true);
+            if air && !car.airborne {
+                after = 1;
+            }
+            if after > 0 && after < 480 {
+                after += 1;
+                peak = peak.max(car.w.iter().map(|w| w.load).sum::<f64>());
+                lowest = lowest.min(car.heave);
+            }
+        }
+        assert!(after > 0, "the car never landed, so there is nothing to catch");
+        assert!(
+            lowest > -TRAVEL + 0.04,
+            "the body went to {lowest:.4} against a travel limit of {TRAVEL}: \
+             the landing was stopped by the clamp, not by the suspension"
+        );
+        assert!(
+            peak > 4.5 * MASS * G,
+            "the tyres never saw more than {:.1}g on touchdown - a landing has to have \
+             weight in it",
+            peak / (MASS * G)
+        );
+    }
+
+    /* THE AERO BALANCE IS BEHIND THE CAR'S OWN.
+     *
+     * Static weight is 45% front. Downforce is 38%, so the faster the car goes
+     * the further back its balance moves, and the axle that decides whether a
+     * twitch at the top of sixth becomes a spin is the one gaining grip
+     * fastest. At terminal speed there is no acceleration left to transfer
+     * anything, so what is measured here is the aero split and nothing else.
+     */
+    #[test]
+    fn downforce_is_biased_to_the_rear() {
+        let t = straight_track(20_000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 100.0, 0.0);
+        drive(&mut car, &t, 60.0, Input { throttle: 1.0, ..Default::default() });
+
+        assert!(car.v_long > TOP_SPEED - 1.0, "it never got up to speed: {:.1}", car.v_long);
+        /* The speed limiter pins the velocity at the ceiling but not the
+           derivative, so a small positive figure survives here. It is worth
+           about 160 N of rearward transfer against a 17,700 N total - a tenth
+           of what the aero split is being asked to show. */
+        assert!(
+            car.accel_long.abs() < 1.5,
+            "still accelerating hard at {:.2} m/s^2 - weight transfer would be measured, not aero",
+            car.accel_long
+        );
+        let front = car.w[0].load + car.w[1].load;
+        let rear = car.w[2].load + car.w[3].load;
+        let share = front / (front + rear);
+        assert!(
+            share < 0.442,
+            "at terminal speed the front axle still carries {:.1}% of the load; with a \
+             rearward aero balance it has to be under 44.2%",
+            share * 100.0
+        );
+        assert!(
+            front + rear > MASS * G * 1.2,
+            "there is no downforce here at all: {:.0} N against a {:.0} N car",
+            front + rear,
+            MASS * G
+        );
+    }
+
+    /* THE AXLE IS TIED TOGETHER.
+     *
+     * On dry tarmac the tyres equalise the rear wheels by themselves - a wheel
+     * that gets ahead builds slip ratio and the road pulls it straight back -
+     * so an open diff and a locked one look the same. Take the grip away and
+     * they stop looking the same at all: with nothing to react against, the
+     * inner wheel lights up and takes its half of the torque into a wheelspin
+     * the other side cannot do anything about.
+     *
+     * The measured peak difference across the rear axle on a slippery corner
+     * exit was 68 rad/s open. The clutch pack holds it under two.
+     */
+    #[test]
+    fn the_diff_ties_the_rear_axle_together() {
+        let t = straight_track(20_000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 100.0, 0.0);
+        car.v_long = 18.0;
+
+        let mut worst = 0.0f64;
+        for _ in 0..(240 * 2) {
+            // the surface is re-applied every step: `update` samples it fresh
+            car.surface_grip = 0.55;
+            car.update(
+                &t,
+                1.0 / 240.0,
+                Input { throttle: 1.0, steer: 0.8, ..Default::default() },
+                true,
+            );
+            worst = worst.max((car.w[2].omega - car.w[3].omega).abs());
+        }
+        assert!(
+            worst < 6.0,
+            "the rear wheels ran {worst:.1} rad/s apart on a slippery exit - the axle is open"
+        );
+        assert!(car.v_long > 4.0, "it never got out of the corner at all: {:.1}", car.v_long);
+    }
 }

@@ -102,6 +102,8 @@
       doc.body.classList.add('modeselect-open');
       this.build();
       g.audio.playTrack('menu');
+      // ...and the line under the title arrives a character at a time
+      if (NR.UI && this.ui.status) NR.UI.type(this.ui.status, this.ui.status.textContent);
     }
 
     close() {

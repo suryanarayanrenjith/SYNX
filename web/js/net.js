@@ -305,7 +305,17 @@
       const attempt = (n) => {
         const elapsed = performance.now() - started;
         if (onProgress) onProgress({ attempt: n, elapsed, state: 'waking' });
-        if (this.state === 'offline') this.state = 'waking';
+        /* See probe(): a machine that knows it has no route is told so now,
+         rather than after two thirty-second attempts at a server that was
+         never reachable from here. */
+      try {
+        if (global.navigator && global.navigator.onLine === false) {
+          const off = new Error('this machine is not connected to a network');
+          off.code = 'offline';
+          return Promise.reject(off);
+        }
+      } catch (e) { /* no navigator */ }
+      if (this.state === 'offline') this.state = 'waking';
         return fetch(base + '/wake', { method: 'GET', cache: 'no-store' })
           .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
           .then(info => {
@@ -541,6 +551,18 @@
       if (!/^https?:\/\//i.test(url)) {
         return Promise.resolve({ ok: false, why: 'an address has to start with http:// or https://' });
       }
+      /* NO NETWORK IS ITS OWN ANSWER, and it is worth thirty seconds to the
+         player. navigator.onLine is only trusted when it says NO - true just
+         means an interface is up, which a captive portal satisfies too - so
+         this can short-circuit the wait below without ever wrongly claiming
+         a server is fine. Without it a machine with the wifi off spends the
+         full timeout before being told anything at all. */
+      try {
+        if (global.navigator && global.navigator.onLine === false) {
+          return Promise.resolve({ ok: false, offline: true,
+            why: 'this machine is not connected to a network' });
+        }
+      } catch (e) { /* no navigator, which is fine - fall through and try */ }
 
       /* Long, and deliberately so. A free host puts an idle instance to sleep
          and a cold start is most of a minute; a five-second timeout would call

@@ -279,14 +279,40 @@
       });
     }
 
+    /* REDRAWN IN PLACE, NOT RESET.
+     *
+     * Every row change comes back through here, because a row can enable or
+     * disable another one and the only honest way to show that is to rebuild
+     * the list. Rebuilding used to throw the view away with it: the list was
+     * emptied, the scroll was forced to zero, and the focused arrow stopped
+     * existing - so changing anything below the fold in GRAPHICS threw the
+     * player back to the top of the tab and took the keyboard with it.
+     *
+     * The tab is the only thing that should ever move the view, so the
+     * scroll position and the focused control are carried across the
+     * rebuild, and the reset happens when - and only when - the tab
+     * actually changed. */
     render() {
       const kids = this.ui.tabs.children;
       for (let i = 0; i < kids.length; i++) {
         kids[i].setAttribute('aria-selected', String(i === this.tab));
       }
       const host = this.ui.rows;
+      const tabMoved = this._shownTab !== this.tab;
+      const keepTop = tabMoved ? 0 : host.scrollTop;
+      /* Which control had the keyboard, as a row key and a side, so it can
+         be found again on an element that does not exist yet. */
+      let keepKey = null, keepSide = null;
+      const act = doc.activeElement;
+      if (!tabMoved && act && host.contains(act)) {
+        const owner = act.closest ? act.closest('.row') : null;
+        if (owner && owner.dataset) {
+          keepKey = owner.dataset.key || null;
+          keepSide = act.classList && act.classList.contains('row') ? 'row'
+            : (act.previousSibling ? 'inc' : 'dec');
+        }
+      }
       host.textContent = '';
-      host.scrollTop = 0;
 
       for (const row of S.rowsFor('launcher')) {
         if (row.tab !== this.tab) continue;
@@ -299,12 +325,33 @@
         host.appendChild(this.rowEl(row));
       }
       this.setHint('');
+      this._shownTab = this.tab;
+      // ...and put the view back where the player left it
+      host.scrollTop = keepTop;
+      if (keepKey) {
+        const back = host.querySelector('.row[data-key="' + keepKey + '"]');
+        if (back) {
+          let target = back;
+          if (keepSide === 'dec' || keepSide === 'inc') {
+            const btns = back.querySelectorAll('button');
+            const want = btns[keepSide === 'dec' ? 0 : 1];
+            /* An arrow that has just gone disabled cannot hold focus, and
+               leaving it on the body is what makes the next key press go
+               nowhere. The row itself is the fallback: it advances too. */
+            if (want && !want.disabled) target = want;
+          }
+          try { target.focus({ preventScroll: true }); } catch (e) { target.focus(); }
+          host.scrollTop = keepTop;
+        }
+      }
     }
 
     rowEl(row) {
       const opts = this.optsFor(row);
       const el = doc.createElement('div');
       el.className = 'row' + (this.dimmed(row) ? ' dim' : '');
+      // the handle render() uses to find this row again after a rebuild
+      el.dataset.key = row.key;
 
       const left = doc.createElement('span');
       const lbl = doc.createElement('b');

@@ -256,6 +256,51 @@ function connect(wsUrl) {
       ok('settings round-trip through the save file');
     }
 
+    /* CHANGING A SETTING MUST NOT MOVE THE LIST.
+     *
+     * Every row change rebuilds the list, because a row can enable or grey
+     * out another one. The rebuild used to empty the container and force the
+     * scroll to zero, so setting anything below the fold in GRAPHICS threw
+     * the player back to the top of the tab - on the longest tab in the
+     * launcher, where every interesting row is below the fold.
+     *
+     * Driven the way a player drives it: scroll to the bottom, press the
+     * arrow on the last row, and see where the list ended up.
+     */
+    const scrolled = await evalIn([
+      "(() => {",
+      "  const tabs = Array.from(document.querySelectorAll('#tabs .tab'));",
+      "  const g = tabs.find((t) => /GRAPH/i.test(t.textContent));",
+      "  if (!g) return JSON.stringify({ why: 'no graphics tab' });",
+      "  g.click();",
+      "  const host = document.getElementById('rows');",
+      "  host.scrollTop = host.scrollHeight;",
+      "  const top = host.scrollTop;",
+      "  if (top < 1) return JSON.stringify({ why: 'the tab does not scroll here' });",
+      "  const rows = Array.from(host.querySelectorAll('.row'));",
+      "  const last = rows.reverse().find((r) => {",
+      "    const b = r.querySelectorAll('button');",
+      "    return b.length > 1 && (!b[0].disabled || !b[1].disabled);",
+      "  });",
+      "  if (!last) return JSON.stringify({ why: 'no changeable row at the bottom' });",
+      "  const key = last.dataset.key;",
+      "  const b = last.querySelectorAll('button');",
+      "  (b[0].disabled ? b[1] : b[0]).click();",
+      "  return JSON.stringify({ key: key, before: top, after: host.scrollTop,",
+      "    max: host.scrollHeight - host.clientHeight });",
+      "})()",
+    ].join(""));
+    const sc = JSON.parse(scrolled || "{}");
+    if (sc.why) {
+      ok('scroll check skipped: ' + sc.why);
+    } else if (Math.abs(sc.after - sc.before) > 8) {
+      fail('changing "' + sc.key + '" moved the list from ' + Math.round(sc.before) +
+        ' to ' + Math.round(sc.after) + ' - the view jumps on every change');
+    } else {
+      ok('changing a row leaves the list where it was (' + Math.round(sc.after) +
+        ' of ' + Math.round(sc.max) + ')');
+    }
+
     /* THE LOGGING, WHICH ONLY EXISTS WHEN IT IS NEEDED.
      *
      * The contract is precise and easy to get backwards: a run that works must
