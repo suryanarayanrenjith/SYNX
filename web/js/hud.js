@@ -1160,6 +1160,21 @@
     // ---------------------------------------------------------- menu -----
     drawMenu(g) {
       const c = this.ctx;
+      /* THE TITLE SCREEN ASSEMBLES OUT OF THE OPENING SHOT.
+
+         `introReveal` runs 0 to 1 across the last third of the camera move -
+         see introCamera in js/game.js - and everything the menu draws is
+         behind it. Alpha only, deliberately: the layout is hit-tested by
+         Game.menuItemAt against fixed coordinates, and a reveal that also
+         moved the rows would put the pointer and the labels in different
+         places for the second and a half nobody would think to test. */
+      const reveal = g.introReveal === undefined ? 1 : g.introReveal;
+      /* Only an ACTIVELY RUNNING move may hide the title screen. A reveal
+         stuck at zero for any other reason - a move that was started and
+         never stepped, which is exactly what a mis-placed hook did once -
+         must not be able to leave the menu invisible and unusable. */
+      if (reveal <= 0.001 && g.intro) return;
+      if (reveal < 1) { c.save(); c.globalAlpha = reveal; }
 
       // a horizon grid under the title, the genre's signature
       this.gridFloor(g, -120, 0.30);
@@ -1232,6 +1247,7 @@
       const frameH = Math.min(690, this.vh - 30);
       this.brackets(0, 0, frameW, frameH, 'rgba(139,92,246,0.55)', 34, 0.8);
       this.sweep(g, 1);
+      if (reveal < 1) c.restore();
     }
 
     // ------------------------------------------------------------ HUD ----

@@ -263,5 +263,8 @@
     KEY: 'synx.settings.v1',
     /** ...and where the launcher's window answers live. */
     LAUNCHER_KEY: 'synx.launcher.v1',
+    /** Where the benchmark leaves what it measured, for the launcher to
+        offer the next time it opens. See js/bench.js. */
+    BENCH_KEY: 'synx.bench.v1',
   };
 })(typeof window !== 'undefined' ? window : globalThis);

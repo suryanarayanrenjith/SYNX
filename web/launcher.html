@@ -21,6 +21,28 @@
 <link rel="icon" href="favicon.png">
 </head>
 <body>
+<!-- THE CARD THAT IS ON SCREEN BEFORE ANYTHING ELSE IS.
+
+     The window opens, and then for a second or two nothing in it answers:
+     the launcher is asking the host for the monitor list, the save file and
+     the graphics description, and one of those costs a subprocess - which is
+     the console window that flashes past on Windows. Until all of it comes
+     back there is a settings screen on screen that does not respond to being
+     clicked, which reads exactly like a game that has hung on startup.
+
+     So the first thing painted is this, and it says what is happening. It is
+     in the MARKUP rather than built by script on purpose: script that builds
+     a loading screen runs after the parser has already had its chance to
+     show one, which is the wrong way round. -->
+<div id="boot" aria-hidden="true">
+  <div class="boot-card">
+    <img class="boot-mark" src="favicon.png" alt="" width="72" height="72">
+    <div class="boot-name">SYNX</div>
+    <div class="boot-sub">SYNTHWAVE eXTREME RACING</div>
+    <div class="boot-bar"><i></i></div>
+    <p class="boot-line" id="bootLine">READING THIS MACHINE</p>
+  </div>
+</div>
 <!-- The sunset behind everything: the game's own horizon, drawn in CSS so the
      launcher costs no GPU context of its own. A launcher that spins up WebGL
      to draw its background is a launcher that fails on exactly the machines
@@ -75,6 +97,11 @@
       <b>ARROWS</b> MOVE &nbsp; <b>ENTER</b> PLAY &nbsp; <b>CTRL+S</b> SAVE &nbsp; <b>ESC</b> QUIT
     </p>
     <div class="acts">
+      <!-- The benchmark measures this machine and picks a preset from what it
+           found, rather than from what the numbers look like they should mean.
+           It launches the game, runs a fixed pass at each preset, and what it
+           measured is applied here the next time this screen opens. -->
+      <button type="button" id="bench" class="ui-btn synx-cut">BENCHMARK</button>
       <button type="button" id="reset" class="ui-btn synx-cut">DEFAULTS</button>
       <button type="button" id="save" class="ui-btn synx-cut">SAVE</button>
       <button type="button" id="quit" class="ui-btn synx-cut">QUIT</button>

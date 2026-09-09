@@ -21,6 +21,7 @@
 
 pub mod abi;
 pub mod ai;
+pub mod driver;
 pub mod math;
 pub mod mesh;
 pub mod net;

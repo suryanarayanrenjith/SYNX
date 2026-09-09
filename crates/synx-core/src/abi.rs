@@ -1465,3 +1465,109 @@ pub extern "C" fn synx_fx_build(
     parts().build([rx, ry, rz], [ux, uy, uz], [fx, fy, fz])
 }
 
+// ---------------------------------------------------------------- driver --
+//
+// The figure in the seat, posed. See `driver` for why seventeen small
+// matrices a car turned out to be worth crossing the boundary for.
+//
+// The part table is uploaded once and lives here for the session; the only
+// thing that crosses per frame is the car transform and the steering angle,
+// and the only thing that comes back is a pointer.
+
+static mut RIG: Option<crate::driver::Rig> = None;
+
+fn rig() -> &'static mut crate::driver::Rig {
+    unsafe {
+        let r = &mut *core::ptr::addr_of_mut!(RIG);
+        if r.is_none() {
+            *r = Some(crate::driver::Rig::new());
+        }
+        r.as_mut().unwrap()
+    }
+}
+
+/// Where the head is placed, in figure space. The first-person eye is
+/// measured from this rather than from a second constant that would have to
+/// be kept in step with it by hand.
+#[no_mangle]
+pub extern "C" fn synx_drv_head(x: f32, y: f32, z: f32) {
+    rig().set_head(x as f64, y as f64, z as f64);
+}
+
+/// The driver's eye and where it is looking, against whatever is in MODEL.
+/// Six floats: three of eye, three of look-at.
+#[no_mangle]
+pub extern "C" fn synx_cam_pov(yaw: f32, pitch: f32) -> *const f32 {
+    let m = unsafe { &*core::ptr::addr_of!(MODEL) };
+    rig().pov(m, yaw as f64, pitch as f64).as_ptr()
+}
+
+/// Where the steering wheel is and how far it is raked, in figure space.
+#[no_mangle]
+pub extern "C" fn synx_drv_hub(x: f32, y: f32, z: f32, rake: f32) {
+    rig().set_hub(x as f64, y as f64, z as f64, rake as f64);
+}
+
+/// The scratch the caller writes the part table into, before
+/// `synx_drv_load`. `n` records of `synx_drv_stride()` floats.
+#[no_mangle]
+pub extern "C" fn synx_drv_tptr(n: usize) -> *mut f32 {
+    let t = table();
+    t.resize(n * crate::driver::STRIDE, 0.0);
+    t.as_mut_ptr()
+}
+
+static mut TABLE: Option<Vec<f32>> = None;
+
+fn table() -> &'static mut Vec<f32> {
+    unsafe {
+        let t = &mut *core::ptr::addr_of_mut!(TABLE);
+        if t.is_none() {
+            *t = Some(Vec::new());
+        }
+        t.as_mut().unwrap()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn synx_drv_stride() -> usize {
+    crate::driver::STRIDE
+}
+
+/// Take the table that was written to `synx_drv_tptr`. Returns how many
+/// parts were read, which the caller checks against what it sent.
+#[no_mangle]
+pub extern "C" fn synx_drv_load() -> usize {
+    let raw = table().clone();
+    let r = rig();
+    r.load(&raw);
+    r.len()
+}
+
+/// The car transform the next pose is taken against: sixteen floats, written
+/// by the caller before `synx_drv_pose`.
+///
+/// A fixed slot of its own rather than a pointer passed in, and rather than
+/// borrowing the table scratch - which the first version did, by asking for a
+/// table of zero parts and writing sixteen floats into the empty vector that
+/// came back. The table is also not free to reuse: it holds the part list
+/// between frames.
+static mut MODEL: [f32; 16] = [0.0; 16];
+
+#[no_mangle]
+pub extern "C" fn synx_drv_mptr() -> *mut f32 {
+    // addr_of_mut on a static is not itself unsafe; only reading through it is
+    core::ptr::addr_of_mut!(MODEL) as *mut f32
+}
+
+/// Every part's world matrix, for one figure, against whatever is in MODEL.
+#[no_mangle]
+pub extern "C" fn synx_drv_pose(spin: f32, press: f32) -> *mut f32 {
+    let r = rig();
+    if r.is_empty() {
+        return r.out_ptr();
+    }
+    let m = unsafe { &*core::ptr::addr_of!(MODEL) };
+    r.pose(m, spin as f64, press as f64);
+    r.out_ptr()
+}

@@ -422,7 +422,22 @@
     }
 
     onKey(e) {
+
+      /* A press that arrived within a moment of this screen opening was
+
+         meant for the screen before it. See NR.Gate in js/ui.js: without
+
+         this, two quick taps on ENTER walk through three screens. */
+
+      if (NR.Gate && !NR.Gate.open()) return;
       if (!this.shown) return;
+      /* ...and a committing key shuts the gate behind itself, now that this
+         screen has established the key is for it. Moving between screens is
+         covered by the state change; this is what stops a held ENTER
+         skipping four lines of a cutscene in a third of a second. Arrows and
+         TAB are deliberately not here: they move a selection rather than
+         commit to it, and holding one is how a long list gets read. */
+      if (NR.Gate && /^(enter| |escape|backspace)$/i.test(e.key)) NR.Gate.lock();
       const k = e.key.toLowerCase();
       const stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
       if (k === 'arrowright' || k === 'arrowdown' || k === 'd' || k === 's') { stop(); this.move(1); }

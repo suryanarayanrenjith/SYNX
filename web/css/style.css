@@ -1598,14 +1598,6 @@ body.cine5-qte #hudCanvas { opacity: .12; filter: saturate(.58) brightness(.55);
 }
 /* ...and the bar itself, which at `thin` on a dark panel was very nearly
    invisible - so the one control that says "there is more" said nothing. */
-#freeRoamRoutes::-webkit-scrollbar,
-#storyChapterList::-webkit-scrollbar { width: 8px; }
-#freeRoamRoutes::-webkit-scrollbar-track,
-#storyChapterList::-webkit-scrollbar-track { background: rgba(139,92,246,.10); border-radius: 4px; }
-#freeRoamRoutes::-webkit-scrollbar-thumb,
-#storyChapterList::-webkit-scrollbar-thumb { background: rgba(139,92,246,.62); border-radius: 4px; }
-#freeRoamRoutes::-webkit-scrollbar-thumb:hover,
-#storyChapterList::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
 
 #storyHubActions { display: grid; grid-auto-rows: min-content; gap: 10px; align-content: start; }
 
@@ -3578,9 +3570,6 @@ body.story-hub #hudCanvas { opacity: 0; }
   box-shadow: 0 0 0 1px rgba(255, 46, 136, .10), 0 0 90px rgba(0, 0, 0, .8) inset;
   animation: advIn 560ms var(--ease-out) both;
 }
-.adv-frame::-webkit-scrollbar { width: 8px; }
-.adv-frame::-webkit-scrollbar-thumb { background: rgba(57, 230, 255, .3); }
-.adv-frame::-webkit-scrollbar-track { background: transparent; }
 /* The brackets, drawn as two corner-only borders on pseudo-elements. */
 .adv-frame::before,
 .adv-frame::after {
@@ -4000,4 +3989,437 @@ section[aria-hidden="false"] .freeroam-head small {
     animation: none !important;
   }
   .ui-typing::after { display: none; }
+}
+
+/* ========================================================== SCROLLBARS ====
+   One treatment, page-wide, rather than four ad-hoc copies and a browser
+   default wherever nobody remembered.
+
+   The multiplayer panes were the ones nobody remembered: #mpMain and #mpSide
+   are the two longest lists in the game and both had a stock WebView2
+   scrollbar down the side of them - a light grey slab on a black neon panel,
+   which is the single loudest thing on that screen and none of it is the game.
+
+   Applied with the bare pseudo-elements so it reaches EVERY scrollable box,
+   including ones added later. A container that wants something different can
+   still override it; nothing currently does. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 92, 246, .55) transparent;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track {
+  background: rgba(139, 92, 246, .07);
+  /* the hairline the track is cut into, which is what stops the bar reading
+     as a strip of unrelated furniture pasted over the panel */
+  box-shadow: inset 1px 0 0 rgba(139, 92, 246, .16);
+}
+::-webkit-scrollbar-thumb {
+  background:
+    linear-gradient(180deg, rgba(57, 230, 255, .85), rgba(139, 92, 246, .85) 55%, rgba(255, 46, 136, .75));
+  /* Inset borders rather than a margin: a thumb with a transparent border
+     shows the page through it at the ends, and against a dark panel that
+     reads as the bar being broken. */
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .55), 0 0 10px rgba(57, 230, 255, .28);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, var(--cyan), rgba(139, 92, 246, 1) 55%, var(--pink));
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .5), 0 0 16px rgba(57, 230, 255, .55);
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* The two multiplayer panes get a little more room for it, because their
+   content runs to the edge and a 10px bar over a room name is a room name you
+   cannot read. */
+#mpMain { padding-right: 12px; }
+#mpSide { padding-right: 6px; }
+
+/* ============================================================ ADVISORY ====
+   The reveal states for the notice. See advisory() in js/main.js. */
+
+/* A line that has not been typed yet. It keeps its box - the card must not
+   change height as each paragraph lands, or the button walks down the screen
+   away from the pointer already heading for it. */
+.adv-wait { min-height: 1.6em; }
+.adv-body p.adv-wait { min-height: 3.2em; }
+
+/* CONTINUE, which is a button rather than a prompt now. It stops breathing
+   once the copy has finished arriving: while the notice is still being typed
+   the pulse says there is something to wait for, and afterwards it would just
+   be a button that will not sit still. */
+.adv-read .adv-go { animation: none; border-color: var(--cyan); }
+.adv-read .adv-go .adv-go-key { text-shadow: 0 0 22px rgba(57, 230, 255, .75); }
+
+/* CONTINUE, BEFORE IT IS ARMED.
+   Disabled for real - not focusable, not clickable - until the last character
+   of the warning has landed. See advisory() in js/main.js. Greyed rather than
+   hidden, so the player can see what is coming and roughly how far off it is;
+   a control that appears from nowhere is a control nobody was ready for. */
+.adv-go:disabled {
+  border-color: rgba(150, 180, 222, .18);
+  background: rgba(255, 255, 255, .02);
+  /* Still none: the game draws its own pointer, and a disabled control is
+     not a reason to hand the operating system one back. */
+  cursor: none;
+  animation: none;
+}
+.adv-go:disabled .adv-go-key {
+  color: var(--ink-faint);
+  text-shadow: none;
+}
+.adv-go:disabled .adv-go-sub { color: rgba(150, 180, 222, .22); }
+/* ...and the moment it arms, it says so once and then settles. */
+.adv-go.is-armed { animation: advArm 420ms var(--ease-out) both, advBreathe 2.6s ease-in-out 420ms infinite; }
+@keyframes advArm {
+  from { border-color: rgba(150, 180, 222, .18); transform: scale(.985); }
+  to   { border-color: rgba(57, 230, 255, .45); transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .adv-go.is-armed { animation: none; }
+}
+
+/* THE NOTICE SCROLLS WITHOUT SAYING SO.
+
+   The card is sized to fit the smallest window it will realistically open on
+   and keeps overflow-y: auto for the ones it does not - but the page-wide
+   scrollbar treatment then draws a bar down the side of a full-bleed safety
+   notice, which is the only piece of browser furniture on that screen and
+   looks exactly like one. Hidden, not disabled: the wheel, the keyboard and
+   the pad all still scroll it. */
+.adv-frame { scrollbar-width: none; }
+.adv-frame::-webkit-scrollbar { width: 0; height: 0; }
+
+/* NO SYSTEM CURSOR ON THE NOTICE EITHER.
+
+   Every fine-pointer surface is cursor:none because the game draws its own,
+   and CONTINUE was the one element that set `cursor: pointer` - so the first
+   thing a player saw was the operating system arrow turning into the
+   operating system hand, on top of the game that was drawing a cursor of its
+   own two pixels away. One pointer, and it is the one with the game in it.
+   body.native-cursor puts the real one back if the drawn one is not running;
+   that rule is below and wins on specificity. */
+.adv-go { cursor: none; }
+
+/* The cursor belongs on top of everything, including the notice. It is drawn,
+   not native, so without this it renders underneath the one screen that most
+   needs a pointer on it. */
+#synxCursor { z-index: 10000; }
+
+/* ...and if the drawn cursor is not running - no element, or a pointer that
+   is not fine - the system one comes back. installPointerFx sets this. */
+body.native-cursor,
+body.native-cursor #stage,
+body.native-cursor #stage *:not(#synxCursor):not(#synxCursor *) { cursor: auto !important; }
+body.native-cursor button,
+body.native-cursor .adv-go,
+body.native-cursor [role="button"] { cursor: pointer !important; }
+
+/* =============================================================== INTRO ====
+   The veil over the opening camera move. See js/intro.js.
+
+   It is black, it has a terminal on it, and it comes off with a wipe rather
+   than a fade - the difference between a machine handing over and a loading
+   screen giving up. Nothing here flashes; the game opens behind a
+   photosensitivity notice and this is the screen straight after it. */
+
+.intro-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 8900;
+  display: grid;
+  place-items: center;
+  background: #000;
+  /* The wipe. `clip-path` rather than opacity so the world underneath is
+     revealed edge-first at full brightness - a fade shows it through a grey
+     film for half a second, which is the one thing that makes a good renderer
+     look cheap. */
+  clip-path: inset(0 0 0 0);
+  transition: clip-path 760ms cubic-bezier(.65, 0, .35, 1);
+}
+.intro-veil.intro-lift { clip-path: inset(0 0 0 100%); }
+
+/* Two hairlines that ride the wipe's edge, which is what stops the black from
+   simply being absent and makes it read as a shutter. */
+.intro-bars {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, transparent calc(100% - 2px), var(--cyan) calc(100% - 2px)),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, .028) 0 1px, transparent 1px 3px);
+  opacity: .9;
+}
+
+.intro-term {
+  position: relative;
+  width: min(680px, 86vw);
+  text-align: left;
+}
+
+/* The wordmark, at rest. The animated one is the HUD's, which arrives with
+   the shot; this is the still that was already on screen before it. */
+.intro-mark {
+  font-size: clamp(38px, 9vw, 104px);
+  font-weight: 900;
+  letter-spacing: .16em;
+  line-height: 1;
+  color: #fff;
+  text-shadow:
+    -2px 0 0 rgba(255, 46, 136, .9),
+     2px 0 0 rgba(57, 230, 255, .9),
+     0 0 42px rgba(57, 230, 255, .35),
+     0 0 120px rgba(139, 92, 246, .28);
+  animation: introMark 620ms cubic-bezier(.2, .8, .3, 1) both;
+}
+@keyframes introMark {
+  from { opacity: 0; letter-spacing: .34em; }
+  to   { opacity: 1; letter-spacing: .16em; }
+}
+
+.intro-line {
+  margin: 1.1em 0 0;
+  min-height: 1.5em;
+  color: var(--cyan);
+  font-size: clamp(10px, 1.35vw, 13px);
+  font-weight: 700;
+  letter-spacing: .2em;
+  text-shadow: 0 0 16px rgba(57, 230, 255, .45);
+}
+
+.intro-skip {
+  position: absolute;
+  right: clamp(16px, 4vw, 46px);
+  bottom: clamp(16px, 4vh, 40px);
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .3em;
+  /* 0.4 Hz, which is a prompt rather than a strobe. */
+  animation: introSkip 2.6s ease-in-out infinite;
+}
+@keyframes introSkip { 0%, 100% { opacity: .35; } 50% { opacity: .8; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-veil, .intro-mark, .intro-skip { animation: none !important; transition: none !important; }
+}
+
+/* ====================================================== SCREEN POLISH ====
+   The second layer of the entrance, and the micro-interactions under it.
+
+   The first layer - the panel arriving, the header rule wiping across, the
+   cards staggering in - is above. This is everything that turns that from an
+   animation into a screen that feels built: the parts of the panel arriving in
+   the order a person reads them, and then responding when they are pointed at.
+
+   ALL OF IT IS KEYED ON aria-hidden, which every screen in the game already
+   sets when it opens. Nothing here needs a line of script, and nothing here
+   can fall out of step with the state machine, because it IS the state
+   machine's own attribute.
+
+   THE ONE RULE: nothing loops. Every animation below is `both` and finite. A
+   menu with a permanent pulse on it is a menu you cannot look away from, and
+   this game opens behind a photosensitivity notice. */
+
+/* The read order: header, then the numbers beside it, then the body, then the
+   controls at the bottom. Each is a beat after the one before. */
+section[aria-hidden="false"] .mode-dossier > div,
+section[aria-hidden="false"] .mp-dossier > div {
+  animation: uiRow 320ms var(--ease-out, cubic-bezier(.2, .8, .3, 1)) both;
+}
+section[aria-hidden="false"] .mode-dossier > div:nth-child(1),
+section[aria-hidden="false"] .mp-dossier > div:nth-child(1) { animation-delay: 120ms; }
+section[aria-hidden="false"] .mode-dossier > div:nth-child(2),
+section[aria-hidden="false"] .mp-dossier > div:nth-child(2) { animation-delay: 175ms; }
+section[aria-hidden="false"] .mode-dossier > div:nth-child(3),
+section[aria-hidden="false"] .mp-dossier > div:nth-child(3) { animation-delay: 230ms; }
+
+/* The footer comes in last and from below, because it is the one part of the
+   panel that is not information - it is the way out. */
+section[aria-hidden="false"] .panel-foot {
+  animation: uiFoot 400ms var(--ease-out, cubic-bezier(.2, .8, .3, 1)) both;
+  animation-delay: 300ms;
+}
+@keyframes uiFoot {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+section[aria-hidden="false"] .panel-hints span {
+  animation: uiRow 260ms var(--ease-out, ease) both;
+}
+section[aria-hidden="false"] .panel-hints span:nth-child(1) { animation-delay: 360ms; }
+section[aria-hidden="false"] .panel-hints span:nth-child(2) { animation-delay: 410ms; }
+section[aria-hidden="false"] .panel-hints span:nth-child(3) { animation-delay: 460ms; }
+
+/* THE SHEEN.
+   One diagonal pass of light across the panel as it lands, drawn on a
+   pseudo-element so it costs nothing and touches no layout. It is the single
+   cheapest thing that makes a flat panel read as a surface with a material,
+   and it happens once - a repeating sweep is a screensaver. */
+section[aria-hidden="false"] > .mp-panel,
+section[aria-hidden="false"] > .mode-panel,
+section[aria-hidden="false"] > .freeroam-panel { position: relative; }
+section[aria-hidden="false"] > .mp-panel::after,
+section[aria-hidden="false"] > .mode-panel::after,
+section[aria-hidden="false"] > .freeroam-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+  background: linear-gradient(105deg,
+    transparent 38%, rgba(255, 255, 255, .055) 47%,
+    rgba(57, 230, 255, .10) 50%, rgba(255, 255, 255, .055) 53%, transparent 62%);
+  background-size: 260% 100%;
+  animation: uiSheen 1100ms cubic-bezier(.35, 0, .2, 1) both;
+  animation-delay: 180ms;
+}
+@keyframes uiSheen {
+  from { background-position: 180% 0; opacity: 0; }
+  25%  { opacity: 1; }
+  to   { background-position: -80% 0; opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  section[aria-hidden="false"] .mode-dossier > div,
+  section[aria-hidden="false"] .mp-dossier > div,
+  section[aria-hidden="false"] .panel-foot,
+  section[aria-hidden="false"] .panel-hints span,
+  section[aria-hidden="false"] > .mp-panel::after,
+  section[aria-hidden="false"] > .mode-panel::after,
+  section[aria-hidden="false"] > .freeroam-panel::after {
+    animation: none !important;
+  }
+  /* The sheen is only ever a moving highlight. Stopping the animation leaves
+     its gradient painted where it starts - a static band of light across the
+     panel, which is worse than not having it. It goes entirely. */
+  section[aria-hidden="false"] > .mp-panel::after,
+  section[aria-hidden="false"] > .mode-panel::after,
+  section[aria-hidden="false"] > .freeroam-panel::after { display: none; }
+}
+
+/* =========================================================== BENCHMARK ====
+   The panel the benchmark runs behind. See js/bench.js.
+
+   It sits in a corner rather than over the middle: the whole point is that the
+   game is visibly rendering underneath while the numbers move, because a
+   benchmark you cannot see running is indistinguishable from a game that has
+   frozen. Nothing here blocks a pixel of the road. */
+
+.bench {
+  position: fixed;
+  right: clamp(14px, 2.4vw, 36px);
+  top: clamp(14px, 2.4vh, 36px);
+  z-index: 8700;
+  pointer-events: none;
+  animation: benchIn 300ms var(--ease-out, ease) both;
+}
+@keyframes benchIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.bench-card {
+  position: relative;
+  width: min(340px, 42vw);
+  padding: 16px 18px 14px;
+  border: 1px solid rgba(57, 230, 255, .28);
+  background:
+    linear-gradient(180deg, rgba(57, 230, 255, .05), transparent 40%),
+    rgba(4, 0, 14, .86);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 18px 60px rgba(0, 0, 0, .6);
+}
+/* The corner brackets, which is the cheapest thing that turns a box of text
+   into a piece of measuring equipment. */
+.bench-card::before,
+.bench-card::after {
+  content: "";
+  position: absolute;
+  width: 18px; height: 18px;
+  border: 2px solid var(--cyan);
+}
+.bench-card::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.bench-card::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+.bench-card.is-done { border-color: rgba(90, 255, 192, .45); }
+.bench-card.is-done::before, .bench-card.is-done::after { border-color: #5affc0; }
+
+.bench-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--cyan);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .34em;
+  text-indent: .34em;
+}
+.bench-rule i {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  opacity: .5;
+}
+
+.bench-now {
+  margin-top: 10px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: .12em;
+  text-shadow: 0 0 18px rgba(57, 230, 255, .35);
+}
+
+/* The progress bar. One bar for the whole sweep rather than one per preset:
+   what the player wants to know is how much longer, not which quarter. */
+.bench-bar {
+  position: relative;
+  height: 3px;
+  margin: 10px 0;
+  background: rgba(139, 92, 246, .18);
+  overflow: hidden;
+}
+.bench-bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--cyan), var(--pink));
+  transition: width 140ms linear;
+}
+
+.bench-live {
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  /* Tabular figures, or the frame rate jitters sideways as the digits change
+     width and reads as instability that is not there. */
+  font-variant-numeric: tabular-nums;
+}
+
+.bench-table {
+  margin-top: 10px;
+  min-height: 4.2em;
+  color: var(--ink-body);
+  font-size: 11px;
+  line-height: 1.45;
+  letter-spacing: .04em;
+  font-variant-numeric: tabular-nums;
+  /* The rows are written as plain text with real spaces, so they line up
+     without a table and cannot reflow halfway through a run. */
+  white-space: pre;
+}
+
+.bench-foot {
+  margin: 10px 0 0;
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .18em;
+  line-height: 1.5;
+}
+.is-done .bench-foot { color: #5affc0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bench { animation: none; }
+  .bench-bar i { transition: none; }
 }

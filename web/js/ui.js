@@ -203,5 +203,38 @@
   /** Is one up right now? Callers use this to avoid stacking their own. */
   function busy() { return !!live; }
 
+  /* ------------------------------------------------------- the gate --
+   *
+   * WHY A SCREEN CHANGE HAS TO SWALLOW THE NEXT FEW MILLISECONDS OF INPUT.
+   *
+   * Every screen in this game answers ENTER, and they answer it in three
+   * different places: the canvas menus poll a per-frame pressed set, the
+   * DOM screens listen for keydown, and the story director has its own
+   * handler. None of them knows the others exist.
+   *
+   * So a player pressing ENTER quickly does this: the first press starts
+   * STORY, which opens the chapter list; the second press lands on the
+   * chapter list, which was not on screen when the finger went down and has
+   * no idea the press was meant for the title; and the third is already
+   * somewhere else again. Two taps and the game is three screens deep in a
+   * place nobody chose. It reads as the game glitching out, and it is
+   * really just three listeners sharing one keyboard with no handover.
+   *
+   * The handover is this. A screen change locks the gate for a moment, and
+   * every one of those three readers asks the gate first. It is short - a
+   * fifth of a second, about the time a deliberate second press takes - so
+   * it costs a fast player nothing and costs a spammed key everything.
+   */
+  let until = 0;
+  const Gate = {
+    /** Swallow input for `ms`. Called on every state change; see js/game.js. */
+    lock(ms) { until = Math.max(until, performance.now() + (ms || 190)); },
+    /** True when input should be acted on. */
+    open() { return performance.now() >= until; },
+    /** Let it through again at once - for a screen that WANTS the next key. */
+    clear() { until = 0; },
+  };
+  NR.Gate = Gate;
+
   NR.UI = { alert, close, busy, type, reduced };
 })(window);

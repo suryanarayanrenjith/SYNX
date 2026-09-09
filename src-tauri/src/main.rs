@@ -90,6 +90,12 @@ struct HostInfo {
     /// True when the save directory is writable, so the front end knows
     /// whether the save is durable.
     persistent: bool,
+    /// Whether the webview was started with vertical sync. The page cannot
+    /// find this out for itself - it is a process argument, decided before
+    /// any script runs - and it changes how the game paces itself: with the
+    /// compositor no longer holding the loop at the refresh rate, nothing
+    /// else will unless the game does it. See gpuBusy in js/game.js.
+    vsync: bool,
     /// The graphics path actually in use, as a sentence - for the launcher,
     /// and for a bug report.
     graphics: &'static str,
@@ -123,6 +129,7 @@ fn host_info(app: tauri::AppHandle) -> HostInfo {
         cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
         version: env!("CARGO_PKG_VERSION"),
         persistent: save::dir(&app).is_some(),
+        vsync: startup_vsync(),
         graphics: platform::describe(startup_renderer()),
         software: startup_renderer() == platform::Renderer::Cpu,
         save_path: save::path(&app)

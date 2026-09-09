@@ -59,6 +59,7 @@
         hint: doc.getElementById('hint'),
         note: doc.getElementById('note'),
         play: doc.getElementById('play'),
+        bench: doc.getElementById('bench'),
         quit: doc.getElementById('quit'),
         reset: doc.getElementById('reset'),
         save: doc.getElementById('save'),
@@ -97,6 +98,7 @@
           this.ui.version.textContent = 'v' + (view.version || '1.0.0');
           this.ui.graphics.textContent = view.graphics || '—';
         } catch (e) {
+          this.bootDone();
           this.fail('The host did not answer: ' + (e && e.message ? e.message : e));
           return;
         }
@@ -123,6 +125,12 @@
       if (want >= 0) this.tab = want;
 
       this.applyDefaults();
+      /* ...and whatever the benchmark measured last time, applied once. It
+         runs after applyDefaults so it is writing over a complete settings
+         object rather than a half-built one. See applyBench. */
+      this.readBench().then((rec) => {
+        if (this.applyBench(rec)) this.render();
+      }).catch(() => {});
       this.buildTabs();
       this.bind();
       this.render();
@@ -136,12 +144,35 @@
        * a blank window and filled it four seconds later. */
       if (native) invoke('ready').catch(() => {});
 
+      /* ...and the card comes off. Not before: the rows have only just been
+         built, and taking it away any earlier shows the very half-drawn
+         screen it is there to cover. The diagnostics below are slower still
+         and are allowed to land underneath it - they fill in two lines of
+         small print and nothing the player is waiting to click. */
+      this.bootDone();
+
       // ...and only now, once there is something on screen, the diagnostics:
       // they cost a subprocess or two and must never delay the first paint.
       this.loadDiagnostics();
 
       // Focus PLAY, because it is what almost everyone is here to press.
       global.setTimeout(() => this.ui.play.focus(), 60);
+    }
+
+    /** Take the opening card down, once there is a screen behind it. */
+    bootDone() {
+      const el = doc.getElementById('boot');
+      if (!el || el.classList.contains('gone')) return;
+      el.classList.add('gone');
+      /* Removed rather than left hidden: it is a full-screen element with
+         its own stacking context over a screen that is now interactive. */
+      global.setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 520);
+    }
+
+    /** What the card says it is doing, while it is doing it. */
+    bootSay(text) {
+      const el = doc.getElementById('bootLine');
+      if (el) el.textContent = text;
     }
 
     /* The settings blob, whatever shape it is in.
@@ -581,6 +612,9 @@
       this.ui.play.addEventListener('click', () => this.play());
       this.ui.quit.addEventListener('click', () => this.quit());
       this.ui.reset.addEventListener('click', () => this.defaults());
+      if (this.ui.bench) {
+        this.ui.bench.addEventListener('click', () => this.benchmark());
+      }
       this.ui.save.addEventListener('click', () => this.saveNow());
       this.ui.alertOpen.addEventListener('click', () => {
         if (native) invoke('diag_open').catch(() => {});
@@ -731,6 +765,87 @@
         await this.report('The game window could not be opened: ' + msgOf(e),
           { stage: 'launch', preflight: pre, settings: this.win });
       }
+    }
+
+    /* THE BENCHMARK, WHICH IS A MEASUREMENT RATHER THAN A RECOMMENDATION.
+     *
+     * There are eleven graphics rows on this screen and a preset above them.
+     * Nobody who has not read the renderer knows what ambient occlusion costs
+     * on their own card, and the honest answer to "which of these should I
+     * use" is not an opinion - it is a number, measured on this machine, with
+     * this game, at this resolution.
+     *
+     * So this hands over to the game, which runs a fixed pass at each preset
+     * and writes down what it actually held - see js/bench.js. The result is
+     * picked up and applied the next time this screen opens.
+     */
+    async benchmark() {
+      if (this.busy) return;
+      this.note("BENCHMARKING - the game will run a short pass at each preset.");
+      try {
+        await this.writeBench({ pending: true, when: Date.now() });
+      } catch (e) {
+        this.note("Could not ask for a benchmark: " + msgOf(e), true);
+        return;
+      }
+      this.play();
+    }
+
+    /** The benchmark record, which lives beside the settings in the save. */
+    async writeBench(v) {
+      if (native) {
+        const save = await invoke("save_load");
+        const merged = Object.assign({}, save || {});
+        merged[S.BENCH_KEY] = v;
+        await invoke("save_store", { data: merged });
+      } else {
+        global.localStorage.setItem(S.BENCH_KEY, JSON.stringify(v));
+      }
+    }
+
+    /** ...and reading it back, from wherever this screen is running. */
+    async readBench() {
+      try {
+        /* EITHER SHAPE. This screen writes the record as an object through
+           save_store; the GAME writes it back through Save.setJSON, which
+           stores a JSON string. Both are legitimate entries in the same save
+           and this is the one place that has to read both - a reader that
+           assumes the object silently ignores every result the benchmark ever
+           produced, which is the interesting half of the record. */
+        const parse = (v) => {
+          if (!v) return null;
+          if (typeof v === "object") return v;
+          try { return JSON.parse(v); } catch (e) { return null; }
+        };
+        if (native) {
+          const save = await invoke("save_load");
+          return parse(save && save[S.BENCH_KEY]);
+        }
+        return parse(global.localStorage.getItem(S.BENCH_KEY));
+      } catch (e) { return null; }
+    }
+
+    /* WHAT THE LAST BENCHMARK FOUND, APPLIED.
+     *
+     * Applied once and then marked, because a measurement that re-applies
+     * itself on every open is a screen that will not let the player change
+     * their mind - and the point of measuring is to give them somewhere to
+     * start, not to take the choice away. */
+    applyBench(rec) {
+      const LADDER = ["LOW", "MEDIUM", "HIGH", "ULTRA"];
+      if (!rec || !rec.results || !rec.results.length || rec.applied) return false;
+      const idx = LADDER.indexOf(rec.preset);
+      if (idx < 0) return false;
+      this.game.quality = idx;
+      let at = null;
+      for (const r of rec.results) if (r.preset === rec.preset) at = r;
+      const fps = at ? Math.round(at.fps) + " fps at the 95th percentile" : "measured";
+      const held = rec.held ? "" : ", which is the best this machine held";
+      this.note("BENCHMARK: " + rec.preset + " - " + fps + held + ". Applied.");
+      rec.applied = true;
+      this.writeBench(rec).catch(() => {});
+      this.persist();
+      return true;
     }
 
     quit() {

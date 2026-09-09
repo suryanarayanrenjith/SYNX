@@ -972,6 +972,67 @@
     const p = w.synx_fx_optr() >> 2;
     return F32.subarray(p, p + n * 9);
   }
+  /* ------------------------------------------------------------ driver --
+   *
+   * The figure in the seat, posed on the core side. See
+   * crates/synx-core/src/driver.rs for what it is doing and why it is worth
+   * a call: seventeen parts a car, five cars, six passes, every frame.
+   *
+   * The table goes over once. After that the only things that cross are a
+   * car transform and a steering angle, and the only thing that comes back
+   * is a pointer into the core's own memory.
+   */
+  function drvLoad(hub, rake, table) {
+    const w = M();
+    if (!w || !w.synx_drv_load) return 0;
+    w.synx_drv_hub(hub[0], hub[1], hub[2], rake);
+    const stride = w.synx_drv_stride();
+    const n = Math.floor(table.length / stride);
+    /* The pointer is taken AFTER the resize inside it, and used immediately:
+       any core allocation can grow linear memory and replace memory.buffer,
+       and a view held across that reads as zeroes without throwing. */
+    const at = w.synx_drv_tptr(n) >> 2;
+    M();
+    F32.set(table, at);
+    return w.synx_drv_load();
+  }
+  /** Every part's world matrix for one figure, as a live view of n*16. */
+  function drvPose(model, spin, press) {
+    const w = M();
+    if (!w || !w.synx_drv_pose) return null;
+    /* The car transform has to be IN core memory to be read from there, so
+       it goes into a slot of its own - see synx_drv_mptr. Sixteen floats,
+       written in place, no allocation on either side per frame. */
+    const at = w.synx_drv_mptr() >> 2;
+    M();
+    F32.set(model, at);
+    const out = w.synx_drv_pose(spin, press || 0) >> 2;
+    M();
+    return F32.subarray(out, out + drvPose.n * 16);
+  }
+  /** Where the head sits, which the first-person eye is measured from. */
+  function drvHead(x, y, z) {
+    const m = M();
+    if (m && m.synx_drv_head) m.synx_drv_head(x, y, z);
+  }
+  /** The driver's eye and look-at, as six floats. See driver.rs. */
+  function camPov(model, yaw, pitch) {
+    const m = M();
+    if (!m || !m.synx_cam_pov) return null;
+    const at = m.synx_drv_mptr() >> 2;
+    M();
+    F32.set(model, at);
+    const out = m.synx_cam_pov(yaw, pitch) >> 2;
+    M();
+    return F32.subarray(out, out + 9);
+  }
+  NR.drvHead = drvHead;
+  NR.camPov = camPov;
+
+  drvPose.n = 0;
+  NR.drvLoad = (hub, rake, table) => { drvPose.n = drvLoad(hub, rake, table); return drvPose.n; };
+  NR.drvPose = drvPose;
+
   NR.fxReset = fxReset;
   NR.fxParticles = fxParticles;
   NR.fxIntegrate = fxIntegrate;

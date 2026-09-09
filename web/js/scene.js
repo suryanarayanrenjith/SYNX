@@ -6351,7 +6351,7 @@
       if (this.drivers !== false) {
         if (!this.driverFigure) this.driverFigure = new DriverFigure(this);
         this.driverFigure.draw(model, (who && who.livery) || (rival ? 'rival' : 'player'),
-          who ? who.steer : 0);
+          who ? who.steer : 0, !!(who && who.inside), (who && who.press) || 0);
       }
       // and nothing else in the frame gets a rig pointed at it
       U.f(gl, this.prog.u.uFillOn, 0);
@@ -6397,20 +6397,46 @@
     return { V, I };
   }
 
-  /* The wheel: a band swept round, so it reads as a rim rather than a disc,
-     and double-sided because it is thin enough to be seen from behind. */
-  function driverRim(segs, thick) {
+  /* THE WHEEL, WHICH IS NOW A RIM RATHER THAN A RIBBON.
+   *
+   * It was a flat band: a strip of quads at radius 0.5, given thickness only
+   * along z and drawn double-sided because it had no other side. From behind
+   * the car, at the distance a chase camera sits, that is a perfectly good
+   * steering wheel and nobody would ever know.
+   *
+   * From the driver's seat it is half a metre from the eye and the whole thing
+   * falls apart: a flat ribbon seen nearly edge-on is a line, it catches light
+   * on one face and nothing on the other, and the spokes meet it at a corner.
+   * The first-person view is the reason this had to change.
+   *
+   * A torus is the honest shape and it costs nothing at this size - a major
+   * circle of `segs` steps swept with a minor circle of `sides`, which at 24
+   * and 8 is 384 triangles for the one object the player looks at more than
+   * any other. The normals come out of the sweep exactly, so it lights like a
+   * tube instead of like a card.
+   */
+  function driverRim(segs, thick, sides) {
     const V = [], I = [];
-    for (let i = 0; i <= segs; i++) {
-      const a = Math.PI * 2 * (i / segs), c = Math.cos(a), sn = Math.sin(a);
-      for (const zz of [-thick, thick]) {
-        V.push(c * 0.5, sn * 0.5, zz, c, sn, 0, i / segs, zz > 0 ? 1 : 0);
+    const n = segs || 24, m = sides || 8;
+    for (let i = 0; i <= n; i++) {
+      const a = Math.PI * 2 * (i / n), c = Math.cos(a), sn = Math.sin(a);
+      for (let j = 0; j <= m; j++) {
+        const b = Math.PI * 2 * (j / m), cb = Math.cos(b), sb = Math.sin(b);
+        /* The minor circle lies in the plane containing the ring's own radius
+           and its axis, so the section stays square to the rim all the way
+           round rather than twisting. */
+        const r = 0.5 + thick * cb;
+        V.push(c * r, sn * r, thick * sb,
+          c * cb, sn * cb, sb,
+          i / n, j / m);
       }
     }
-    for (let i = 0; i < segs; i++) {
-      const a = i * 2;
-      I.push(a, a + 1, a + 3, a, a + 3, a + 2);
-      I.push(a, a + 3, a + 1, a, a + 2, a + 3);
+    const w = m + 1;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < m; j++) {
+        const p = i * w + j, q = p + w;
+        I.push(p, q, q + 1, p, q + 1, p + 1);
+      }
     }
     return { V, I };
   }
@@ -6660,10 +6686,7 @@
          which is the eye line of a head whose crown is at 0.30. */
       this.visor = driverUpload(gl, driverBand(1.27, 1.72, 1.15, 1.03, 6, 16), 'DriverVisor');
       this.peak = driverUpload(gl, driverBand(1.12, 1.29, 1.05, 1.08, 3, 16), 'DriverPeak');
-      this.rim = driverUpload(gl, driverRim(20, 0.055), 'DriverRim');
-      this.m = M4.make();
-      this.tmp2 = M4.make();   // the wheel rotation, applied after a placement
-      this.tmp = M4.make();
+      this.rim = driverUpload(gl, driverRim(24, 0.055, 8), 'DriverRim');
       this.liveries = {};
       this.build();
     }
@@ -6676,7 +6699,9 @@
         _metal: metal === undefined ? 0.05 : metal };
     }
 
-    /* A livery is five materials: helmet shell, visor, race suit, gloves and
+    /* A livery is five materials for the driver and five for the car around
+     them: helmet shell, visor, race suit, gloves, wheel - then the moulding,
+     the metal, the instrument glow and the boost button lit and unlit.
        the wheel. Cloned per car, because the shader caches smoothness and
        metalness on the material object itself and a shared one would carry the
        rival's finish back onto the player. */
@@ -6689,6 +6714,25 @@
         suit: this.mat('DriverSuit' + key, [suit[0] * 2.6, suit[1] * 2.6, suit[2] * 2.6], dim(suit, 0.30), 0.04, 0.30, 0.02),
         glove: this.mat('DriverGlove' + key, glove, [0, 0, 0], 0, 0.42, 0.06),
         rim: this.mat('DriverWheel' + key, [0.05, 0.05, 0.06], [0.02, 0.06, 0.11], 0.14, 0.55, 0.50),
+        /* THE CABIN, WHICH ONLY THE DRIVER EVER SEES.
+
+           Four surfaces and no more, because more than that is what makes a
+           generated interior read as generated: a moulding you never notice,
+           a metal that catches one hard line, an instrument glow, and the one
+           control that does something.
+
+           The moulding is lighter than a real dash top, which is about 4%
+           reflectance. That is deliberate: there is almost no light in here -
+           the key is outside the car and the cabin has no lamps of its own -
+           so a physically correct dash renders as a black shape with no form
+           in it at all. */
+        dash: this.mat('CabinDash' + key, [0.115, 0.112, 0.135], [0, 0, 0], 0, 0.20, 0.03),
+        trim: this.mat('CabinTrim' + key, [0.34, 0.36, 0.42], [0, 0, 0], 0, 0.78, 0.82),
+        dial: this.mat('CabinDial' + key, [0.012, 0.030, 0.045],
+          [0.05, 0.55, 0.88], 0.30, 0.55, 0.10),
+        btn: this.mat('CabinBtn' + key, [0.14, 0.05, 0.05], [0.22, 0.03, 0.02], 0.05, 0.45, 0.10),
+        btnLit: this.mat('CabinBtnLit' + key, [0.35, 0.10, 0.06],
+          [1.00, 0.28, 0.10], 0.85, 0.55, 0.10),
       };
       return this.liveries[key];
     }
@@ -6698,6 +6742,13 @@
       const B = (mesh, slot, x, y, z, sx, sy, sz, pitch, roll, spin) =>
         ({ mesh, slot, t: [x, y, z], s: [sx, sy, sz],
            r: [0, pitch || 0, roll || 0], spin: !!spin });
+      /* A part with somewhere else to be. `to` is where it goes when the
+         boost is asked for, and the core eases it between the two - see
+         REACH in crates/synx-core/src/driver.rs. */
+      const R = (mesh, slot, x, y, z, sx, sy, sz, pitch, roll, to, toPitch, toRoll) =>
+        ({ mesh, slot, t: [x, y, z], s: [sx, sy, sz],
+           r: [0, pitch || 0, roll || 0], kind: 4,
+           to, toPitch: toPitch || 0, toRoll: toRoll || 0 });
       /* The same positions the boxed figure used, because they were right -
          what was wrong was the shape at each of them. Three parts become one
          torso, the sphere becomes a shell, and every limb becomes a tapered
@@ -6733,14 +6784,20 @@
            while the wheel went round underneath it, and a forearm doing the
            same. It reads as a mannequin with a loose wrist.
 
-           They now ORBIT the wheel: see spinAbout. A hand at ten o'clock ends
+           They now ORBIT the wheel - see driver.rs. A hand at ten o'clock ends
            up at eight when the wheel is turned two hours, which is what a hand
            on a rim does. */
         B(this.fore, 'suit', X - 0.25, -0.15, 0.70, 0.13, 0.13, 0.27, -0.20, 0.10, true),
-        B(this.fore, 'suit', X + 0.25, -0.15, 0.70, 0.13, 0.13, 0.27, -0.20, -0.10, true),
+        /* THE RIGHT ARM LETS GO. Both of these carry a second pose - see
+           REACH in driver.rs - which puts the forearm across the tunnel and
+           the glove on the console button. The left hand never moves: a
+           driver at a hundred and twenty does not take both hands off. */
+        R(this.fore, 'suit', X + 0.25, -0.15, 0.70, 0.13, 0.13, 0.27, -0.20, -0.10,
+          [0.02, -0.28, 0.60], 0.34, -0.55),
         // gloves on the rim at ten and two
         B(this.grip, 'glove', X - 0.27, -0.10, 0.84, 0.115, 0.135, 0.13, 0, 0, true),
-        B(this.grip, 'glove', X + 0.27, -0.10, 0.84, 0.115, 0.135, 0.13, 0, 0, true),
+        R(this.grip, 'glove', X + 0.27, -0.10, 0.84, 0.115, 0.135, 0.13, 0, 0,
+          [0.16, -0.352, 0.72], -0.22, 0),
       ];
       // the wheel on its raked column
       this.wheel = B(this.rim, 'rim', X, -0.12, 0.86, 0.60, 0.60, 0.60, 0.42, 0, true);
@@ -6756,6 +6813,81 @@
          is a rotation about that. */
       this.hub = [X, -0.12, 0.86];
       this.rake = 0.42;
+
+      /* ------------------------------------------------------- the cabin --
+       *
+       * WHY THERE IS A GENERATED COCKPIT AT ALL.
+       *
+       * The shipped car has an interior, and from a chase camera it is fine.
+       * From the seat it is not: it was modelled to be glimpsed through glass
+       * from outside, so it has no dash face, no binnacle, no console and no
+       * controls - and the driver eye sits inside the bounding boxes of six
+       * of its parts at once.
+       *
+       * So the pieces a driver actually looks at are built here, and only
+       * drawn from inside. Every number below is measured against the shipped
+       * body rather than chosen to look right in one screenshot:
+       *
+       *   the roof over the seat      y 0.323 to 0.385
+       *   the screen aperture         y -0.02 to 0.41, z -1.29 to 1.80
+       *   the cabin half width        x 0.91 at the glass, 1.22 at the doors
+       *   the wheel hub               (-0.42, -0.12, 0.86), rim radius 0.30
+       *   the eye                     (-0.42, 0.285, 0.50)
+       *
+       * The dash therefore has to clear y 0.05 or it crosses the screen, and
+       * sit forward of z 1.05 or it fouls the wheel. Both of those are
+       * constraints rather than preferences, which is why they are written
+       * down.
+       */
+      const C = (slot, x, y, z, sx, sy, sz, pitch, roll, kind, travel) => ({
+        mesh: this.cube, slot, cabin: true,
+        t: [x, y, z], s: [sx, sy, sz], r: [0, pitch || 0, roll || 0],
+        kind: kind || 0, travel: travel || 0,
+      });
+      this.cabin = [
+        /* THE DASH. Low, because the road is what the player is looking at:
+           its top edge lands at -14 degrees and everything above -10 is
+           clear. The first attempt put it at -11 and it read as a slab. */
+        C('dash', 0.0, -0.175, 1.58, 2.20, 0.055, 0.52, -0.16),   // -30..-14
+        C('dash', 0.0, -0.420, 1.34, 2.20, 0.44, 0.09),           // -47..-26
+        // the hard line along its far edge, which is what stops it being a slab
+        C('trim', 0.0, -0.140, 1.83, 2.10, 0.016, 0.028, -0.16),  // -16..-15
+        // the cowl that meets the screen, and the highest thing in the cabin
+        C('dash', 0.0, -0.070, 1.88, 2.20, 0.05, 0.20, 0.42),     // -13..-10
+
+        /* THE BINNACLE, hooded, sitting in the aperture of the wheel - which
+           is where a driver reads it from, through the rim rather than over
+           it. */
+        C('dash', X, -0.055, 1.16, 0.60, 0.040, 0.26, -0.34),     // -34..-17
+        C('trim', X, -0.100, 1.15, 0.56, 0.19, 0.016, 0.18),
+        C('dial', X, -0.100, 1.138, 0.50, 0.16, 0.010, 0.18),     // the glow
+
+        // the tunnel between the seats, which is the floor of the frame
+        C('dash', 0.16, -0.520, 0.88, 0.34, 0.24, 0.95),
+        C('trim', 0.16, -0.408, 0.90, 0.29, 0.014, 0.90),
+
+        // one line of metal down each door, which is what stops the sides
+        // of the frame falling to flat black under this lighting
+        C('dash', -1.14, -0.330, 0.55, 0.10, 0.28, 1.70),
+        C('dash', 1.14, -0.330, 0.55, 0.10, 0.28, 1.70),
+        C('trim', -1.10, -0.196, 0.55, 0.09, 0.013, 1.62),
+        C('trim', 1.10, -0.196, 0.55, 0.09, 0.013, 1.62),
+
+        /* THE BOOST BUTTON, ON THE CONSOLE.
+
+           It sat on the wheel first, which is where a real car that boosts
+           would put it - and that is exactly why it was worth moving. A
+           button under the thumb is pressed without anybody moving, and the
+           thing worth seeing here is the DRIVER: a hand coming off the rim,
+           crossing to the console, pressing, and going back. Put it on the
+           wheel and there is nothing to watch.
+
+           So it is on the tunnel between the seats, canted up towards the
+           driver, far enough over that the reach is a real one. */
+        C('btn', 0.16, -0.392, 0.72, 0.15, 0.045, 0.15, -0.22, 0, 3, 0.014),
+        // ...the bezel around it, which does not move when it does
+        C('trim', 0.16, -0.404, 0.72, 0.21, 0.026, 0.21, -0.22),
+      ];
 
       /* THE UPPER ARMS ARE NOT PLACED, THEY ARE SOLVED.
 
@@ -6775,7 +6907,14 @@
          scale of exactly that length. The caps then overlap into the shoulder
          and the elbow, which is what makes a joint look like a joint rather
          than two tubes meeting. */
-      const arm = (sgn, fore) => {
+      /* Found by mesh rather than by index: the parts list is edited often
+         enough that two hard-coded positions in it is a bug waiting for the
+         next person to add a pocket. */
+      const fores = this.parts
+        .map((q, i) => ({ q, i }))
+        .filter((o) => o.q.mesh === this.fore)
+        .sort((a, b) => a.q.t[0] - b.q.t[0]);
+      const arm = (sgn, at) => {
         // the shoulder end of the upper arm the fixed rig used to draw
         const t = [X + sgn * 0.20, -0.07, 0.44], pitch = -0.55, sz = 0.34;
         const ax = [0, -Math.sin(pitch), Math.cos(pitch)];   // the capsule's own axis
@@ -6784,90 +6923,91 @@
           mesh: this.limb,
           s: [0.15, 0.15],
           shoulder: [t[0] - ax[0] * 0.5 * sz, t[1] - ax[1] * 0.5 * sz, t[2] - ax[2] * 0.5 * sz],
-          fore,
+          // which part in the rig supplies the elbow, for the core to solve to
+          ref: at,
         };
       };
-      /* Found by mesh rather than by index: the parts list is edited often
-         enough that two hard-coded positions in it is a bug waiting for the
-         next person to add a pocket. */
-      const fores = this.parts.filter((q) => q.mesh === this.fore)
-        .sort((q, w) => q.t[0] - w.t[0]);
-      this.upper = [arm(-1, fores[0]), arm(1, fores[1])];
+      this.upper = [arm(-1, fores[0].i), arm(1, fores[1].i)];
+
+      /* ONE ORDERED LIST, IN DRAW ORDER, which is what the core is given and
+         what comes back. The parts, then the two solved arms, then the column
+         and the wheel it is on - the same order draw() has always used, and
+         now the order the pose buffer is indexed by. */
+      this.rig = [];
+      /* WHAT A DRIVER CANNOT SEE OF THEMSELVES.
+
+         From the seat, the head this eye is inside is a shell around the
+         camera and the torso is a wall under it - so both are dropped in the
+         first-person view, and nothing else is. The arms, the gloves and the
+         wheel they are holding all stay, because those are exactly what a
+         driver does see, and dropping them is what makes a first-person view
+         feel like a floating camera rather than a person.
+
+         Marked by mesh rather than by index: the parts list gets edited, and
+         four hard-coded positions in it is four things to get wrong later. */
+      const own = [this.helmet, this.visor, this.peak, this.torso];
+      for (const p of this.parts) {
+        this.rig.push({ mesh: p.mesh, slot: p.slot, part: p, self: own.indexOf(p.mesh) >= 0 });
+      }
+      for (const a of this.upper) this.rig.push({ mesh: a.mesh, slot: a.slot, bone: a });
+      for (const p of [this.column, this.wheel].concat(this.spokes)) {
+        this.rig.push({ mesh: p.mesh, slot: p.slot, part: p });
+      }
+      // ...and the cabin, which is posed for every car and drawn for one
+      for (const p of this.cabin) {
+        this.rig.push({ mesh: p.mesh, slot: p.slot, part: p, cabin: true });
+      }
+      this.uploadRig();
+
+      /* ...and the core is told where the head is, because the first-person
+         eye is measured from it. One number, sent once, so the camera and
+         the figure cannot end up describing different people. See `pov` in
+         crates/synx-core/src/driver.rs. */
+      const head = this.parts.find((q) => q.mesh === this.helmet);
+      if (head && NR.drvHead) NR.drvHead(head.t[0], head.t[1], head.t[2]);
     }
 
-    /* The rotation the wheel applies to everything holding it, as a matrix in
-       figure space: move to the hub, undo the rake so the axis is z, turn, put
-       the rake back, move out again. */
-    spinAbout(out, s) {
-      const ca = Math.cos(this.rake), sa = Math.sin(this.rake);
-      const cs = Math.cos(s), ss = Math.sin(s);
-      // Rx(rake) . Rz(s) . Rx(-rake), multiplied out rather than composed
-      const m00 = cs, m01 = -ss * ca, m02 = -ss * sa;
-      const m10 = ca * ss, m11 = ca * cs * ca + sa * sa, m12 = ca * cs * sa - sa * ca;
-      const m20 = sa * ss, m21 = sa * cs * ca - ca * sa, m22 = sa * cs * sa + ca * ca;
-      const h = this.hub;
-      out[0] = m00; out[1] = m10; out[2] = m20; out[3] = 0;
-      out[4] = m01; out[5] = m11; out[6] = m21; out[7] = 0;
-      out[8] = m02; out[9] = m12; out[10] = m22; out[11] = 0;
-      out[12] = h[0] - (m00 * h[0] + m01 * h[1] + m02 * h[2]);
-      out[13] = h[1] - (m10 * h[0] + m11 * h[1] + m12 * h[2]);
-      out[14] = h[2] - (m20 * h[0] + m21 * h[1] + m22 * h[2]);
-      out[15] = 1;
-      return out;
-    }
-
-    /** Where one end of a capsule sits in figure space once the wheel has been
-        turned. `end` is -0.5 for the back of the shaft, +0.5 for the front. */
-    endOf(out, part, end, spinM) {
-      const r = part.r, sz = part.s[2];
-      // a yaw-free trs puts a capsule's own z axis here
-      const ax = [0, -Math.sin(r[1]), Math.cos(r[1])];
-      const x = part.t[0] + ax[0] * end * sz;
-      const y = part.t[1] + ax[1] * end * sz;
-      const z = part.t[2] + ax[2] * end * sz;
-      out[0] = spinM[0] * x + spinM[4] * y + spinM[8] * z + spinM[12];
-      out[1] = spinM[1] * x + spinM[5] * y + spinM[9] * z + spinM[13];
-      out[2] = spinM[2] * x + spinM[6] * y + spinM[10] * z + spinM[14];
-      return out;
-    }
-
-    /** A capsule stretched between two points in figure space. */
-    boneBetween(out, a, b, sx, sy) {
-      let dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
-      const len = Math.hypot(dx, dy, dz) || 1e-4;
-      dx /= len; dy /= len; dz /= len;
-      /* Any pair of axes across the bone will do - nothing about an arm is
-         keyed to its roll - so world up is the reference, unless the bone is
-         nearly vertical, where it stops being a usable one. */
-      let ux = 0, uy = 1, uz = 0;
-      if (Math.abs(dy) > 0.98) { ux = 1; uy = 0; }
-      let rx = uy * dz - uz * dy, ry = uz * dx - ux * dz, rz = ux * dy - uy * dx;
-      const rl = Math.hypot(rx, ry, rz) || 1e-4;
-      rx /= rl; ry /= rl; rz /= rl;
-      const nx = dy * rz - dz * ry, ny = dz * rx - dx * rz, nz = dx * ry - dy * rx;
-      out[0] = rx * sx; out[1] = ry * sx; out[2] = rz * sx; out[3] = 0;
-      out[4] = nx * sy; out[5] = ny * sy; out[6] = nz * sy; out[7] = 0;
-      out[8] = dx * len; out[9] = dy * len; out[10] = dz * len; out[11] = 0;
-      out[12] = (a[0] + b[0]) * 0.5; out[13] = (a[1] + b[1]) * 0.5;
-      out[14] = (a[2] + b[2]) * 0.5; out[15] = 1;
-      return out;
-    }
-
-    /* `spinM` is the wheel's rotation as a matrix - see spinAbout. A part
-       flagged for the wheel is put through it AFTER its own placement, so it
-       swings about the hub instead of twisting about itself. */
-    place(out, model, part, spinM) {
-      const r = part.r;
-      M4.trs(this.tmp, part.t[0], part.t[1], part.t[2], 0, r[1], r[2]);
-      const s = part.s;
-      for (let i = 0; i < 4; i++) this.tmp[i] *= s[0];
-      for (let i = 4; i < 8; i++) this.tmp[i] *= s[1];
-      for (let i = 8; i < 12; i++) this.tmp[i] *= s[2];
-      if (part.spin) {
-        M4.mul(this.tmp2, spinM, this.tmp);
-        M4.mul(out, model, this.tmp2);
-      } else {
-        M4.mul(out, model, this.tmp);
+    /* THE TABLE GOES OVER ONCE.
+     *
+     * Everything about the figure that does not change between frames - where
+     * each piece is, how big it is, which of them ride the wheel and which two
+     * are solved - is a fixed table, so it is sent at start up and the core
+     * keeps it. After this the only things that cross per frame are a car
+     * transform and a steering angle. See crates/synx-core/src/driver.rs.
+     *
+     * The layout is that module's STRIDE, and it is written here rather than
+     * in Rust because this is where the figure is designed: a part table split
+     * across two languages is a part table that drifts. */
+    uploadRig() {
+      // eighteen: twelve of rest pose, six of the pose a reach moves to
+      const S = 18;
+      const t = new Float32Array(this.rig.length * S);
+      for (let i = 0; i < this.rig.length; i++) {
+        const e = this.rig[i], o = i * S;
+        if (e.bone) {
+          const b = e.bone;
+          t[o] = b.shoulder[0]; t[o + 1] = b.shoulder[1]; t[o + 2] = b.shoulder[2];
+          t[o + 3] = b.s[0]; t[o + 4] = b.s[1];
+          t[o + 8] = 2;                 // BONE
+          t[o + 9] = b.ref;
+        } else {
+          const p = e.part;
+          t[o] = p.t[0]; t[o + 1] = p.t[1]; t[o + 2] = p.t[2];
+          t[o + 3] = p.s[0]; t[o + 4] = p.s[1]; t[o + 5] = p.s[2];
+          t[o + 6] = p.r[1]; t[o + 7] = p.r[2];
+          // 0 PLAIN, 1 SPIN, 3 BUTTON - see driver.rs
+          t[o + 8] = p.kind !== undefined ? p.kind : (p.spin ? 1 : 0);
+          t[o + 10] = p.travel || 0;
+          if (p.to) {
+            t[o + 12] = p.to[0]; t[o + 13] = p.to[1]; t[o + 14] = p.to[2];
+            t[o + 15] = p.toPitch || 0; t[o + 16] = p.toRoll || 0;
+          }
+        }
+      }
+      this.rigN = (NR.drvLoad ? NR.drvLoad(this.hub, this.rake, t) : 0);
+      if (this.rigN !== this.rig.length) {
+        console.error('SYNX: the core took ' + this.rigN + ' driver parts of '
+          + this.rig.length + ' - the figure will not be drawn');
       }
     }
 
@@ -6875,39 +7015,58 @@
        dropped everything above the shoulder when the camera was inside this
        car; the first-person view is now on the bonnet, ahead of the driver and
        facing away, so there is nothing to drop. */
-    draw(model, key, steer) {
+    /** `inside` is set when this is the car the camera is sitting in, and
+        `press` is 0..1 of how hard the boost is being asked for. */
+    draw(model, key, steer, inside, press) {
       const gl = this.gl, L = this.liveryFor(key);
       /* `steer` is the ROAD-WHEEL angle, a third of a radian at full lock. A
          real rack is about fourteen turns of wheel to one of tyre; three and a
          half is the readable version of that. */
       const spin = Math.max(-1, Math.min(1, (steer || 0) * 3.4)) * 1.45;
-      const S = this.spinAbout(this.spinM || (this.spinM = M4.make()), spin);
+      /* THE WHOLE POSE, IN ONE CALL. Seventeen matrices come back already
+         multiplied into the car's own transform - see driver.rs. There is no
+         matrix arithmetic left on this side at all. */
+      if (!this.rigN || !NR.drvPose) return;
+      const pose = NR.drvPose(model, spin, press || 0);
+      if (!pose) return;
       gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
       let bound = null;
-      const submit = (mesh, slot) => {
-        if (bound !== mesh) { gl.bindVertexArray(mesh.vao); bound = mesh; }
-        this.sc.drawPart({ mesh: { iOff: 0, vCount: 0, name: mesh.name },
-          sub: { start: 0, count: mesh.count }, mode: 0,
-          mat: L[slot], m: this.m }, this.m);
-      };
-      const emit = (part) => {
-        this.place(this.m, model, part, S);
-        submit(part.mesh, part.slot);
-      };
-      for (const part of this.parts) emit(part);
-      /* ...and the two arms holding the wheel, which have to be solved rather
-         than placed because one end of each is now moving. See this.upper. */
-      const e = this.elbow || (this.elbow = [0, 0, 0]);
-      for (const a of this.upper) {
-        this.endOf(e, a.fore, -0.5, S);
-        this.boneBetween(this.tmp, a.shoulder, e, a.s[0], a.s[1]);
-        M4.mul(this.m, model, this.tmp);
-        submit(a.mesh, a.slot);
+      for (let i = 0; i < this.rig.length; i++) {
+        const e = this.rig[i];
+        if (inside && e.self) continue;      // you are behind these
+        /* ...and the cabin is the other way round: it exists for the one view
+           that is inside it, and from anywhere else it is a set of panels
+           buried in a car nobody can see into. */
+        if (e.cabin && !inside) continue;
+        if (bound !== e.mesh) { gl.bindVertexArray(e.mesh.vao); bound = e.mesh; }
+        const m = this.viewAt(pose, i);
+        this.sc.drawPart({ mesh: { iOff: 0, vCount: 0, name: e.mesh.name },
+          sub: { start: 0, count: e.mesh.count }, mode: 0,
+          mat: (e.slot === 'btn' && press > 0.5) ? L.btnLit : L[e.slot], m }, m);
       }
-      emit(this.column);
-      emit(this.wheel);
-      for (const sp of this.spokes) emit(sp);
       gl.bindVertexArray(this.sc.vao);
+    }
+
+    /* ONE VIEW PER PART, MADE ONCE.
+     *
+     * `subarray` allocates, and this runs seventeen times a car, for every car
+     * on the road, in every pass that submits the world - about five hundred
+     * short-lived objects a frame, which is exactly the kind of garbage that
+     * turns into a stutter every few seconds rather than a cost you can see.
+     *
+     * The views are kept and reused. They are windows onto the core's linear
+     * memory, so they are rebuilt when that memory moves under them - any core
+     * allocation can replace `memory.buffer`, and a view held across that
+     * reads as zeroes and throws nothing. */
+    viewAt(pose, i) {
+      let v = this.poseViews;
+      if (!v || this.poseBuf !== pose.buffer || this.poseAt !== pose.byteOffset) {
+        this.poseBuf = pose.buffer;
+        this.poseAt = pose.byteOffset;
+        v = this.poseViews = [];
+        for (let k = 0; k < this.rig.length; k++) v.push(pose.subarray(k * 16, k * 16 + 16));
+      }
+      return v[i];
     }
 
     liveryFor(key) {

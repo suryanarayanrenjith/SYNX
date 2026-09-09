@@ -55,7 +55,7 @@ const FREEROAM = arg('freeroam', '');
    reflection probe are the two passes that submit the world again - so the
    number is only meaningful next to the preset it was taken at. */
 const PRESET = parseInt(arg('preset', '0'), 10);
-/* Which camera view to drive in: 0 chase, 1 bonnet, 2 drone. The bonnet and
+/* Which camera view to drive in: 0 chase, 1 driver, 2 drone. The driver and
    the drone are the two the harness cannot otherwise reach - the key that
    cycles them is a key, and this driver has no keyboard. */
 const CAMERA = arg('cam', '');
@@ -255,8 +255,13 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
        until the notice has been dismissed. The harness was waiting for a game
        that was waiting for the harness, so every run reported a game that
        never started and no frames at all, on a page that was working fine. */
-    if (PROBE !== 'advisory' && HOLD !== 'advisory'
+    if (PROBE !== 'advisory' && PROBE !== 'shell' && HOLD !== 'advisory'
         && window.NR && window.NR.dismissAdvisory) window.NR.dismissAdvisory();
+    /* ...and the opening camera move behind it. The harness measures the
+       game in its settled state; six seconds of a scripted camera would put
+       every probe six seconds later and make the camera probe measure the
+       intro instead of the view it is checking. */
+    if (PROBE !== 'intro' && PROBE !== 'shell' && window.NR && window.NR.Intro) window.NR.Intro.skip();
     var g = window.__nr;
     if (!g) return;
     frames++; g.__smokeFrames = frames;
@@ -296,6 +301,686 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
   }
   function run(g) {
     if (HOLD === 'advisory') return;       // leave the notice up, for a shot
+    if (PROBE === 'shell') {
+      /* THE SHELL: the notice, the pointer, and the keyboard handover.
+       *
+       * Five things that are only true in a real browser, and every one of
+       * them was reported by a player rather than caught here:
+       *
+       *   the notice draws a scrollbar down its side
+       *   the system pointer appears on CONTINUE, next to the drawn one
+       *   the drawn pointer is painted under the notice it is meant to click
+       *   the menu theme plays over a photosensitivity warning
+       *   two quick presses of ENTER walk through three screens
+       */
+      var H = g.__shell || (g.__shell = { n: 0 });
+      H.n++;
+      if (H.n === 1) {
+        var adv = document.getElementById('advisory');
+        var frame = document.querySelector('.adv-frame');
+        var go = document.getElementById('advGo');
+        var cur = document.getElementById('synxCursor');
+        if (!adv || !frame || !go) { note('PROBLEM: the notice is not on screen to measure'); PROBE = ''; return; }
+
+        // 1. the scrollbar, which is the width the content is inset by
+        /* offsetWidth includes the border and clientWidth does not, so the
+           difference is the border plus the scrollbar - and this card has a
+           one-pixel border on each side. Subtract them or a card with no
+           scrollbar at all reports two pixels of one. */
+        var fs2 = getComputedStyle(frame);
+        var edges = parseFloat(fs2.borderLeftWidth) + parseFloat(fs2.borderRightWidth);
+        var bar = frame.offsetWidth - frame.clientWidth - edges;
+        note('shell: the notice reserves ' + bar + 'px for a scrollbar (overflow ' +
+             (frame.scrollHeight - frame.clientHeight) + 'px)');
+        if (bar > 0) note('PROBLEM: the notice is drawing a scrollbar');
+
+        // 2. the system pointer on the one control it has
+        var cs = getComputedStyle(go).cursor;
+        note('shell: CONTINUE asks for cursor "' + cs + '"');
+        if (cs !== 'none') note('PROBLEM: the system cursor shows on CONTINUE');
+
+        /* 3. Is the drawn pointer painted ABOVE the notice? Its own z-index
+           is only half the question - an ancestor that makes a stacking
+           context traps it however high it asks to be, and #synxCursor sits
+           inside #stage. Walk up and report anything that would. */
+        if (!cur) { note('PROBLEM: there is no drawn cursor element'); }
+        else {
+          var trap = null;
+          for (var e = cur.parentElement; e && e !== document.body; e = e.parentElement) {
+            var st = getComputedStyle(e);
+            var makes = (st.zIndex !== 'auto' && st.position !== 'static')
+              || st.transform !== 'none' || st.filter !== 'none'
+              || st.willChange.indexOf('transform') >= 0 || st.opacity !== '1'
+              || st.isolation === 'isolate' || st.mixBlendMode !== 'normal';
+            if (makes) { trap = e.id || e.className || e.tagName; break; }
+          }
+          note('shell: the drawn cursor is z-index ' + getComputedStyle(cur).zIndex +
+               ', notice is ' + getComputedStyle(adv).zIndex +
+               ', trapped by ' + (trap || 'nothing'));
+          if (trap) note('PROBLEM: the drawn cursor is inside a stacking context (' + trap + ')');
+        }
+
+        // 4. nothing may be playing while the notice is up
+        var track = g.audio && (g.audio.trackKey || g.audio.current || g.audio.track);
+        note('shell: music while the notice is up = ' + JSON.stringify(track || null) +
+             ', held=' + !!g.musicHeld);
+        if (!g.musicHeld) note('PROBLEM: the music hold was released before the notice came down');
+        return;
+      }
+      if (H.n === 2) {
+        /* DISMISSED WITH A REAL KEY, not by calling the API.
+
+           The bug was that ENTER on the notice both pressed CONTINUE and
+           carried on to the window listeners underneath, so the menu behind
+           it confirmed START in the same frame and the player landed in a
+           chapter list having never seen the title screen. Calling
+           dismissAdvisory instead of pressing a key passes on the broken
+           build, which makes it the wrong way to test this. */
+        H.stateBefore = g.state;
+        H.btn = document.getElementById('advGo');
+        note('shell: before any key, CONTINUE is ' +
+             (H.btn && H.btn.disabled ? 'disabled' : 'ARMED'));
+        if (H.btn && !H.btn.disabled) {
+          note('PROBLEM: CONTINUE was live before the warning had finished');
+        }
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+        return;
+      }
+      if (H.n === 3) {
+        // the first key completes the text and arms the button - it must NOT leave
+        var still = document.getElementById('advisory');
+        note('shell: after one ENTER the notice is ' + (still ? 'still up' : 'GONE') +
+             ' and CONTINUE is ' + (H.btn && H.btn.disabled ? 'disabled' : 'armed'));
+        if (!still) note('PROBLEM: one key dismissed the warning before it was read');
+        if (H.btn && H.btn.disabled) note('PROBLEM: the reveal finished but CONTINUE never armed');
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+        H.leftAt = g.time;
+        return;
+      }
+      if (H.n === 4) {
+        if (g.time - H.leftAt < 0.5 && H.n < 200) { H.n--; return; }
+        var gone = !document.getElementById('advisory');
+        note('shell: the second ENTER left the notice ' + (gone ? 'dismissed' : 'UP') +
+             ' and the game in "' + g.state + '" (was "' + H.stateBefore + '")');
+        if (!gone) note('PROBLEM: the notice would not dismiss');
+        if (g.state !== H.stateBefore) {
+          note('PROBLEM: the key that dismissed the notice also moved the game to ' + g.state);
+        }
+        if (window.NR.Intro) window.NR.Intro.skip();
+        return;
+      }
+      if (H.n === 6) {
+        H.was = g.state;
+        note('shell: settled on state "' + H.was + '" with music ' +
+             (g.musicHeld ? 'still held' : 'released'));
+        /* COUNTED, NOT INFERRED.
+         *
+         * The first version of this fired four ENTERs, saw the state had not
+         * moved, and called the gate proved. It proved nothing: a synthetic
+         * key that never reaches the input layer produces exactly the same
+         * reading as a gate that swallowed it, and so does a menu whose
+         * confirm path is broken. So count the confirms instead of reading
+         * the state, and take a control measurement afterwards with the gate
+         * open - a test that cannot fail is not a test. */
+        H.confirms = 0;
+        var realConfirm = g.confirm.bind(g);
+        g.confirm = function () { H.confirms++; return realConfirm(); };
+        /* Opened deliberately, so this is the scenario the player
+           described rather than whatever the gate happened to be doing: four
+           presses arriving at a screen that was ready for the first one. */
+        /* WHO SHUT IT, if anyone does. The burst was reading one of four
+           on one run and zero on the next, and the two look identical from
+           the outside: a press is DISCARDED when the gate is shut, not held
+           - so an unrelated state change landing between the dispatch and
+           the frame that reads it swallows the whole burst. Recording the
+           locks turns "sometimes zero" into a sentence about why. */
+        H.locks = 0;
+        H.who = [];
+        var realLock = window.NR.Gate.lock.bind(window.NR.Gate);
+        window.NR.Gate.lock = function (ms) {
+          H.locks++;
+          if (H.who.length < 4) {
+            var st = (new Error()).stack || "";
+            H.who.push((st.split(String.fromCharCode(10))[2] || "?").trim().slice(0, 70));
+          }
+          return realLock(ms);
+        };
+        if (window.NR.Gate) window.NR.Gate.clear();
+        H.gateWas = !!(window.NR.Gate && window.NR.Gate.open());
+        // ...and whether the loop that reads the keys is running at all
+        H.clock = g.time;
+        for (var i = 0; i < 4; i++) {
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+          window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+        }
+        return;
+      }
+      /* WAIT FOR THE GAME, NOT FOR THIS PROBE.
+
+         This runs from the harness driver, which ticks on every animation
+         frame. The game does not: on a software rasteriser it steps about
+         once a second, and with GPU frame pacing on it deliberately declines
+         the frames in between. So counting probe ticks measured nothing -
+         two of them is thirty milliseconds, during which the game had not
+         run a single frame and could not possibly have read the keys. It
+         read one press on one run and none on the next, and neither number
+         was about the gate.
+
+         Half a second of the GAME clock is at least one stepped frame however
+         slow the renderer is. Same lesson as counting frames rather than
+         seconds elsewhere in here, one level further down: count the thing
+         being measured. */
+      if (H.confirms !== undefined && !H.reported
+          && (g.time - H.clock >= 0.5 || H.n > 300)) {
+        H.reported = 1;
+        note('shell: four rapid ENTERs (gate was ' + (H.gateWas ? 'open' : 'shut') +
+             ') produced ' + H.confirms + ' confirm(s), state "' + H.was + '" -> "' + g.state + '"');
+        var ran = g.time - H.clock;
+        note('shell: the game clock advanced ' + ran.toFixed(2) + 's across the burst, pacing ' +
+             (g.fencesOff ? 'given up' : 'on'));
+        if (ran < 0.001) {
+          note('PROBLEM: no frame was stepped between the presses and the read');
+        }
+        note('shell: the gate was shut ' + H.locks + ' time(s) during the burst' +
+             (H.who.length ? ' by ' + H.who.join(' | ') : ''));
+        if (H.confirms === 0 && H.locks > 0) {
+          note('shell: the burst landed inside another settle window - inconclusive');
+        } else if (H.confirms !== 1) {
+          note('PROBLEM: ' + H.confirms + ' of four presses got through - one, and only one, should');
+        }
+        /* THE BURST CONTROLS ITSELF, which is why there is no second
+           measurement here any more. A count of one rules out both ways this
+           could read as a pass without being one: zero would mean the
+           synthetic keys never reached the input layer, and four would mean
+           the gate does nothing. Only a working gate on a live keyboard
+           produces exactly one. */
+        if (H.confirms === 1 && g.state !== H.was) {
+          note('shell: one press, one screen - which is the whole of the fix');
+        }
+        PROBE = '';
+        return;
+      }
+      return;
+    }
+    if (PROBE === 'steady' && step >= 1) {
+      /* DOES THE CHOSEN VIEW STAY CHOSEN?
+       *
+       * The bonnet camera was flickering back to the chase view several
+       * times a second in a chapter. The reason was that which view is in
+       * force was decided by reading the state directly, and a chapter
+       * legitimately passes through "story" while the car is still being
+       * steered - a line of dialogue, a telemetry card - so the view changed
+       * every time one of those happened and changed back afterwards.
+       *
+       * It is latched now: a run is a thing with a start and an end. What
+       * this samples is the answer itself, every frame, for as long as the
+       * race lasts. One value across the whole of it is the fix; two is the
+       * bug, whatever the states underneath were doing.
+       */
+      var V = g.__steady || (g.__steady = { seen: {}, n: 0, states: {} });
+      if (g.camMode !== 1) { g.camMode = 1; return; }
+      V.n++;
+      /* THE FLIP, ASKED AS A QUESTION RATHER THAN DONE TO THE GAME.
+
+         A plain race never enters "story", so this bug does not live in one:
+         it needs a chapter, where the director moves the state to "story"
+         for a line of dialogue and back while the player keeps driving.
+
+         Driving the live state through that mid-race was the first attempt
+         and it was a bad one - the story layer takes the screen, the run
+         ends, and the probe never reaches its own sample count. What is
+         actually being tested is a rule, and a rule can simply be asked:
+         set the backing field, which has no setter and therefore no side
+         effects at all, put the question, and put it back. Against the old
+         rule this reads chase; against the latch it reads the bonnet. */
+      if (V.n === 12) {
+        var wasState = g._state;
+        g._state = 'story';
+        V.duringStory = g.activeCam();
+        g._state = wasState;
+        V.states.story = (V.states.story || 0) + 1;
+      }
+      V.seen[g.activeCam()] = (V.seen[g.activeCam()] || 0) + 1;
+      V.states[g.state] = (V.states[g.state] || 0) + 1;
+      if (V.n === 40) {
+        var views = Object.keys(V.seen);
+        note('steady: over ' + V.n + ' frames the view was ' + JSON.stringify(V.seen) +
+             ' while the state was ' + JSON.stringify(V.states));
+        if (views.length > 1) {
+          note('PROBLEM: the camera changed view ' + views.length + ' ways during one run');
+        } else if (views[0] !== '1') {
+          note('PROBLEM: the bonnet view was asked for and never applied');
+        } else {
+          note('steady: with the state reading story mid-run the view is ' + V.duringStory +
+               ' - the bonnet, not the chase');
+          if (V.duringStory !== 1) {
+            note('PROBLEM: a story beat mid-race still drops the chosen view');
+          }
+        }
+        PROBE = '';
+      }
+      return;
+    }
+    if (PROBE === 'block' && step >= 1) {
+      /* WHAT IS IN FRONT OF THE DRIVER, BY NAME.
+       *
+       * A first-person view that is sometimes filled with a pale panel is a
+       * report, not a diagnosis: the eye is inside the bounding boxes of six
+       * different parts of its own car, and any of them could be the one
+       * doing it. Guessing which has already cost two rounds.
+       *
+       * So this asks the renderer. Every part the car submits is projected
+       * against the view axis, and anything landing within fifteen degrees
+       * of the middle of the frame and close enough to matter is named,
+       * nearest first. Whatever is blocking the view is at the top of that
+       * list by construction.
+       */
+      var B = g.__block || (g.__block = { n: 0 });
+      if (g.camMode !== 1) { g.camMode = 1; return; }
+      B.n++;
+      if (B.n < 8) return;
+      if (B.done) return;
+      B.done = 1;
+      var sc = g.scene, real = sc.drawPart, rows = [];
+      var e = g.eye, tg = g.target;
+      var fx = tg[0] - e[0], fy = tg[1] - e[1], fz = tg[2] - e[2];
+      var fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+      sc.drawPart = function (q, m) {
+        var mm = m || (q && q.m);
+        if (mm) {
+          var dx = mm[12] - e[0], dy = mm[13] - e[1], dz = mm[14] - e[2];
+          var d = Math.hypot(dx, dy, dz);
+          if (d < 4.0) {
+            var ahead = dx * fx + dy * fy + dz * fz;
+            var off = Math.acos(Math.max(-1, Math.min(1, ahead / (d || 1)))) * 180 / Math.PI;
+            rows.push({
+              n: (q.mesh && q.mesh.name) || (q.mat && q.mat.name) || "?",
+              mat: (q.mat && q.mat.name) || "?",
+              d: d, off: off, ahead: ahead,
+            });
+          }
+        }
+        return real.call(sc, q, m);
+      };
+      try { g.draw(1 / 60); } finally { sc.drawPart = real; }
+      rows.sort(function (a, b) { return a.d - b.d; });
+      var seen = {}, out = [];
+      for (var i = 0; i < rows.length && out.length < 10; i++) {
+        var r = rows[i];
+        if (r.ahead < 0 || r.off > 45) continue;
+        var key = r.n + "/" + r.mat;
+        if (seen[key]) continue;
+        seen[key] = 1;
+        out.push(r.n + " [" + r.mat + "] " + r.d.toFixed(2) + "u at " + r.off.toFixed(0) + "deg");
+      }
+      note('block: car pitch ' + (g.car.pitch || 0).toFixed(3) + ' roll ' + (g.car.roll || 0).toFixed(3) +
+           ' look ' + (g.lookYaw || 0).toFixed(3) + '/' + (g.lookPitch || 0).toFixed(3) +
+           ' speed ' + (g.car.speed || 0).toFixed(0));
+      note('block: in front of the eye, nearest first:');
+      for (var k = 0; k < out.length; k++) note('block:   ' + out[k]);
+      PROBE = '';
+      return;
+    }
+    if (PROBE === 'lag' && step >= 1) {
+      /* IS THE EYE WHERE THE DRIVER IS, AT SPEED?
+       *
+       * The first-person eye is a point inside the car put through the car
+       * transform. If that transform is a frame old, the eye sits wherever
+       * the car WAS - which at a hundred and twenty miles an hour is more
+       * than a car length back, outside the bodywork, looking at the
+       * dashboard over its own back edge. And because the distance is a
+       * frame TIME rather than a fixed offset, it moves every time a frame
+       * runs long, which is what made it read as a flicker.
+       *
+       * Measured as the gap between the eye and the seat it belongs to, in
+       * the car own frame: forward of the car centre by about half a unit is
+       * right, and it must not grow with speed.
+       */
+      var G = g.__lag || (g.__lag = { n: 0, worst: 0, fast: 0, samples: [] });
+      if (g.camMode !== 1) { g.camMode = 1; return; }
+      /* DRIVEN BY THE PROBE. The harness parks the car for a probe run, and
+         a lag that only exists at speed cannot be measured standing still.
+         The speed is forced rather than the throttle held, so every sample is
+         at the same speed and the numbers are comparable. 74 units a second
+         is the 122 mph the report came from. */
+      if (g.car) { g.car.v_long = 74; g.car.vLong = 74; }
+      G.n++;
+      var car = g.car;
+      if (car && g.activeCam() === 1) {
+        var dx = g.eye[0] - car.x, dz = g.eye[2] - car.z;
+        // how far along the car own nose the eye sits
+        var along = dx * Math.sin(car.yaw) + dz * Math.cos(car.yaw);
+        var side = dx * Math.cos(car.yaw) - dz * Math.sin(car.yaw);
+        if (car.speed > 8) {
+          G.fast++;
+          G.samples.push({ along: along, side: side, spd: car.speed });
+          G.worst = Math.max(G.worst, Math.abs(along - 0.5));
+        }
+      }
+      if (G.fast >= 14 && !G.done) {
+        G.done = 1;
+        var lo = 9, hi = -9, sLo = 9, sHi = -9, fastest = 0;
+        for (var i = 0; i < G.samples.length; i++) {
+          var q = G.samples[i];
+          lo = Math.min(lo, q.along); hi = Math.max(hi, q.along);
+          sLo = Math.min(sLo, q.side); sHi = Math.max(sHi, q.side);
+          fastest = Math.max(fastest, q.spd);
+        }
+        note('lag: over ' + G.fast + ' frames above 8u/s (peak ' + fastest.toFixed(0) +
+             ') the eye sat ' + lo.toFixed(2) + '..' + hi.toFixed(2) + 'u along the car' +
+             ' and ' + sLo.toFixed(2) + '..' + sHi.toFixed(2) + 'u across it');
+        /* The seat is about half a unit forward of the car centre. A spread
+           bigger than a tenth of a unit is the eye moving relative to the car
+           it is supposed to be bolted into, which is the bug. */
+        if (hi - lo > 0.10) {
+          note('PROBLEM: the eye moved ' + (hi - lo).toFixed(2) + 'u along the car at speed');
+        }
+        if (lo < 0.2 || hi > 0.9) {
+          note('PROBLEM: the eye is not in the seat - ' + lo.toFixed(2) + '..' + hi.toFixed(2));
+        }
+        PROBE = '';
+      }
+      return;
+    }
+    if (PROBE === 'hand' && step >= 1) {
+      /* DOES THE DRIVER ACTUALLY REACH FOR THE BOOST?
+       *
+       * The claim is that the right hand comes off the wheel, crosses to the
+       * console and presses a button, and that the left one does not move.
+       * All four halves of that are checkable: which glove moved, how far,
+       * whether the arm stayed attached to it, and whether the button went
+       * down. A reach that detaches the elbow looks worse than no reach.
+       */
+      var H = g.__hand || (g.__hand = { n: 0 });
+      H.n++;
+      if (H.n < 4 || H.done) return;
+      H.done = 1;
+      var sc = g.scene, real = sc.drawPart;
+      function grab(press) {
+        var out = { gloves: [], arms: [], btn: null };
+        sc.drawPart = function (q, m) {
+          var mm = m || (q && q.m);
+          var mat = (q.mat && q.mat.name) || "";
+          var mesh = (q.mesh && q.mesh.name) || "";
+          if (mm && Math.hypot(mm[12] - g.car.x, mm[14] - g.car.z) < 4) {
+            if (/^DriverGloveP$/.test(mat)) out.gloves.push([mm[12], mm[13], mm[14]]);
+            if (mesh === "DriverLimb") out.arms.push([mm[12], mm[13], mm[14], mm[8], mm[9], mm[10]]);
+            if (/^CabinBtn/.test(mat)) out.btn = [mm[12], mm[13], mm[14]];
+          }
+          return real.call(sc, q, m);
+        };
+        g.boostPress = press;
+        try { g.draw(1 / 60); } finally { sc.drawPart = real; }
+        return out;
+      }
+      g.camMode = 1;
+      var rest = grab(0);
+      var push = grab(1);
+      g.boostPress = 0;
+      if (rest.gloves.length < 2 || push.gloves.length < 2) {
+        note("PROBLEM: the gloves were not drawn (" + rest.gloves.length + ")");
+        PROBE = "";
+        return;
+      }
+      var moved = [];
+      for (var i = 0; i < 2; i++) {
+        var a = rest.gloves[i], b = push.gloves[i];
+        moved.push(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]));
+      }
+      moved.sort(function (x, y) { return x - y; });
+      note("hand: with the boost held the two gloves moved " + moved[0].toFixed(3) +
+           "u and " + moved[1].toFixed(3) + "u");
+      if (moved[1] < 0.15) note("PROBLEM: neither hand left the wheel");
+      if (moved[0] > 0.05) note("PROBLEM: both hands left the wheel at once");
+
+      /* THE ARM HAS TO GO WITH IT. A bone that solves to the elbow the
+         forearm USED to be at leaves the upper arm pointing into space. */
+      if (rest.arms.length && push.arms.length === rest.arms.length) {
+        var armMoved = 0;
+        for (var k = 0; k < rest.arms.length; k++) {
+          var p0 = rest.arms[k], p1 = push.arms[k];
+          armMoved = Math.max(armMoved, Math.hypot(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]));
+        }
+        note("hand: the upper arm followed by " + armMoved.toFixed(3) + "u");
+        if (armMoved < 0.02) note("PROBLEM: the hand moved and the arm did not");
+      }
+
+      if (rest.btn && push.btn) {
+        var sank = Math.hypot(rest.btn[0] - push.btn[0], rest.btn[1] - push.btn[1],
+          rest.btn[2] - push.btn[2]);
+        note("hand: the button sank " + (sank * 1000).toFixed(0) + "mm");
+        if (sank < 0.005) note("PROBLEM: the button did not move when pressed");
+      } else {
+        note("PROBLEM: the console button was not drawn");
+      }
+      PROBE = "";
+      return;
+    }
+    if (PROBE === 'bench' && step >= 1) {
+      /* THE BENCHMARK, END TO END.
+       *
+       * Not by waiting for it. A real sweep is four presets of ninety frames
+       * each, and this harness draws two frames a second on a software
+       * rasteriser - six minutes, most of it measuring a renderer nobody
+       * ships on. The frame TIMES are the only thing the sweep takes from
+       * the outside world, so they are supplied and the rest of it runs for
+       * real: the same start, the same tick, the same panel, the same
+       * arithmetic, the same write to the save.
+       *
+       * The times are chosen so the answer is known in advance. LOW and
+       * MEDIUM come in under the sixteen-and-seven budget and HIGH and ULTRA
+       * do not, so the only correct recommendation is MEDIUM. A benchmark
+       * that returns anything else here is wrong in a way that would
+       * otherwise only show up on somebody machine.
+       */
+      var K = g.__bench || (g.__bench = { n: 0 });
+      K.n++;
+      if (K.n < 4 || K.done) return;
+      K.done = 1;
+      if (!window.NR.Bench) { note("PROBLEM: NR.Bench was never loaded"); PROBE = ""; return; }
+
+      var why = window.NR.Bench.start(g, function (rec) { K.rec = rec; });
+      if (why) { note("PROBLEM: the benchmark would not start - " + why); PROBE = ""; return; }
+      note("bench: started, panel on screen = " + !!document.querySelector(".bench-card"));
+
+      // 8ms and 12ms hold sixty; 22ms and 40ms do not
+      var MS = [8, 12, 22, 40];
+      var guard = 0;
+      while (window.NR.Bench.running && guard++ < 5000) {
+        var step2 = window.NR.Bench.LADDER.length;
+        var idx = Math.min(step2 - 1, Math.floor(guard / (window.NR.Bench.FRAMES + 12)));
+        window.NR.Bench.tick(g, MS[idx]);
+      }
+      if (!K.rec) { note("PROBLEM: the sweep never finished (" + guard + " ticks)"); PROBE = ""; return; }
+
+      var r = K.rec;
+      var line = "";
+      for (var i = 0; i < r.results.length; i++) {
+        line += r.results[i].preset + "=" + Math.round(r.results[i].fps) + " ";
+      }
+      note("bench: measured " + line.trim());
+      note("bench: chose " + r.preset + ", held=" + r.held + ", after " + guard + " ticks");
+      if (r.results.length !== 4) note("PROBLEM: only " + r.results.length + " presets were measured");
+      if (r.preset !== "MEDIUM") {
+        note("PROBLEM: with 8/12/22/40ms the answer is MEDIUM, not " + r.preset);
+      }
+      if (!r.held) note("PROBLEM: it reported that nothing held the target when two did");
+
+      // ...and the result has to survive into the save, or the launcher sees nothing
+      var back = window.NR.Save && window.NR.Save.getJSON
+        ? window.NR.Save.getJSON(window.NR.Settings.BENCH_KEY, null) : null;
+      note("bench: the save now holds " + (back ? back.preset + ", pending=" + back.pending : "NOTHING"));
+      if (!back || back.preset !== r.preset) {
+        note("PROBLEM: the result did not reach the save the launcher reads");
+      }
+      if (back && back.pending) note("PROBLEM: pending was left set - it would benchmark again on every launch");
+
+      // the panel has to be showing the answer, not still counting
+      var card = document.querySelector(".bench-card");
+      note("bench: the panel says " + JSON.stringify(
+        card ? (card.querySelector(".bench-now") || {}).textContent : null));
+      if (card && card.className.indexOf("is-done") < 0) {
+        note("PROBLEM: the panel never showed a result");
+      }
+      PROBE = "";
+      return;
+    }
+    if (PROBE === 'benchboot' && step >= 1) {
+      /* THE PATH THE BENCHMARK BUTTON ACTUALLY TAKES.
+       *
+       * The sweep itself was already covered, and it passed - which is why
+       * the button appeared to do nothing while every test said it worked.
+       * What was never covered was the HANDOVER: the launcher writes a flag,
+       * the game reads it on boot, and decides what to do about it.
+       *
+       * Three things are asked here, and the last two are the damage the
+       * first one used to do quietly:
+       *
+       *   does a pending flag actually start a sweep?
+       *   is the flag cleared afterwards, so the next launch is a normal one?
+       *   and if it will NOT start, does it say so rather than taking the
+       *   advisory and the opening cutscene away on its way past?
+       */
+      var Q = g.__bboot || (g.__bboot = { n: 0, said: [] });
+      Q.n++;
+      if (Q.n < 4 || Q.done) return;
+      Q.done = 1;
+      var S = window.NR.Settings, Save = window.NR.Save;
+      if (!window.NR.Bench || !window.NR.Bench.autorun) {
+        note("PROBLEM: NR.Bench.autorun is not there at all");
+        PROBE = "";
+        return;
+      }
+
+      // exactly what the launcher writes when BENCHMARK is pressed
+      Save.setJSON(S.BENCH_KEY, { pending: true, when: Date.now() });
+      var began = window.NR.Bench.autorun(g, function (m) { Q.said.push(m); });
+      note("benchboot: autorun saw the flag = " + began +
+           ", sweep running = " + window.NR.Bench.running);
+      if (!began) note("PROBLEM: the pending flag was written and autorun ignored it");
+
+      var after = Save.getJSON(S.BENCH_KEY, null);
+      note("benchboot: pending is now " + (after ? after.pending : "GONE"));
+      if (after && after.pending) {
+        note("PROBLEM: pending survived - every later launch would benchmark again");
+      }
+
+      if (window.NR.Bench.running) {
+        note("benchboot: the panel is up = " + !!document.querySelector(".bench-card"));
+        // wind it forward so the run does not sit half finished behind the rest
+        var guard = 0;
+        while (window.NR.Bench.running && guard++ < 5000) window.NR.Bench.tick(g, 10);
+        var done = Save.getJSON(S.BENCH_KEY, null);
+        note("benchboot: finished and the save holds " + (done ? done.preset : "NOTHING"));
+      } else {
+        note("benchboot: it refused, and said " + JSON.stringify(Q.said));
+        if (!Q.said.length) note("PROBLEM: it refused silently, which is the original bug");
+      }
+
+      /* AND THE TWO THINGS IT MUST NOT HAVE TAKEN. A refusal that removes the
+         safety notice and the opening move is worse than a refusal. */
+      note("benchboot: the notice is " + (document.getElementById("advisory") ? "up" : "gone"));
+      PROBE = "";
+      return;
+    }
+    if (PROBE === 'intro') {
+      /* THE OPENING MOVE, MEASURED.
+       *
+       * Four claims, and every one of them is a way the sequence can look
+       * broken rather than absent:
+       *
+       *   It STARTS somewhere else. A hero shot that begins at the chase
+       *   pose is a six second wait for nothing.
+       *
+       *   It ENDS at the chase pose exactly. The whole design of the blend
+       *   is that the weight reaches zero before the move does, so the last
+       *   frames are the live camera and there is no hand-over to see. If
+       *   the eye is still being dragged at the end, there is a snap.
+       *
+       *   The MENU arrives with it, rather than being switched on.
+       *
+       *   And it FINISHES. A move that never releases the camera is a game
+       *   that cannot be played.
+       *
+       * Sampled per FRAME, not per second: this harness draws a few frames a
+       * second on a software rasteriser, so anything gated on wall-clock
+       * here either never fires or fires once at the end.
+       */
+      var N = g.__intro || (g.__intro = { n: 0, reveals: [], far: 0, done: 0 });
+      /* WHERE THE CHAIN STOPS, if it stops. The sequence is a handful of
+         steps across two files - the notice dismisses, the module types its
+         boot lines, the veil waits for the world, the veil lifts, the game
+         starts the move - and "nothing happened" looks identical from the
+         outside whichever of them did not fire. Sampled a few times rather
+         than every frame, because at three frames a second every frame is a
+         third of a second of a six second sequence. */
+      if (N.n === 0 || N.n === 6 || N.n === 14 || N.n === 26) {
+        var v = document.querySelector('.intro-veil');
+        note('intro[' + N.n + ']: begin=' + !!(window.NR.Intro && window.NR.Intro.running) +
+             ' veil=' + (v ? (v.className.indexOf('intro-lift') >= 0 ? 'lifting' : 'up') : 'gone') +
+             ' startIntro=' + (typeof g.startIntro) +
+             ' sceneReady=' + !!(g.scene && g.scene.ready) +
+             ' moving=' + !!g.intro + ' reveal=' + (g.introReveal === undefined ? '-' : g.introReveal.toFixed(2)));
+      }
+      N.n++;
+      var car = g.car;
+      if (car) {
+        var d = Math.hypot(g.eye[0] - car.x, g.eye[2] - car.z);
+        var up = g.eye[1] - car.y;
+        if (g.intro) {
+          if (!N.first) { N.first = { d: d, up: up }; }
+          N.last = { d: d, up: up };
+          N.reveals.push(+(g.introReveal || 0).toFixed(3));
+        } else if (N.first && !N.done) {
+          N.done = N.n;
+          N.rest = { d: d, up: up };
+        }
+      }
+      if (N.done && N.done + 2 === N.n) {
+        note('intro: opened at ' + N.first.d.toFixed(1) + 'u out and ' +
+             N.first.up.toFixed(1) + 'u up, released at ' + N.last.d.toFixed(1) + '/' +
+             N.last.up.toFixed(1) + ', settled at ' + N.rest.d.toFixed(1) + '/' + N.rest.up.toFixed(1));
+        note('intro: ' + N.n + ' frames, reveal ran ' + N.reveals[0] + ' -> ' +
+             N.reveals[N.reveals.length - 1]);
+        /* WHERE THE SHOT STARTS IS NOT MEASURABLE FROM HERE, and claiming
+           otherwise would be worse than not checking it.
+
+           This harness draws well under a frame a second on a software
+           rasteriser, and the move is six seconds of wall clock. The first
+           frame on which the probe can see it running is routinely four or
+           five seconds in - by which point the scripted pose has almost no
+           weight left and the camera is legitimately at the chase pose. An
+           assertion on the opening distance therefore fails on a move that
+           is working perfectly, which is the worst kind of test to own.
+
+           The shape of the path is arithmetic with no renderer in it, so it
+           is checked exactly by evaluating it directly rather than sampled
+           through a browser that cannot keep up. What IS worth measuring
+           here is the pair of things that need the real game running: that
+           the move releases the camera without a jump, and that the menu it
+           was hiding actually comes back. */
+        note('intro: opening pose not asserted - the harness samples slower than the move');
+        /* The release must be AT the chase pose. Half a unit is the distance
+           the car itself travels between two frames here, not a tolerance on
+           the blend - the blend is exactly zero by then. */
+        var snap = Math.hypot(N.last.d - N.rest.d, N.last.up - N.rest.up);
+        note('intro: the camera moved ' + snap.toFixed(2) + 'u across the hand-over');
+        if (snap > 1.5) {
+          note('PROBLEM: the camera jumped ' + snap.toFixed(2) + 'u when the move ended');
+        }
+        if (!(N.reveals[N.reveals.length - 1] > 0.5)) {
+          note('PROBLEM: the menu never revealed - last reveal was ' + N.reveals[N.reveals.length - 1]);
+        }
+        PROBE = '';
+      }
+      if (N.n > 240 && !N.done) {
+        note('PROBLEM: the opening move never released the camera');
+        PROBE = '';
+      }
+      return;
+    }
     if (HOLD === 'menu') return;           // stay on the title screen
     /* The confirmation card, over the title screen. It is a modal state of
        its own and nothing in a racing run ever opens one, so without this it
@@ -1358,21 +2043,19 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
         PROBE = '';
       }
       return;
-    } else if (PROBE === 'bonnet' && step >= 1) {
-      /* THE BONNET VIEW, MEASURED.
+    } else if (PROBE === 'pov' && step >= 1) {
+      /* THE DRIVER VIEW, MEASURED.
        *
-       * This replaced two probes - cabin and cockpit - that measured a
-       * generated interior against the frame. There is no interior any more:
-       * the shipped car is an exterior model whose cabin volume is shorter
-       * than a seated person, so the first-person eye was moved onto the nose
-       * where the car has geometry that is meant to be looked at.
+       * The eye is the one in the head of the figure in the seat, computed on
+       * the core side - see pov in crates/synx-core/src/driver.rs. Three
+       * questions, and a view that fails any of them looks broken in a way
+       * the other two cannot tell you about:
        *
-       * Three questions, and a view that fails any of them looks broken in a
-       * way the other two cannot tell you about:
-       *
-       *   Is the eye ON the car - ahead of its centre, above its bodywork?
-       *   Is the car's own front in the frame, below the axis, not filling it?
-       *   Is the near plane close enough not to eat the bonnet?
+       *   Is the eye IN the car, near the middle of it rather than out on a
+       *   wing or behind the back axle?
+       *   Is some of the car in the frame? A first-person view of nothing but
+       *   road is a floating camera, whatever it is called.
+       *   Is the near plane close enough not to eat the wheel in front of it?
        */
       /* SET THE VIEW, THEN LET THE GAME RUN A FRAME. camMode is an input to
          the camera update, not the camera: setting it and measuring g.eye in
@@ -1399,11 +2082,14 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
         // where the eye sits relative to the car it is riding
         var dx = e[0] - car.x, dy = e[1] - car.y, dz = e[2] - car.z;
         var along = dx * Math.sin(car.yaw) + dz * Math.cos(car.yaw);
-        note('bonnet: eye is ' + along.toFixed(2) + 'u ahead of the car centre, ' +
+        note('pov: eye is ' + along.toFixed(2) + 'u ahead of the car centre, ' +
              dy.toFixed(2) + 'u above it, fov ' + (g.fov || 0).toFixed(0) +
              ', near ' + (g.camNear || 0).toFixed(3));
-        if (!(along > 1.0 && along < 3.2)) note('PROBLEM: the eye is not on the nose');
-        if (!(dy > 0.0 && dy < 1.6)) note('PROBLEM: the eye is not just above the bodywork');
+        /* The seat is a little behind the middle of the car and the eye a
+           little in front of the seat, so this sits close to the centre -
+           not out on the nose, which is where the camera this replaced was. */
+        if (!(along > -0.8 && along < 1.6)) note('PROBLEM: the eye is not in the cabin');
+        if (!(dy > 0.0 && dy < 1.3)) note('PROBLEM: the eye is not at head height');
         // ...and how much of the car is in shot, in degrees below the axis
         var vfov = (g.fov || 70) / 2;
         var lo = 999, hi = -999, seen = 0;
@@ -1415,12 +2101,12 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
           var v = Math.atan2(qy - fy * f, f) * 180 / Math.PI;
           lo = Math.min(lo, v); hi = Math.max(hi, v); seen++;
         }
-        note('bonnet: ' + seen + ' parts of the car within 6u, ' +
+        note('pov: ' + seen + ' parts of the car within 6u, ' +
              (seen ? lo.toFixed(0) + ' to ' + hi.toFixed(0) + ' deg vertically' : 'none') +
              ' against a half-frame of ' + vfov.toFixed(0) + ' deg');
-        if (!seen) note('PROBLEM: no bodywork in front of the eye - the view is floating');
-        else if (hi > 0) note('PROBLEM: the car is up in the sky part of the frame');
-        else if (lo < -vfov) note('bonnet: some of the car is below the frame, which is fine');
+        if (!seen) note('PROBLEM: nothing of the car in front of the eye - the view is floating');
+        // from inside, parts of the car are legitimately above the eye line
+        if (lo < -vfov) note('pov: some of the car is below the frame, which is fine');
         PROBE = '';
       }
       return;
@@ -1660,14 +2346,14 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
       var car = g.car;
       var d = Math.hypot(g.eye[0] - car.x, g.eye[2] - car.z);
       var up = g.eye[1] - car.y;
-      var name = ['CHASE', 'BONNET', 'DRONE'][g.camMode];
+      var name = ['CHASE', 'DRIVER', 'DRONE'][g.camMode];
       if (!C.seen[name]) {
         C.seen[name] = 1;
         note('camera: ' + name.padEnd(8) + ' eye is ' + d.toFixed(1) +
              'u from the car horizontally, ' + up.toFixed(1) + 'u above it, fov ' +
              (g.fov || 0).toFixed(0));
-        if (name === 'BONNET' && !(d < 3.2 && up > -0.2 && up < 2.5))
-          note('PROBLEM: the bonnet eye is not on the car');
+        if (name === 'DRIVER' && !(d < 2.5 && up > -0.2 && up < 2.5))
+          note('PROBLEM: the driver eye is not in the car');
         if (name === 'DRONE') {
           /* HOW HIGH IS HIGH ENOUGH DEPENDS ON THE ROUTE. Two of the seven
              run under a roof and cap the climb - see droneCeiling in LEVELS -

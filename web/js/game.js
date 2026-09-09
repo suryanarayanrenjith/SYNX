@@ -21,24 +21,22 @@
     baseFov: 70,
     boostFov: 12,
     near: 1.0,
-    /* THE BONNET NEEDS A NEARER NEAR PLANE.
+    /* THE DRIVER NEEDS A NEARER NEAR PLANE.
 
        A chase camera is eleven units behind the car, so a one-unit near plane
        costs nothing and buys depth precision across fifty kilometres of road -
        which is the right trade for that view and the reason it is set there.
 
-       The bonnet eye sits ON the car: the nose is 1.3 units in front of it and
-       the bodywork it is standing on is a few centimetres below. At near = 1.0
-       the entire front of the car falls in front of the near plane and is
-       clipped away, and the view loses the one thing that makes it read as
-       first person rather than as a camera flying a metre off the ground - its
-       own bonnet arriving at the road.
+       The eye in the seat has the wheel about half a unit in front of it and
+       the screen pillars closer than that. At near = 1.0 the whole of the car
+       around the driver falls in front of the near plane and is clipped away,
+       which is a first-person view of nothing but road.
 
-       Eight centimetres is close enough that none of that is clipped and far
+       Eight centimetres is close enough that none of it is clipped and far
        enough that the depth buffer still resolves the road: precision goes
        with the RATIO of far to near, and this view does not need to see 48 km
        down the course - the fog has closed long before that. */
-    nearBonnet: 0.08,
+    nearPov: 0.08,
     far: 50000.0,
   };
 
@@ -48,43 +46,47 @@
    *            whole speed-and-shake rig on it. It is the view the game is
    *            balanced around: you can see the car's attitude, which is how
    *            you read a slide.
-   *   BONNET   from the nose of the car, looking down the road. No boom, no
-   *            distance, and the body's pitch and roll go straight into the
-   *            eye rather than being damped out - which is most of why it
-   *            feels faster without being faster.
+   *   DRIVER   from behind the wheel, at the eye of the figure in the seat.
+   *            No boom, no distance, and the body's pitch and roll go
+   *            straight into the eye rather than being damped out - which is
+   *            most of why it feels faster without being faster.
    *   DRONE    high above and slightly behind, looking down. Reads the road
    *            ahead like a map, and is the only view that shows what the
    *            corner after the next one is doing.
    *
-   * Ordered so C walks outward from the car: the bonnet is on the nose, the
+   * Ordered so C walks outward from the car: the driver is inside it, the
    * drone is furthest, chase is where you start and where you return.
    */
-  const CAM_MODES = ['CHASE', 'BONNET', 'DRONE'];
-  /* THE BONNET CAMERA, AND WHY IT IS NOT A COCKPIT CAMERA.
+  const CAM_MODES = ['CHASE', 'DRIVER', 'DRONE'];
+  /* WHERE THE CHOSEN VIEW APPLIES, WHICH IS NOT EVERYWHERE.
    *
-   * A cockpit view was built first and it was the wrong answer for this car.
-   * The model is an EXTERIOR one: its whole cabin volume is 1.2 units tall,
-   * which is less than a seated person needs from hip to eye, so nothing
-   * placed anatomically inside it could see its own dashboard. A cabin was
-   * generated to fix that, and a generated cabin in a space the wrong size is
-   * a generated cabin that looks it.
+   * Every menu in the game is drawn over the live world, and the world is
+   * drawn by the same camera the player was last using. So picking the
+   * driver view mid-race meant the title screen, the mode select, the
+   * chapter hub and the multiplayer lobby all became a shot of the inside
+   * of a bumper - and the drone view turned them into a map.
    *
-   * A bonnet camera has none of that problem and is the more honest first-
-   * person view for a car with no interior: it sits ON the nose, ahead of
-   * everything, and what it shows is the road and the car's own bodywork falling
-   * away beneath it. Nothing has to be modelled for it to be right.
-   *
-   * Measured off the shipped meshes: the chassis runs z -2.73 to 3.35 with
-   * the body top at y 0.40, so this sits just above the bonnet line and about
-   * a metre back from the nose - far enough forward that the screen and roof
-   * are behind the eye, far enough back that a strip of bodywork stays in the
-   * bottom of the frame and gives the speed something to be measured against.
+   * None of those screens is about the car. They are backdrops, they are
+   * composed for the chase camera, and they should look the same on every
+   * launch no matter what happened in the last race. The preference is kept
+   * and comes back the moment there is driving to do.
    */
-  const BONNET_EYE = [0.0, 0.36, 2.05];
-  /* A few degrees of downward bias, so the road sits in the upper two thirds
-     rather than dead centre. The difference between looking AT the horizon
-     and driving toward it. */
-  const BONNET_PITCH = -0.045;
+  /* The states that are unambiguously NOT a run. Written as the menus rather
+     than as the driving, because the driving half is not a fixed list: a
+     chapter passes through "story" while the car is still being steered, and
+     any list of driving states that leaves it out ends the run every time a
+     character speaks. */
+  const MENUS = { menu: 1, modeselect: 1, multiplayer: 1, controls: 1,
+    loading: 1, confirm: 1, quit: 1 };
+  /* A few degrees of downward bias on the driver's eye line, so the road
+     sits in the upper two thirds rather than dead centre. The difference
+     between looking AT the horizon and driving toward it.
+
+     WHERE THE EYE IS is not here: it is derived from the head of the figure
+     in the seat, on the core side, so that the two cannot disagree. See
+     povCamera and crates/synx-core/src/driver.rs. */
+  const POV_PITCH = -0.045;
+
   const BLOOM_LEVELS = 6;
   /* The highest texture unit any pass binds to. 0 albedo, 1 environment,
      2 normal, 3 headlight cookie, 4 emissive, 5-7 the shadow cascades,
@@ -390,7 +392,7 @@
    * cinematic pose, a menu flyby - simply gets the shipped placement back.
    */
   const WHEEL_RADIUS = 0.45;          // matches Vehicle's, in world units
-  function wheelsOf(car, dt) {
+  function wheelsOf(car) {
     if (!car) return null;
     let spin = car.wheelSpin || 0;
     let spinFront = car.wheelSpinFront || 0;
@@ -410,16 +412,36 @@
      * delta is non-zero and the visual accumulator is abandoned - and it costs
      * one comparison for cars that never need it.
      */
-    const v = car.__wheelVis || (car.__wheelVis = { last: spin, own: spin, using: false });
+    /* MEASURED FROM THE GROUND IT COVERED, NOT FROM ITS SPEEDOMETER.
+
+       This used to read `car.speed` and integrate it, and latch onto doing so
+       whenever the solver was idle and the speedometer said the car was
+       moving. That is true of a remote car, which is the case it was written
+       for - and it is also true of a car in a CUTSCENE, which is left exactly
+       where the race ended with every field frozen at its last value,
+       including a speed of a hundred and twenty. So the finish roll played
+       over a stationary car with four wheels spinning at racing speed.
+
+       Distance cannot lie about this the way a stale speed can: a car that
+       has not moved has not turned its wheels, whoever is or is not stepping
+       it. A remote car is moved every frame by the interpolator and still
+       reads correctly - better, in fact, since the rotation now matches the
+       ground covered exactly instead of an assumed speed times a delta. */
+    const v = car.__wheelVis
+      || (car.__wheelVis = { last: spin, own: spin, using: false, x: car.x, z: car.z });
+    const dx = car.x - v.x, dz = car.z - v.z;
+    v.x = car.x; v.z = car.z;
     if (Math.abs(spin - v.last) > 1e-9) {
       v.using = false;                 // the solver is driving it after all
-    } else if (Math.abs(car.speed || 0) > 0.5) {
+    } else if (Math.abs(dx) + Math.abs(dz) > 1e-6) {
       v.using = true;
     }
     v.last = spin;
     if (v.using) {
-      const step = ((car.vLong || car.speed || 0) / WHEEL_RADIUS) * (dt || 0);
-      v.own = (v.own + step) % (Math.PI * 2);
+      // how far it went along its own nose, which is what the tyre rolled
+      const sy = Math.sin(car.yaw || 0), cy = Math.cos(car.yaw || 0);
+      const along = dx * sy + dz * cy;
+      v.own = (v.own + along / WHEEL_RADIUS) % (Math.PI * 2);
       spin = spinFront = v.own;
     }
     return { spin, spinFront, wheelSteer: car.steer || 0 };
@@ -616,7 +638,7 @@
     { key: 'raceMode', label: 'RACE MODE / RESTART', def: ['r'],
       hint: 'Fires raceMode where a chapter has awarded it, and restarts the run everywhere else.' },
     { key: 'camera', label: 'CAMERA VIEW', def: ['c'],
-      hint: 'Cycles CHASE, BONNET and DRONE. Bonnet rides the nose of the car for a true first-person view; drone looks down on the road from above.' },
+      hint: 'Cycles CHASE, DRIVER and DRONE. Driver is the view from behind the wheel; drone looks down on the road from above.' },
     { key: 'pause', label: 'PAUSE', def: ['escape', 'p'],
       hint: 'ESC always pauses whatever this is set to, because it is the one key nobody has to be told.' },
     { key: 'fullscreen', label: 'FULLSCREEN', def: ['f'],
@@ -1321,7 +1343,7 @@
     cone *= 1.0 - smoothstep(1.2, 5.0, d.y);
     /* NOTHING IN THE FIRST FEW UNITS. A hard cut at 0.4 was fine while the
        nearest eye was eleven units behind the car, and wrong the moment one
-       sat on the bonnet: the march then starts a metre from the lamp, inside
+       sat in the car: the march then starts a metre from the lamp, inside
        the cone, where the inverse-square term is at its largest and the
        cookie is being read at the middle of its profile - so the bottom of
        the frame washed to white. Ramped in over five units instead, which is
@@ -2392,7 +2414,14 @@
       global.addEventListener('blur', () => { this.keys = Object.create(null); });
     }
     down() { for (let i = 0; i < arguments.length; i++) if (this.keys[arguments[i]]) return true; return false; }
-    hit() { for (let i = 0; i < arguments.length; i++) if (this.pressed[arguments[i]]) return true; return false; }
+    /* Nothing is a hit while the gate is shut - see NR.Gate. A press that
+       arrives in the first fifth of a second after a screen change was
+       almost certainly meant for the screen that just left. */
+    hit() {
+      if (NR.Gate && !NR.Gate.open()) return false;
+      for (let i = 0; i < arguments.length; i++) if (this.pressed[arguments[i]]) return true;
+      return false;
+    }
 
     /* ---------------------------------------------------------------------
      * THE SAME TWO QUESTIONS, ASKED BY ACTION RATHER THAN BY KEY.
@@ -2608,7 +2637,9 @@
       this.target = V3.make();
       this.up = V3.make(0, 1, 0);
 
-      this.state = 'loading';
+      this._state = 'loading';
+      // ...and nothing plays over the photosensitivity notice. See onMusic.
+      this.musicHeld = true;
       this.time = 0;
       this.fade = 1;
       this.fadeTarget = 0;
@@ -3444,6 +3475,22 @@
       const CAPS = SCHEMA.FPS_CAPS || [0, 30, 60, 75, 90, 120, 144, 165, 240];
       const cap = CAPS[st.fps_cap === undefined ? 0 : st.fps_cap] || 0;
       this.frameInterval = cap > 0 ? 1000 / cap : 0;
+      /* UNCAPPED STILL NEEDS A CEILING WHEN VSYNC IS OFF.
+
+         With the compositor holding the page at the refresh rate, UNCAPPED
+         means the refresh rate and everything is fine. With vsync off there
+         is nothing holding it at all, and a menu - where the scene is cheap
+         and the GPU fence never trips - will run the whole loop a thousand
+         times a second: the machine gets hot, the fans come up, and the
+         input queue sits behind a main thread that is never idle.
+
+         240 is above any display anyone is playing this on, so it is still
+         uncapped in every sense the player cares about. It is only a ceiling
+         on the pathological case. An explicit choice from the row always
+         wins - if someone asks for no limit and means it, they get it. */
+      if (cap === 0 && NR.Host && NR.Host.info && NR.Host.info.vsync === false) {
+        this.frameInterval = 1000 / 240;
+      }
       // ...and the counter that reports what actually came out
       this.showFps = st.fpsShow === 1;
 
@@ -3564,6 +3611,28 @@
 
     /** Menu and race run different tracks; this picks the right one. */
     onMusic() {
+      /* SILENCE UNTIL THE COLD START.
+
+         The menu theme used to come up the instant the game reached the menu
+         state, which is while the photosensitivity notice is still on screen
+         - so the first thing a new player got was a warning about seizures
+         with a synthwave track playing over it. The notice is the one screen
+         in the game that should be quiet.
+
+         The hold is released by startIntro, which is the moment the veil
+         lifts and the opening move begins - so the music arrives with the
+         cutscene, which is where it belongs.
+
+         The DOM check is the safety net rather than the mechanism. If the
+         notice and the veil are both gone and nothing has released the hold
+         - reduced motion takes a path that starts no cutscene at all - then
+         there is nothing left to be quiet for, and a game that is silent for
+         the rest of the session is a worse bug than an early note. */
+      if (this.musicHeld) {
+        const d = global.document;
+        if (d && (d.getElementById('advisory') || d.querySelector('.intro-veil'))) return;
+        this.musicHeld = false;
+      }
       /* A CUTSCENE OWNS THE MUSIC.
          `go`, in bind(), unlocks the audio context on interaction and then
          re-picks the track - and it is bound to every pointer and key event,
@@ -4251,6 +4320,10 @@
     }
 
     confirm() {
+      /* Shut behind itself, whether or not what it does changes the state -
+         a row that toggles something in place would otherwise take four
+         presses from one spammed key. See NR.Gate. */
+      if (NR.Gate) NR.Gate.lock();
       if (this.state === 'menu') this.menuItems[this.menuIndex].act();
       else if (this.state === 'startcard') this.startCountdown();
       else if (this.state === 'paused') this.activatePause();
@@ -4438,7 +4511,9 @@
         for (let i = 0; i < this.menuItems.length; i++) {
           const it = this.menuItems[i];
           const prev = i === 0 || this.menuItems[i - 1].typed >= this.menuItems[i - 1].label.length;
-          if (prev && it.typed < it.label.length) it.typed += TYPE_CPS * dt;
+          // held at zero until the opening move has begun to hand over
+          const open = this.introReveal === undefined ? 1 : this.introReveal;
+          if (prev && open > 0.02 && it.typed < it.label.length) it.typed += TYPE_CPS * dt;
         }
         if (inp.hit('arrowup', 'w')) { this.menuIndex = (this.menuIndex + this.menuItems.length - 1) % this.menuItems.length; this.audio.uiMove(); }
         if (inp.hit('arrowdown', 's')) { this.menuIndex = (this.menuIndex + 1) % this.menuItems.length; this.audio.uiMove(); }
@@ -4913,7 +4988,7 @@
          is in. They are the same thing for all but a fraction of a second at
          each portal - but that fraction is exactly when a tunnel is most
          obvious, and it is the difference between the sky cutting out as the
-         camera goes under and as the bonnet does. */
+         camera goes under and as the car does. */
       const inBore = (p.tunnel ? 1 : 0) || (this.camTunnel || 0);
       this.tunnel = M.damp(this.tunnel, inBore, 3, dt);
       const mph = this.car.speedMph || 0;
@@ -4941,6 +5016,11 @@
       const baseWet = this.levelWet === undefined ? 0.32 : this.levelWet;
       this.scene.wet = M.damp(this.scene.wet, baseWet + this.tunnel * 0.34, 2, dt);
       this.scene.brakeLight = lampOf(this.car);
+      /* The boost button follows the pedal over about a tenth of a second in
+         and a fifth back out - a thumb pushes faster than a spring returns. */
+      const want = this.car && this.car.boosting ? 1 : 0;
+      const rate = want > (this.boostPress || 0) ? 18 : 9;
+      this.boostPress = M.damp(this.boostPress || 0, want, rate, dt);
       this.scene.setHeadlights(this.car, 1);
       this.scene.setShadows(this.rival ? [this.car, this.rival] : [this.car]);
       /* Everyone else's lamps. The rival and, on the invitational grid, the
@@ -4993,6 +5073,10 @@
 
     updateCamera(dt) {
       const car = this.car;
+      /* Level unless something says otherwise. Only the view from inside the
+         car leans, and it sets this itself - but it has to be put back, or a
+         chase camera inherits whatever roll the driver view left behind. */
+      V3.set(this.up, 0, 1, 0);
       /* THE LOOK, DAMPED AND SELF-CANCELLING.
          `lookHold` is how long is left before it starts coming back; while the
          pointer is moving it is refreshed every event, so the camera holds
@@ -5020,11 +5104,15 @@
         this.lookYawWant = 0; this.lookPitchWant = 0;
       }
       /* THE TWO VIEWS THAT ARE NOT A BOOM. Both return before the chase rig
-         below, because almost none of it applies to them: a bonnet camera has
-         no distance to damp and no boom to contain, and a drone has no reason
-         to shake when the car does. */
-      if (this.camMode === 1) { this.bonnetCamera(car, dt); return; }
-      if (this.camMode === 2) { this.droneCamera(car, dt); return; }
+         below, because almost none of it applies to them: a camera in the car
+         has no distance to damp and no boom to contain, and a drone has no
+         reason to shake when the car does. */
+      /* The eye is a point in the car, so the car has to be where it is now
+         rather than where it was drawn last frame. See poseCar. */
+      if (this.car) this.poseCar();
+      const view = this.activeCam();
+      if (view === 1 && this.povCamera(car, dt)) return;
+      if (view === 2) { this.droneCamera(car, dt); return; }
       this.camYaw += M.angDiff(this.camYaw, car.yaw) * (1 - Math.exp(-CAM.rotationDamping * dt));
 
       this.camHeight = M.damp(this.camHeight, CAM.height, CAM.heightDamping, dt);
@@ -5118,12 +5206,148 @@
      * must not do.
      */
 
-    /** Cycle CHASE -> BONNET -> DRONE, and say which. */
+    /* THE OPENING MOVE.
+     *
+     * Six seconds, from a low three-quarter shot ahead of the car into the
+     * exact chase pose the title screen sits in. The point of it is that it
+     * is not a cut-scene: it is this camera, in this world, with every pass
+     * the renderer has running - so what the player is shown in the first
+     * six seconds is the game rather than a trailer of it.
+     *
+     * HOW IT LANDS WITHOUT A SNAP, which is the only hard part. The chase
+     * camera runs to completion first, every frame, exactly as it always
+     * does - so all of its damped state is warm and correct throughout. This
+     * then drags the result toward a scripted pose by a weight that falls to
+     * zero. At the end the weight IS zero, so the camera is not blended into
+     * the chase pose, it simply is the chase pose, and there is no frame
+     * where control changes hands.
+     *
+     * The scripted half is a single orbit: an angle that swings two thirds of
+     * the way round, a distance that opens from seven units to the chase
+     * boom, and a height that climbs. One curve, eased once, drives all
+     * three - which is what keeps it reading as one move rather than three
+     * parameters animating at the same time.
+     */
+    startIntro() {
+      this.intro = { at: performance.now() };
+      // the cutscene has begun, so the score may start with it
+      this.musicHeld = false;
+      this.onMusic();
+      this.introReveal = 0;
+      /* Retyped, so the rows arrive letter by letter as the shot lands
+         rather than being present the moment they become visible. The
+         typewriter is the menu's own - see the TYPE_CPS loop in update -
+         so this is only a matter of putting it back to the start. */
+      for (const it of this.menuItems) it.typed = 0;
+    }
+
+    /** Settle everything at once - the skip, and the end of the move. */
+    endIntro() {
+      this.intro = null;
+      this.introReveal = 1;
+    }
+
+    introCamera() {
+      const I = this.intro, car = this.car;
+      if (!car) { this.endIntro(); return; }
+      /* SIX SECONDS OF WALL CLOCK, NOT SIX SECONDS OF SIMULATION.
+
+         The frame loop clamps dt to 50 ms so a stall cannot teleport the
+         car through a wall, and it scales it for slow motion. Both are right
+         for the simulation and both are wrong for a cinematic: on a machine
+         drawing twenty frames a second, accumulating clamped dt makes this
+         move take eighteen seconds, and it would run in slow motion if the
+         player happened to trigger a dilation on the way in.
+
+         A scripted shot is a length of time, so it is measured against the
+         clock. It is exactly six seconds on every machine, which is the only
+         behaviour anyone can design a shot around. */
+      const LEN = 6.0;
+      const k = Math.min(1, (performance.now() - I.at) / (LEN * 1000));
+      /* Smootherstep rather than smoothstep: its second derivative is zero
+         at both ends too, so the move has no perceptible start or stop - it
+         is already going when you notice it and it is already stopped when
+         the menu arrives. */
+      const e = k * k * k * (k * (k * 6 - 15) + 10);
+
+      // the scripted pose: one orbit, opening out and climbing
+      const ang = car.yaw + Math.PI * (0.72 - 0.72 * e);
+      const dist = 7.0 + (CAM.distance - 7.0) * e;
+      const high = 1.15 + (CAM.height - 1.15) * e;
+      const hx = car.x + Math.sin(ang) * dist;
+      const hz = car.z + Math.cos(ang) * dist;
+      const hy = car.y + high;
+
+      /* The weight the scripted pose still has. It is gone by 0.86 rather
+         than at 1.0, so the last fifth of the move is the chase camera on
+         its own and the player is already in the shot they will be steering
+         from before the rows appear. */
+      const w = 1 - Math.min(1, e / 0.86);
+      const wq = w * w * (3 - 2 * w);
+      this.eye[0] += (hx - this.eye[0]) * wq;
+      this.eye[1] += (hy - this.eye[1]) * wq;
+      this.eye[2] += (hz - this.eye[2]) * wq;
+      // aimed at the car itself for the low half of the move, and at
+      // whatever the chase camera is looking at by the end of it
+      this.target[0] += (car.x - this.target[0]) * wq;
+      this.target[1] += (car.y + 0.9 - this.target[1]) * wq;
+      this.target[2] += (car.z - this.target[2]) * wq;
+      // a longer lens on the hero shot, opening to the chase field of view
+      this.fov += (52 - this.fov) * wq;
+
+      /* The interface assembles over the last third. Squared, so it is still
+         nearly invisible at the two-thirds mark and arrives quickly at the
+         end - a linear fade over two seconds reads as a slow menu. */
+      const r = Math.max(0, (e - 0.62) / 0.38);
+      this.introReveal = Math.min(1, r * r);
+      if (k >= 1) this.endIntro();
+    }
+
+    /* THE STATE IS THE ONE PLACE EVERY SCREEN CHANGE PASSES THROUGH.
+     *
+     * There are eighteen states and they are assigned from five files, so
+     * anything that has to happen on every transition has to happen here or
+     * it will not happen on all of them. Two things do:
+     *
+     *   THE INPUT GATE closes, so the press that caused this change cannot
+     *   also be read by whatever is now on screen. See NR.Gate.
+     *
+     *   THE RUN LATCH is maintained. Which camera view is in force cannot be
+     *   decided by reading the state directly, because the state legitimately
+     *   flips to "story" and back during a chapter - a dialogue beat, a
+     *   telemetry card - and a view chosen off the state alone therefore
+     *   flickered between the driver view and the chase camera, several times a
+     *   second, for the whole of that chapter. A run is a thing with a start
+     *   and an end, so it is latched at both rather than sampled per frame.
+     */
+    get state() { return this._state; }
+
+    set state(v) {
+      if (v === this._state) return;
+      this._state = v;
+      if (NR.Gate) NR.Gate.lock();
+      if (v === 'countdown' || v === 'racing' || v === 'freeroam') this.inRun = true;
+      else if (MENUS[v]) this.inRun = false;
+    }
+
+    /** The view actually in force this frame. `camMode` is the preference;
+        this is what the renderer and the camera are allowed to use. */
+    activeCam() {
+      // the finish roll is a cutscene and owns its own camera
+      if (this.raceOver || MENUS[this._state]) return 0;
+      return this.inRun ? (this.camMode || 0) : 0;
+    }
+
+    /** Cycle CHASE -> DRIVER -> DRONE, and say which. */
     cycleCamera() {
+      /* Not on a menu. The view would be stored and announced and nothing
+         on screen would change, because a menu is drawn from the chase
+         camera whatever the preference says - see DRIVING. */
+      if (!this.inRun || this.raceOver || MENUS[this._state]) return this.camMode || 0;
       this.camMode = ((this.camMode || 0) + 1) % CAM_MODES.length;
       /* The look-around offsets are the chase rig's, and they mean something
-         different in a fixed view - a bonnet camera that starts eight degrees
-         off axis because the mouse was moved a minute ago is a camera that
+         different in a fixed view - a driver whose head starts eight degrees
+         off axis because the mouse was moved a minute ago is a driver who
          looks broken. */
       this.lookYaw = 0; this.lookPitch = 0;
       this.lookYawWant = 0; this.lookPitchWant = 0;
@@ -5133,61 +5357,113 @@
       return this.camMode;
     }
 
-    /** True while the camera is riding the car's own bodywork. */
-    onBonnet() { return this.camMode === 1; }
+    /** True while the camera is the driver's own eye. */
+    inCar() { return this.activeCam() === 1; }
 
-    /* THE BONNET.
+    /* THE CAR'S OWN TRANSFORM, BUILT BEFORE ANYTHING READS IT.
      *
-     * The eye is a point in the car's own space put through the car's own
-     * model matrix, so it inherits the yaw, the road pitch, the body pitch and
-     * the roll for free - and inheriting them is the whole point. A chase
-     * camera damps that motion out because you are watching the car; on the
-     * nose you ARE the car, and a bonnet view that does not lean into a corner
-     * or dip under braking is a photograph of a bonnet.
+     * THIS IS WHY THE FIRST-PERSON VIEW DRIFTED BACKWARDS AT SPEED.
+     *
+     * The matrix used to be built in draw(), which is the right place for
+     * drawing and the wrong place for everything else: the camera is decided
+     * in update(), which runs first, so the eye was being put through LAST
+     * frame's transform. Standing still that is invisible. At a hundred and
+     * twenty miles an hour the car covers about a unit and a quarter between
+     * frames, so the eye sat more than a car length behind where the driver
+     * actually was - outside the bodywork, looking at their own dashboard
+     * from over its back edge.
+     *
+     * And it was not a steady lag, which is what made it read as a fault
+     * rather than as an offset: the distance is a frame TIME, so every
+     * skipped or long frame moved the eye somewhere else. That is the
+     * flicker between the inside of the car and the outside of it.
+     *
+     * Built here, once, before the camera and the renderer both read it.
      */
-    bonnetCamera(car, dt) {
-      const m = this.model;
-      const e = BONNET_EYE;
-      const ex = m[0] * e[0] + m[4] * e[1] + m[8] * e[2] + m[12];
-      const ey = m[1] * e[0] + m[5] * e[1] + m[9] * e[2] + m[13];
-      const ez = m[2] * e[0] + m[6] * e[1] + m[10] * e[2] + m[14];
-      /* Two units of head shake at speed, and none at a standstill. A fixed
-         camera is the one that most needs it: with no boom to absorb anything,
-         a perfectly still eye at two hundred is what makes a fixed view read
-         as a still image with a road texture scrolling past it. */
+    poseCar() {
+      M4.trs(this.model, this.car.x, this.car.y, this.car.z,
+        this.car.yaw, (this.car.pitch || 0) + (this.car.roadPitch || 0), this.car.roll);
+      /* Chapter 6's baler flattens the car. A director sets carSquash and the
+         body scales with it, in its own axes, so the crush is the actual car
+         being crushed rather than a cut to a prop. Nothing else writes it. */
+      const sq = this.carSquash;
+      if (sq) {
+        for (let i = 0; i < 3; i++) this.model[i] *= sq[0];
+        for (let i = 4; i < 7; i++) this.model[i] *= sq[1];
+        for (let i = 8; i < 11; i++) this.model[i] *= sq[2];
+        this.model[13] -= (1 - sq[1]) * 0.55;
+      }
+      return this.model;
+    }
+
+    /* THE DRIVER.
+     *
+     * The eye is the one in the head of the figure sitting in the seat, and
+     * it is computed on the core side - see `pov` in crates/synx-core/src/
+     * driver.rs. That is not an arbitrary place to put it: it is the same
+     * arithmetic, against the same transform, as the figure it belongs to,
+     * and keeping the two together is what stops the camera drifting away
+     * from the head it is supposed to be inside. Move the driver and the
+     * view moves with them, because one is derived from the other.
+     *
+     * WHAT IS LEFT ON THIS SIDE is everything that is presentation rather
+     * than geometry: how much the head shakes, how the lens opens with
+     * speed, and how far a glance is allowed to turn it. The core is handed
+     * a yaw and a pitch and hands back an eye and a point to look at.
+     *
+     * THIS REPLACED A BONNET CAMERA, which sat out on the nose looking back
+     * over the car. That was a workaround for a first-person view that could
+     * not be built: the first attempt put the eye at a guessed point inside
+     * a cabin that was not to human scale, saw almost nothing, and was moved
+     * outside where there was at least something to look at. The reason has
+     * gone - the figure is measured against the shipped body now, so there
+     * is a correct answer to where the eyes are and it does not have to be
+     * guessed at all.
+     */
+    povCamera(car, dt) {
+      /* The free-look turns the head, and the car turns the body under it.
+         Composed here because the input belongs to this side; the core is
+         given the answer rather than the parts. */
+      const yaw = car.yaw + (this.lookYaw || 0);
+      const pitch = (car.pitch || 0) + (car.roadPitch || 0)
+        + (this.lookPitch || 0) * 0.9 + POV_PITCH;
+      const cam = NR.camPov ? NR.camPov(this.model, yaw, pitch) : null;
+      /* No core, no eye. Rather than invent one, say so and let the chase
+         rig below run: a first-person view that cannot be computed should
+         degrade to a camera that works, not to a camera at the origin. */
+      if (!cam) return false;
+
+      /* Two centimetres of head shake at speed, and none at a standstill. A
+         fixed camera is the one that most needs it: with no boom to absorb
+         anything, a perfectly still eye at two hundred is what makes a fixed
+         view read as a still image with a road texture scrolling past it. */
       const rush = this.speedRush || 0, boost = this.boostFx || 0;
       const j = (this.shake || 0) * 0.9 + rush * 0.004 + boost * 0.010
         + (car.offroad ? Math.min(0.05, car.speed * 0.0009) : 0);
       const t = this.time;
       V3.set(this.eye,
-        ex + Math.sin(t * 33.0) * j,
-        ey + Math.sin(t * 41.0 + 1.1) * j * 0.7,
-        ez + Math.cos(t * 29.0) * j);
-      /* Looking down the car's own nose, with the free-look offsets applied
-         about the car rather than about the world - so glancing left in a
-         corner looks out of the side window, not off into the sky. */
-      const yaw = car.yaw + (this.lookYaw || 0);
-      const pitch = (car.pitch || 0) + (car.roadPitch || 0)
-        + (this.lookPitch || 0) * 0.9 + BONNET_PITCH;
-      const fx = Math.sin(yaw), fz = Math.cos(yaw);
-      const AHEAD = 30;
-      V3.set(this.target,
-        this.eye[0] + fx * AHEAD,
-        this.eye[1] + Math.tan(pitch) * AHEAD,
-        this.eye[2] + fz * AHEAD);
+        cam[0] + Math.sin(t * 33.0) * j,
+        cam[1] + Math.sin(t * 41.0 + 1.1) * j * 0.7,
+        cam[2] + Math.cos(t * 29.0) * j);
+      V3.set(this.target, cam[3], cam[4], cam[5]);
+      /* ...and the view leans with the body. See the note in driver.rs: an
+         interior is bolted to the car, so a camera inside one that stays
+         level makes the whole cabin rotate about the frame. */
+      V3.set(this.up, cam[6], cam[7], cam[8]);
+
       this.camS = this.cameraArc(car, 0);
       const cp = this.track.at(this.camS, this._camProbe || (this._camProbe = {}));
       this.camTunnel = cp.tunnel ? 1 : 0;
-      /* A tighter lens than the chase view. The eye is already on the car, and
-         a wide angle from here bends the bonnet away at the edges and puts the
-         horizon in the middle of a very empty frame. It still opens up with
-         speed - that is the one cue this view cannot get from a boom it does
-         not have. */
+      /* A tighter lens than the chase view. From inside, a wide angle bends
+         the pillars away at the edges and puts the horizon in the middle of
+         a very empty frame. It still opens up with speed - that is the one
+         cue this view cannot get from a boom it does not have. */
       this.fov = M.damp(this.fov,
         Math.min(88, 62 + this.speedFx * 2.2 + rush * 1.4 + boost * 7.0
           + (this.raceModeFx || 0) * 3.0), 4.8, dt);
       this.fov += (this.shake || 0) * 2.0;
       this.fov -= (this.slowFov || 0) * 9.0;
+      return true;
     }
 
     /* THE DRONE.
@@ -5375,7 +5651,15 @@
 
       /* See CAM.nearBonnet: from the nose the car's own bodywork is nearer than
          the chase view's near plane, and would be clipped away. */
-      const near = this.camMode === 1 ? CAM.nearBonnet : CAM.near;
+      /* THE OPENING MOVE, APPLIED LAST.
+
+         Here rather than in update(), because update() is a state machine
+         with a dozen branches and its own return out of most of them - and
+         a camera move hung off any single branch is a camera move that stops
+         the moment the game is in some other state. This is the one place
+         every frame passes through, whatever is happening. */
+      if (this.intro) this.introCamera();
+      const near = this.activeCam() === 1 ? CAM.nearPov : CAM.near;
       this.camNear = near;   // read by tools/smoke.js --probe bonnet
       M4.perspectiveLH(this.proj, this.fov * Math.PI / 180, this.w / this.h, near, CAM.far);
       this.nearPlane = near;
@@ -5480,7 +5764,7 @@
         } else {
             this.scene.drawCar(this.rivalModel, true,
             { livery: 'rival', steer: this.rival.steer || 0, damage: this.rivalDamage,
-              brake: lampOf(this.rival), ...wheelsOf(this.rival, dt) });
+              brake: lampOf(this.rival), ...wheelsOf(this.rival) });
         }
       }
       /* Story Chapter 4 fields Nova and Kael beside the normal Player/Ryker
@@ -5495,7 +5779,7 @@
             e.car.yaw, (e.car.pitch||0)+(e.car.roadPitch||0), e.car.roll);
           this.scene.drawCar(e._model, true,
             { livery: 'rival', steer: e.car.steer || 0, brake: lampOf(e.car),
-              ...wheelsOf(e.car, dt) });
+              ...wheelsOf(e.car) });
         }
       }
       /* Chapter 5's prize prototype is a separate vehicle, not a repaint of
@@ -5525,18 +5809,7 @@
             (this.storyRaptor && this.storyRaptor.steer) || 0);
         }
       }
-      M4.trs(this.model, this.car.x, this.car.y, this.car.z,
-        this.car.yaw, (this.car.pitch||0)+(this.car.roadPitch||0), this.car.roll);
-      /* Chapter 6's baler flattens the car. A director sets carSquash and the
-         body scales with it, in its own axes, so the crush is the actual car
-         being crushed rather than a cut to a prop. Nothing else writes it. */
-      const sq = this.carSquash;
-      if (sq) {
-        for (let i = 0; i < 3; i++) this.model[i] *= sq[0];
-        for (let i = 4; i < 7; i++) this.model[i] *= sq[1];
-        for (let i = 8; i < 11; i++) this.model[i] *= sq[2];
-        this.model[13] -= (1 - sq[1]) * 0.55;
-      }
+      this.poseCar();
       /* The player's own car, whole, in every view. The bonnet camera sits on
          the nose looking forward, so everything it can see of the car is meant
          to be seen from outside - there is nothing to hide. */
@@ -5544,8 +5817,15 @@
         { livery: 'player', steer: this.car.steer || 0, damage: this.damage,
           brake: lampOf(this.car),
           // nobody sees the flare of their own lamps from the driving seat
-          noFlare: this.camMode === 1,
-          ...wheelsOf(this.car, dt) });
+          // from inside, neither the beam flares nor the head this eye is in
+          noFlare: this.activeCam() === 1,
+          inside: this.activeCam() === 1,
+          /* How hard the boost is being asked for, which is what moves the
+             button on the wheel. Damped rather than the raw flag: a control
+             that snaps to its stop and back in one frame is a control that
+             was never pressed by a hand. */
+          press: this.boostPress || 0,
+          ...wheelsOf(this.car) });
 
       /* Trails and particles are additive light and must not disturb the
          normal buffer - a smoke puff writing a normal makes the reflection
@@ -6013,6 +6293,86 @@
       this.slowFov = Math.max(this.slowFov || 0, a);
     }
 
+    /* HOW MANY FRAMES THE CPU MAY RUN AHEAD OF THE GPU.
+     *
+     * THIS IS THE VSYNC BUG, and it is worth writing down because turning
+     * vertical sync OFF made the game slower, which is the opposite of what
+     * the switch is for.
+     *
+     * With vsync on, the compositor blocks the page at the refresh rate and
+     * that block is what keeps the two processors in step. Turning it off -
+     * see platform.rs, which passes --disable-gpu-vsync and
+     * --disable-frame-rate-limit - removes the block, and nothing else was
+     * holding the loop back. requestAnimationFrame then fires as fast as the
+     * main thread can service it, several hundred times a second, and each one
+     * queues a full scene into a command buffer the GPU is nowhere near
+     * finishing.
+     *
+     * The queue is the problem. WebGL calls return immediately; they do not
+     * wait for the work. So the CPU races on, six or eight frames of commands
+     * pile up, and every one of them is a frame of latency between the wheel
+     * being turned and the turn appearing. The frame RATE reads as enormous
+     * and the game feels like it is being driven by post.
+     *
+     * A fence fixes it exactly. `fenceSync` drops a marker into the command
+     * stream and `clientWaitSync` with a zero timeout asks - without blocking -
+     * whether the GPU has passed it yet. Hold at most two in flight and the
+     * CPU can never get further than two frames ahead: the rate settles at
+     * whatever the GPU can actually deliver, and every frame that is drawn is
+     * one the player will see almost immediately.
+     *
+     * Two rather than one, because one means the CPU idles while the GPU
+     * finishes and the pipeline never overlaps at all - which costs about a
+     * third of the frame rate for latency nobody can perceive.
+     */
+    gpuBusy() {
+      const gl = this.gl;
+      if (!gl || !gl.fenceSync || this.fencesOff) return false;
+      const q = this.fences || (this.fences = []);
+      /* Retire from the front: the fences are in submission order, so the
+         first unsignalled one means everything behind it is unsignalled too. */
+      while (q.length) {
+        const st = gl.clientWaitSync(q[0], gl.SYNC_FLUSH_COMMANDS_BIT, 0);
+        if (st === gl.TIMEOUT_EXPIRED) break;
+        gl.deleteSync(q.shift());
+      }
+      if (q.length < 2) { this.stalls = 0; return false; }
+      /* A DEAD MAN SWITCH, and it is not hypothetical.
+
+         This decides whether to draw a frame by asking whether the GPU has
+         finished an older one. If the answer is ever permanently no - a
+         driver that does not signal, a software rasteriser, a context that
+         has gone away - then it skips every frame from then on and the game
+         stops dead with no error anywhere. Trading a frame of latency for a
+         hang is not a trade worth making, so after half a second of frames
+         that were all refused, the pacing gives up and never runs again.
+
+         Thirty is about half a second of a healthy loop and several seconds
+         of an unhealthy one. Nothing legitimate reaches it: two frames in
+         flight clear in two frames. */
+      this.stalls = (this.stalls || 0) + 1;
+      if (this.stalls > 30) {
+        this.fencesOff = true;
+        for (const f of q) gl.deleteSync(f);
+        q.length = 0;
+        console.warn('SYNX: GPU fences are not retiring; frame pacing disabled');
+        return false;
+      }
+      return true;
+    }
+
+    /** Mark the end of this frame's commands, for gpuBusy to wait on. */
+    gpuMark() {
+      const gl = this.gl;
+      if (!gl || !gl.fenceSync || this.fencesOff) return;
+      const q = this.fences || (this.fences = []);
+      /* A cap on the list itself. If the context is lost, or a driver never
+         signals, the poll above stops retiring and this would otherwise grow
+         without bound for the rest of the session. */
+      if (q.length > 8) { gl.deleteSync(q.shift()); }
+      q.push(gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0));
+    }
+
     run() {
       let last = performance.now();
       const frame = (now) => {
@@ -6035,6 +6395,16 @@
           requestAnimationFrame(frame);
           return;
         }
+        /* ...and the same decision made against the GPU rather than the clock.
+           See gpuBusy: this is what stops an uncapped loop queueing frames
+           faster than they can be drawn. Skipped whole, for the same reason a
+           capped frame is. */
+        if (this.gpuBusy()) {
+          requestAnimationFrame(frame);
+          return;
+        }
+        // the real time this frame took, before dt is clamped for the sim
+        const frameMs = now - last;
         let dt = (now - last) / 1000;
         last = now;
         if (!isFinite(dt) || dt < 0) dt = 0;
@@ -6059,7 +6429,14 @@
         } catch (e) {
           console.error(e);
         }
+        /* THE BENCHMARK IS FED THE REAL FRAME TIME, not the simulation dt.
+           dt is clamped to 50ms so a stall cannot teleport the car, and a
+           benchmark that cannot see a 200ms frame is a benchmark that will
+           recommend a preset which stutters. See js/bench.js. */
+        if (NR.Bench && NR.Bench.running) NR.Bench.tick(this, frameMs);
         this.input.endFrame();
+        // the marker gpuBusy waits on next frame, after all of this frame is queued
+        this.gpuMark();
         requestAnimationFrame(frame);
       };
       requestAnimationFrame(frame);

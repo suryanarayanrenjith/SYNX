@@ -255,10 +255,11 @@ html, body {
   scrollbar-width: thin;
   scrollbar-color: var(--violet) transparent;
 }
-#rows::-webkit-scrollbar { width: 8px; }
-#rows::-webkit-scrollbar-track { background: rgba(139,92,246,.10); border-radius: 4px; }
-#rows::-webkit-scrollbar-thumb { background: rgba(139,92,246,.62); border-radius: 4px; }
-#rows::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
+/* The same bar the game uses, on the same kind of list. See style.css. */
+#rows::-webkit-scrollbar { width: 10px; }
+#rows::-webkit-scrollbar-track { background: rgba(139,92,246,.07); box-shadow: inset 1px 0 0 rgba(139,92,246,.16); }
+#rows::-webkit-scrollbar-thumb { background: linear-gradient(180deg, rgba(57,230,255,.85), rgba(139,92,246,.85) 55%, rgba(255,46,136,.75)); box-shadow: inset 0 0 0 1px rgba(0,0,0,.55), 0 0 10px rgba(57,230,255,.28); }
+#rows::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, var(--cyan), rgba(139,92,246,1) 55%, var(--pink)); }
 
 /* A group header, so a column of fourteen rows is a screen to be used rather
    than a list to be read. */
@@ -461,4 +462,118 @@ html, body {
   letter-spacing: .06em;
   user-select: text;
   -webkit-user-select: text;
+}
+
+/* ============================================================ THE CARD ====
+   What is on screen before the launcher can answer for itself.
+
+   The window opens and then spends a second or two asking the host for the
+   monitor list, the save and the graphics description - one of which costs a
+   subprocess, which is the console window that flashes past on Windows. A
+   settings screen that is on screen and does not respond to a click reads as a
+   game that has hung, so it is covered until it can.
+
+   It is minimal on purpose. This is the first thing anybody sees of SYNX, it
+   is up for about a second, and a splash that tries to be a title sequence in
+   that time is a splash nobody has finished looking at. A mark, a name, and a
+   line saying what is happening. */
+
+#boot {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(120% 90% at 50% 38%, rgba(38, 8, 74, .75), transparent 70%),
+    #05000e;
+  opacity: 1;
+  transition: opacity 460ms cubic-bezier(.4, 0, .2, 1);
+}
+#boot.gone { opacity: 0; pointer-events: none; }
+
+.boot-card {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  text-align: center;
+  animation: bootIn 460ms cubic-bezier(.2, .8, .3, 1) both;
+}
+@keyframes bootIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.boot-mark {
+  width: 72px;
+  height: 72px;
+  image-rendering: auto;
+  /* The glow is a drop-shadow on the mark rather than a box behind it, so a
+     transparent icon does not sit on a visible plate. */
+  filter: drop-shadow(0 0 14px rgba(57, 230, 255, .55))
+          drop-shadow(0 0 40px rgba(139, 92, 246, .35));
+}
+
+.boot-name {
+  font-size: clamp(30px, 6vw, 52px);
+  font-weight: 900;
+  letter-spacing: .3em;
+  /* The indent cancels the trailing letter-space, or a letter-spaced word
+     sits visibly off-centre by half a space. */
+  text-indent: .3em;
+  line-height: 1;
+  color: #fff;
+  /* A hard two-pixel chroma either side and a glow behind - never a blur on
+     the glyphs themselves. Type that blurs while it animates photographs as a
+     rendering fault, which is not the first impression to make. */
+  text-shadow:
+    -2px 0 0 rgba(255, 46, 136, .85),
+     2px 0 0 rgba(57, 230, 255, .85),
+     0 0 34px rgba(57, 230, 255, .30);
+}
+
+.boot-sub {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .42em;
+  text-indent: .42em;
+  color: rgba(150, 180, 222, .55);
+}
+
+/* An indeterminate sweep, not a percentage. Nothing here knows how long the
+   host will take, and a progress bar that guesses is a progress bar that
+   lies. 1.4s per pass is well under 3 Hz. */
+.boot-bar {
+  position: relative;
+  width: min(220px, 44vw);
+  height: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+  background: rgba(139, 92, 246, .18);
+}
+.boot-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 38%;
+  background: linear-gradient(90deg, transparent, #39e6ff, #ff2e88, transparent);
+  animation: bootSweep 1.4s ease-in-out infinite;
+}
+@keyframes bootSweep {
+  from { transform: translateX(-110%); }
+  to   { transform: translateX(370%); }
+}
+
+.boot-line {
+  margin: 0;
+  min-height: 1.2em;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .28em;
+  text-indent: .28em;
+  color: rgba(150, 180, 222, .38);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #boot, .boot-card, .boot-bar i { animation: none !important; transition: none !important; }
+  .boot-bar i { transform: none; width: 100%; opacity: .5; }
 }
