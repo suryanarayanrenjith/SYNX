@@ -650,12 +650,10 @@ pub extern "C" fn synx_driver_set_cfg(
     w.drivers[i].cfg = ai::Level {
         skill, assist, target, grip, react, boost_skill, drift_skill, mistakes,
     };
-    // The speed profile is built from `grip` and `skill`, so it has to be
-    // rebuilt when either moves - which is exactly what `Driver.reset()` did.
+    // Corner geometry is cached; grip and skill are applied during planning.
+    // The level-7 director changes these each frame, so rebuilding the entire
+    // course here would add work without changing any geometry.
     w.drivers[i].skill = skill;
-    if let Some(l) = &w.line {
-        w.drivers[i].build_profile_for(l);
-    }
 }
 
 /// Hand a driver a boost commitment directly. Chapter 7's director does this

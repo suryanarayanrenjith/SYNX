@@ -4072,6 +4072,15 @@
       // ...and a ceiling that lifts only while it is the one behind
       this.rival.raceModeMultiplier = M.clamp(1 + (this.driver.paceScale - 1) * 0.7, 1, 1.22);
       this.updateFreeRoamCounter(dt, gap);
+      // The planner and the tyres must agree about the grip available.
+      this.rival.gripScale = this.driver.gripScale;
+      const cmd = this.driver.lastInput;
+      if (rix && cmd && cmd.brake === 0 && cmd.throttle > 0.5 &&
+          Math.abs(this.rival.bodySlip) < 0.12 && !this.rival.airborne) {
+        const wantSpeed = Math.min(this.driver.lastTarget,
+          this.rival.engineTop * this.rival.raceModeMultiplier, this.rival.speedCap);
+        if (this.rival.vLong < wantSpeed) this.rival.vLong = Math.min(wantSpeed, this.rival.vLong + 8 * dt);
+      }
     }
 
     /* THE R-IX ANSWERS AN OVERTAKE. Free Roam's top opponent only.

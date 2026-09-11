@@ -139,6 +139,8 @@ if (WANT.test) {
 }
 
 if (WANT.check) {
+  step('Rival driving: all routes, free roam and Chapter 7');
+  run(process.execPath, ['tools/checkai.js', '--suite'], 'rival driving checks');
   /* The game and the server carry their own copies of the wire protocol,
      because the server has to be cloneable and buildable on its own. The
      fingerprint in the handshake catches a change to the format's SHAPE at

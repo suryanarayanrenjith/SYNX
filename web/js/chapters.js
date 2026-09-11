@@ -3974,7 +3974,7 @@
      be an escape hatch; against a rebuilt car it is only an escape hatch if
      you spend everything, and the sync window is worth a hundred and fifty
      metres rather than five hundred. */
-  const PRED_MATCH_IDLE=1.14, PRED_MATCH_BOOST=1.03, PRED_MATCH_MODE=1.38;
+  const PRED_MATCH_IDLE=1.26, PRED_MATCH_BOOST=1.30, PRED_MATCH_MODE=1.38;
   /* THE ANSWER TO AN UPGRADE.
    *
    * Every term above is a multiple of a STOCK car's terminal speed, and that
@@ -4246,7 +4246,7 @@
        A predator that backs off the moment it takes a lead hands the race back
        every time it wins an exchange; ten per cent over half a kilometre is
        enough to stop it disappearing over the horizon and no more. */
-    const ease=gapM<0?clamp(gapM/900,-.16,0):0;
+    const ease=0; // Holding a lead never asks the boss to slow down.
     // terminal speed it wants, as a multiple of a stock car's
     /* There is no `pressure` term any more - see the long note above
        RETAKE_CLEAR. What he does about being overtaken is entirely in `hunt`
@@ -4261,7 +4261,7 @@
        hunt takes whichever is greater - so the Forge engine and raceMode move
        the target with them instead of walking away from it. Only while behind:
        once the R-IX is ahead there is nothing to answer. */
-    if(o.playerV>0&&gapM>-40){
+    if(o.playerV>0){
       const tail=(o.playerV/STOCK_TERMINAL)*PRED_TAIL*(.94+.06*conf);
       wantV=Math.max(wantV,Math.min(tail,PRED_MAX_PACE/1.05));
     }
@@ -6303,7 +6303,7 @@
          speed it will carry, how far ahead it plans, how hard it defends and
          how late it reacts - so the profile is cloned (never the shared
          LEVELS entry, which every other race reads) and moved with the model. */
-      const base=(NR.AI_LEVELS&&NR.AI_LEVELS.HARD)||null;
+      const base=(NR.AI_LEVELS&&NR.AI_LEVELS.IMPOSSIBLE)||null;
       if(base&&this.g.driver){
         this.baseCfg=base;this.cfg=Object.assign({},base);this.baseSkill=base.skill;
         this.g.driver.cfg=this.cfg;this.g.driver.personality='predator';this.g.driver.reset();
@@ -6563,7 +6563,8 @@
          It is clamped to what the driver has just decided the corner allows,
          so it never becomes a car being pushed into a barrier. */
       const drv=this.g.driver;
-      if(drv&&drv.lastTarget!==undefined){
+      if(drv&&drv.lastInput&&drv.lastInput.brake===0&&drv.lastInput.throttle>.5
+          &&Math.abs(r.bodySlip)<.12&&!r.airborne){
         // ...and never past the ceiling. See PRED_TOP.
         const top=H.top||PRED_TOP;
         const want=Math.min(STOCK_TERMINAL*H.wantV,drv.lastTarget,top);
@@ -6641,7 +6642,8 @@
       /* The reheat lamp. It used to be the counter-attack's tell; with that
          gone it says the same thing the drive is actually doing - he is
          reheating whenever he is chasing a gap worth chasing. */
-      r.boosting=H.pursuit>.28;
+      // Vehicle.boosting is physics state, not a lamp override. The kit already
+      // receives storyRaptorCharge below for its visual intensity.
       // the defensive line is the personality's job now; see NR.Driver
       const gap=r.sTrack-this.g.car.sTrack;
       // the kit's momentum rings glow with how hard he is pushing

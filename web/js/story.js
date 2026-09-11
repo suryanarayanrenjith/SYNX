@@ -149,7 +149,7 @@
     null,
     {
       id: 1, title: 'FIRST BLOOD', track: 'VECTOR RUN', rival: 'RYKER',
-      levelIndex: 0, personality: 'ryker', diff: 1,
+      levelIndex: 0, personality: 'ryker', diff: 2,
       rating: 'UNRANKED → ROOKIE',
       brief: 'THE VOICE ON THE OPEN CHANNEL WANTS ONE RUN.\nHE IS RANKED FIRST AND HE IS BORED.',
       intro: [
@@ -176,7 +176,7 @@
     },
     {
       id: 2, title: 'NO BRAKES', track: 'THE SPINE', rival: 'KAEL',
-      levelIndex: 1, personality: 'kael', diff: 1,
+      levelIndex: 1, personality: 'kael', diff: 2,
       rating: 'ROOKIE → STREET',
       brief: 'KAEL RACES THE GAPS BETWEEN THE ROUTES.\nHE HAS A REASON, AND NOBODY BELIEVES IT.',
       intro: [
@@ -239,7 +239,7 @@
     },
     {
       id: 4, title: 'THE GOLDEN RUN', track: 'SUNSET ZERO', rival: 'RYKER',
-      levelIndex: 3, personality: 'ryker', diff: 1, pack: true,
+      levelIndex: 3, personality: 'ryker', diff: 2, pack: true,
       rating: 'VECTOR → INVITATIONAL',
       brief: 'FOUR CARS. SANCTIONED. TELEVISED.\nEVERYONE KNOWS IT IS A CASTING CALL.',
       intro: [
@@ -270,7 +270,7 @@
     },
     {
       id: 5, title: 'ASHFALL ZERO', track: 'ASHFALL ZERO', rival: 'RYKER',
-      levelIndex: 4, personality: 'ryker', diff: 1,
+      levelIndex: 4, personality: 'ryker', diff: 2,
       canonicalLoss: true,
       rating: 'RESULT STOLEN // R-IX REVEALED',
       brief: 'THE EXHIBITION. NO CREWS, NO BARRIERS.\nTHE PRIZE IS THE CAR THEY BUILT FROM YOU.',
@@ -2035,24 +2035,7 @@
           raceOn: g.state === 'racing', rivalS: ahead.sTrack,
           rivalX: ahead.x, rivalZ: ahead.z, finishAt: g.finishAt,
         });
-        /* Ahead of station: ease out of it. There is a dead band and a speed
-           floor on this, because at the line every one of them is behind where
-           its station will eventually be and braking a stationary car off the
-           grid is not racing. */
-        if (err < -14 && e.car.vLong > 20) {
-          const over = Math.min(1, (-err - 14) / 90);
-          cmd.throttle *= 1 - over * 0.88;
-          cmd.brake = Math.max(cmd.brake, over * 0.30);
-          cmd.boost = false;
-        }
-        /* ...and it does not go past the car it is racing for position with.
-           This is the only hard edge, it is a lift rather than a hold, and at
-           the closing speeds station keeping produces it is never reached. */
-        if (front && e.car.sTrack > front.sTrack - 5) {
-          cmd.throttle = 0;
-          cmd.brake = Math.max(cmd.brake, 0.55);
-          cmd.boost = false;
-        }
+        // Race for position. Only the driver may brake for traffic or corners.
         e.car.update(dt, cmd, g.state === 'racing');
         front = e.car;
       }

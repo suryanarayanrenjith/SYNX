@@ -571,6 +571,16 @@ impl Vehicle {
         )
     }
 
+    /// Rack angle available in this direction, including countersteering assistance.
+    /// AI input conversion must use exactly the same lock as the physics.
+    pub fn steering_lock(&self, direction: f64) -> f64 {
+        let aided = MAX_STEER.min(WHEELBASE * TARGET_LAT / (self.v_long * self.v_long).max(1.0));
+        let blend = if self.body_slip.abs() > 0.07 && direction * self.body_slip > 0.0 {
+            ((self.body_slip.abs() - 0.07) / 0.12).min(1.0)
+        } else { 0.0 };
+        aided + (MAX_STEER - aided) * blend
+    }
+
     /// Fit an engine. `swap` is the Forge rebuild; anything else is stock.
     pub fn fit_engine(&mut self, swap: bool) {
         if swap {
@@ -635,15 +645,13 @@ impl Vehicle {
         // to opposite lock as well is what made a slide unrecoverable, so when
         // the input opposes the way the car is already travelling - the
         // definition of catching a slide - it gets the full mechanical lock.
-        let v2 = (self.v_long * self.v_long).max(1.0);
-        let aided = MAX_STEER.min(WHEELBASE * TARGET_LAT / v2);
         let catching = self.body_slip.abs() > 0.07 && steer_in * self.body_slip > 0.0;
         let blend = if catching {
             (1.0f64).min((self.body_slip.abs() - 0.07) / 0.12)
         } else {
             0.0
         };
-        let lock = aided + (MAX_STEER - aided) * blend;
+        let lock = self.steering_lock(steer_in);
         self.counter_steering = blend > 0.02;
         let want_steer = steer_in * lock;
         let rate = if steer_in.abs() < 0.02 { STEER_RETURN } else { STEER_RATE };

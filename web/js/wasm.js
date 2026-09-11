@@ -435,6 +435,8 @@
        core does that whenever the profile it is handed changes, so this only
        has to make sure the next frame sends one. */
     reset() {
+      // Clear core passing/recovery state as well as the JS settings on restart.
+      M().synx_driver_set_level(this._id, LEVEL_INDEX[this.levelName]);
       this._cfgSent = null;
       this.paceScale = 1;
       this.gripScale = 1;
@@ -461,6 +463,8 @@
       this._laneHint = null;
       this._boostHold = 0;
       M().synx_driver_set_boost_hold(this._id, 0);
+      this.lastTarget = 0;
+      this.lastInput = null;
     }
 
     get boostHold() { return this._boostHold; }
@@ -499,7 +503,7 @@
       let hint = NaN;
       if (this._laneHint) {
         // the same lookahead the driver uses, so the hint lands where it aims
-        const look = 14 + Math.max(2, car.vLong) * (0.55 + 0.35 * (this.skill || 0.9));
+        const look = Math.max(14, Math.min(68, 10 + Math.max(0, car.vLong) * 0.48));
         const v = this._laneHint(car.sTrack + look, car);
         if (v !== null && v !== undefined && isFinite(v)) hint = v;
       }
@@ -513,10 +517,11 @@
         world.finishAt || 0) >> 3;
       this.lastTarget = F64[p + 5];
       this.skill = F64[p + 6];
-      return {
+      this.lastInput = {
         steer: F64[p], throttle: F64[p + 1], brake: F64[p + 2],
         boost: F64[p + 3] !== 0, ebrake: F64[p + 4] !== 0,
       };
+      return this.lastInput;
     }
   }
 
