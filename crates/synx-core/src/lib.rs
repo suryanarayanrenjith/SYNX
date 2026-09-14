@@ -106,9 +106,13 @@ pub unsafe extern "C" fn synx_free(ptr: *mut u8) {
 ///      1 the Forge rebuild, 2 the wreck Chapter 6 opens on. A stale wasm
 ///      reads the 2 as a truthy swap and hands the player the rebuilt engine
 ///      for the whole chapter that exists to earn it.
+/// v16: `synx_net_peers` publishes every seat s LIVE place, round trip and
+///      arc length. The standings card reads it; a stale wasm does not
+///      export it at all, and the card silently falls back to the lobby
+///      message, which is the frozen data this export exists to replace.
 #[no_mangle]
 pub extern "C" fn synx_abi_version() -> u32 {
-    15
+    16
 }
 
 // ------------------------------------------------------------------ world ---

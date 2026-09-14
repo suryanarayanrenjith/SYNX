@@ -372,6 +372,20 @@ pub struct Peer {
     /// True once `render` holds anything worth drawing.
     pub visible: bool,
 
+    /* ---- what only the server knows about this car ----------------------
+     *
+     * Race position and round trip arrive inside every snapshot entry, twenty
+     * times a second, and used to be dropped on the floor here - the ring took
+     * the car and nothing took these. The interface was left reading them off
+     * the lobby's JSON `room` message instead, which is sent when somebody
+     * joins, readies or finishes and NEVER during a race. So the standings
+     * card spent every race showing the positions and the distances that were
+     * true on the grid. See `NetClient::take_snapshot`. */
+    /// Race position, 1-based. Zero before the race is running.
+    pub place: u8,
+    /// The server's measured round trip to that player, milliseconds.
+    pub rtt_ms: u16,
+
     /// Diagnostics, published to the interface.
     pub last_gap_ms: f64,
     pub extrapolated: bool,
@@ -393,6 +407,8 @@ impl Default for Peer {
             err_z: 0.0,
             err_yaw: 0.0,
             visible: false,
+            place: 0,
+            rtt_ms: 0,
             last_gap_ms: 0.0,
             extrapolated: false,
         }
@@ -681,6 +697,10 @@ pub struct NetClient {
     /// Which seat this client occupies, so its own car is skipped in every
     /// snapshot rather than being drawn twice, once interpolated and late.
     pub self_slot: u8,
+    /// This player's own race position and round trip, as the server last
+    /// stated them. See the note in [`NetClient::take_snapshot`].
+    pub self_place: u8,
+    pub self_rtt_ms: u16,
 
     /// Outbound scratch. One buffer, filled and read in the same frame, so
     /// nothing on the send path allocates.
@@ -713,6 +733,8 @@ impl Default for NetClient {
             clock: Clock::default(),
             playout: Playout::default(),
             self_slot: 255,
+            self_place: 0,
+            self_rtt_ms: 0,
             out: [0u8; MAX_SERVER_FRAME],
             out_len: 0,
             seq: 0,
@@ -763,6 +785,8 @@ impl NetClient {
         }
         self.clock = Clock::default();
         self.playout = Playout::default();
+        self.self_place = 0;
+        self.self_rtt_ms = 0;
         self.correction = None;
         self.local_err = [0.0; 3];
         self.seq = 0;
@@ -843,11 +867,30 @@ impl NetClient {
         for i in 0..snap.count as usize {
             let e = snap.entries[i];
             let slot = e.slot as usize;
-            if slot >= MAX_PLAYERS || e.slot == self.self_slot {
+            if slot >= MAX_PLAYERS {
+                continue;
+            }
+            /* OUR OWN SEAT CARRIES TWO THINGS WE CANNOT WORK OUT.
+             *
+             * The car is skipped - it is simulated here, and drawing the
+             * server's copy of it would be drawing ourselves late. The place
+             * and the round trip are not ours to compute: the first is the
+             * server's ruling on a race it is refereeing, and the second is
+             * measured at the other end. Taken before the skip, so the
+             * standings can say what position the player is in while the race
+             * is still being run. */
+            if e.slot == self.self_slot {
+                self.self_place = e.place;
+                self.self_rtt_ms = e.rtt_ms;
                 continue;
             }
             let peer = &mut self.peers[slot];
             peer.active = true;
+            // Outside the `push` below on purpose: a snapshot that repeats a
+            // car's last state - because its owner's packet has not arrived
+            // yet - still carries a fresh ruling on where that car is placed.
+            peer.place = e.place;
+            peer.rtt_ms = e.rtt_ms;
             if peer.push(e.car) && self.clock.have {
                 // How old this state already was. The only measurement the
                 // playout estimator gets, and the only one it needs.

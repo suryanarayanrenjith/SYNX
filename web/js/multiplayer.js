@@ -2101,6 +2101,22 @@
       u.hud.style.right = Math.round(Math.max(0, right)) + 'px';
     }
 
+    /* HOW FAR AWAY THE OTHER CAR IS, IN A UNIT THAT SAYS SOMETHING.
+     *
+     * This was fixed at two decimals of a kilometre, which is ten-metre
+     * resolution - so the entire range in which a gap is interesting, from
+     * touching to a few seconds back, rendered as `+0.00 KM`, `+0.01 KM` or
+     * `-0.02 KM`. Metres under a kilometre and kilometres above it is the same
+     * number said in the size the player is actually racing at. */
+    static gapText(units) {
+      const m = units * UNITS_TO_KM * 1000;
+      const sign = m >= 0 ? '+' : '-';
+      const a = Math.abs(m);
+      if (a < 1) return 'LEVEL';
+      if (a < 1000) return sign + a.toFixed(0) + ' M';
+      return sign + (a / 1000).toFixed(2) + ' KM';
+    }
+
     paintHud() {
       const u = this.ui;
       if (!u.hudRows || !this.racing) return;
@@ -2109,21 +2125,57 @@
       this.placeHud();
       const g = this.g;
       const map = (NR.Net.maps || []).find(x => x.id === room.map);
-      const span = map ? Math.max(1, map.to - map.from) : 1;
-      const mine = map ? (g.distance - map.from) / span : 0;
 
-      const rows = room.players.slice().map(p => ({
-        slot: p.slot,
-        name: p.name,
-        place: p.place,
-        ping: p.ping,
-        connected: p.connected,
-        finished: p.finish_ms != null,
-        // Our own progress is the local car's, which is a frame old rather
-        // than a snapshot old; everybody else's is what the server last said.
-        progress: p.slot === NR.Net.slot ? mine : p.progress,
-      }));
-      rows.sort((a, b) => (b.progress - a.progress));
+      /* WHERE EVERYBODY ACTUALLY IS, THIS INSTANT.
+       *
+       * The `room` message carries a progress figure, a place and a ping, and
+       * every one of them is the reason this card used to be wrong: the server
+       * sends that message when somebody joins, readies, changes the route or
+       * finishes, and NEVER on a tick. Through a whole race it says what was
+       * true on the grid - so every opponent sat pinned at zero while the
+       * player's own distance climbed, and the card counted out the distance
+       * from the start line as though it were the gap to the car in front.
+       *
+       * The snapshot has carried all three, twenty times a second, the entire
+       * time. `NetCore.peers` is the way out of the core for them; see
+       * `synx_net_peers` in crates/synx-core/src/abi.rs. `room` is still the
+       * authority on the things that genuinely only change in the lobby - who
+       * is in which seat, and what they are called. */
+      const net = NR.NetCore && NR.NetCore.available && NR.NetCore.peers
+        ? (this._peers = NR.NetCore.peers(this._peers)) : null;
+      const mineS = g.car ? g.car.sTrack : g.distance;
+
+      const rows = room.players.map(p => {
+        const me = p.slot === NR.Net.slot;
+        const live = net && net.rows[p.slot];
+        return {
+          slot: p.slot,
+          name: p.name,
+          // The local car is a frame old; everybody else is a snapshot old and
+          // interpolated, which is the same pose being drawn on screen.
+          s: me ? mineS : (live && live.known ? live.s : null),
+          place: me ? (net ? net.place : p.place) : (live ? live.place : p.place),
+          finished: me ? this.crossed : !!(live && live.finished),
+          // IDLE is set by the server on a car whose driver is not connected,
+          // so this tracks a drop within one snapshot rather than waiting for
+          // a lobby message that is not coming.
+          connected: me ? true : (live && live.known ? !live.idle : p.connected),
+          me,
+        };
+      });
+
+      /* Ordered by the server's ruling while it has one, because the server is
+         refereeing the race and a car that has finished is ahead of one that
+         has not regardless of where either is standing. Falling back to raw
+         distance covers the countdown, when nobody has a place yet. */
+      const placed = rows.every(r => r.place > 0);
+      // -1 rather than -Infinity for a car with no pose yet: two of those
+      // would otherwise be compared as Infinity minus Infinity, which is a
+      // NaN, and a NaN comparator leaves the order to the engine.
+      const along = (r) => (r.s === null ? -1 : r.s);
+      rows.sort(placed
+        ? (a, b) => a.place - b.place
+        : (a, b) => along(b) - along(a));
 
       u.hudRows.textContent = '';
       rows.forEach((r, i) => {
@@ -2131,14 +2183,14 @@
            reading a number. Mid-race this is the only thing on screen that
            answers "am I winning", and a player at 200 km/h has about a tenth
            of a second to take it in. */
-        const li = el('li', 'mp-standing' + (r.slot === NR.Net.slot ? ' is-you' : '')
+        const li = el('li', 'mp-standing' + (r.me ? ' is-you' : '')
           + (r.connected ? '' : ' is-gone')
           + (i < 3 ? ' is-p' + (i + 1) : ''));
-        li.appendChild(el('b', null, String(i + 1)));
+        li.appendChild(el('b', null, String(placed ? r.place : i + 1)));
         li.appendChild(el('span', null, r.name));
-        const gap = (r.progress - mine) * span * UNITS_TO_KM;
-        li.appendChild(el('u', null, r.slot === NR.Net.slot ? 'YOU'
-          : (r.finished ? 'IN' : (gap >= 0 ? '+' : '') + gap.toFixed(2) + ' KM')));
+        li.appendChild(el('u', null, r.me ? 'YOU'
+          : (r.finished ? 'IN'
+            : (r.s === null ? '--' : Multiplayer.gapText(r.s - mineS)))));
         u.hudRows.appendChild(li);
       });
 

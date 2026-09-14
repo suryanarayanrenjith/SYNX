@@ -4393,6 +4393,30 @@ body.native-cursor button,
 body.native-cursor .adv-go,
 body.native-cursor [role="button"] { cursor: pointer !important; }
 
+/* ...AND THE SAME, FOR A POINTER THAT HAS NOT MOVED YET.
+ *
+ * The drawn cursor is running here and is perfectly capable - it simply does
+ * not know where the pointer IS. A browser only says so in an event, so until
+ * the mouse moves once there is no honest position to draw an arrow at, and
+ * drawing one at a guess would point at a different button from the one a
+ * click would hit.
+ *
+ * That is not a rare corner. A player steers with the keyboard, and the panel
+ * most likely to be reached without ever touching the mouse is the one that
+ * appears by itself at the end of a race - the multiplayer results board. It
+ * came up over a page where every surface is `cursor: none`, with no drawn
+ * cursor to replace it, which is a screen of buttons and no pointer at all.
+ *
+ * So for as long as a panel wants clicks and the drawn cursor has nowhere to
+ * be, the real pointer comes back. The first movement takes it away again and
+ * hands the job to the drawn one. See syncCursorVisibility in js/game.js. */
+body.pointer-fallback,
+body.pointer-fallback #stage,
+body.pointer-fallback #stage *:not(#synxCursor):not(#synxCursor *) { cursor: auto !important; }
+body.pointer-fallback button,
+body.pointer-fallback .adv-go,
+body.pointer-fallback [role="button"] { cursor: pointer !important; }
+
 /* =============================================================== INTRO ====
    The veil over the opening camera move. See js/intro.js.
 

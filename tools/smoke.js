@@ -1845,6 +1845,27 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
           body.classList.add("multiplayer-open");
           g.setUiOverlay("mp-results", true);
           if (hidden()) { note("PROBLEM: the results board is up and the cursor is hidden"); CU.bad++; }
+          /* THE POLICY IS NOT THE POINTER.
+             Taking race-active off only stops the cursor being forced
+             invisible. It is drawn when it has been REVEALED, and the player
+             who just finished a race on the keyboard has not moved the mouse
+             to reveal it - so the board came up with a live overlay, buttons
+             that hit-test correctly, and nothing on screen to click them
+             with. Asked of the element rather than of the body class,
+             because that is the difference the player actually sees. */
+          var drawn = document.getElementById("synxCursor");
+          var drawnUp = !!drawn && drawn.classList.contains("show")
+            && getComputedStyle(drawn).display !== "none";
+          /* The real pointer counts too, and on this screen it is the one
+             that is meant to be there: nothing in this harness has ever
+             moved a mouse, so the drawn cursor has no position and the
+             fallback is the correct answer rather than a lesser one. */
+          var nativeUp = getComputedStyle(again).cursor !== "none";
+          note("cursor: results board  drawn=" + drawnUp + "  native=" + nativeUp);
+          if (!drawnUp && !nativeUp) {
+            note("PROBLEM: the results board has buttons and no pointer of any kind");
+            CU.bad++;
+          }
           var okA = hitsItself(again), okB = hitsItself(leave);
           note("cursor: results board  RACE AGAIN clickable=" + okA + "  LOBBY clickable=" + okB);
           if (!okA || !okB) { note("PROBLEM: a results button is not clickable where it is drawn"); CU.bad++; }

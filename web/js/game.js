@@ -4216,6 +4216,37 @@
         && (driving || (this.cursorHiddenForRun && this.state !== 'paused'
           && this.state !== 'finished' && this.state !== 'confirm'));
       if (global.document && global.document.body) global.document.body.classList.toggle('race-active', hidden);
+      /* ...AND A POLICY THAT ALLOWS A CURSOR IS NOT A CURSOR.
+       *
+       * Taking `race-active` off only stops the drawn pointer being forced
+       * invisible; it does not draw one. The pointer is revealed by movement,
+       * and the player who has just finished a race on the keyboard has not
+       * moved it - so the results board, which is exactly the screen this
+       * policy exists for, came up with a live overlay, clickable buttons, and
+       * nothing on screen to click them with.
+       *
+       * On the transition only. `pointerleave` and `blur` take the cursor away
+       * deliberately when the pointer really has gone, and re-adding it every
+       * frame would overrule them. */
+      const NR = global.NR;
+      if (this._cursorWasHidden === undefined) this._cursorWasHidden = hidden;
+      if (this._cursorWasHidden && !hidden && NR && NR.revealCursor) NR.revealCursor();
+      this._cursorWasHidden = hidden;
+      /* ...AND IF THERE IS NOWHERE HONEST TO DRAW IT, GIVE THE REAL ONE BACK.
+       *
+       * The drawn cursor will not place itself before it has seen a genuine
+       * pointer position, and the page hides the real one on every surface so
+       * that it can be replaced. Put together, a player who reached this panel
+       * from the keyboard - which on a results board at the end of a race is
+       * the normal way to arrive - gets a screen of buttons and no pointer of
+       * any kind. This is the case that produced "no cursor at all".
+       *
+       * Only while a panel actually wants clicks, and only until the first
+       * movement gives the drawn cursor somewhere real to be. */
+      const known = !NR || !NR.pointerKnown || NR.pointerKnown();
+      if (global.document && global.document.body) {
+        global.document.body.classList.toggle('pointer-fallback', !hidden && !known);
+      }
     }
 
     /** Called as soon as a Story chapter is chosen, before its intro begins. */

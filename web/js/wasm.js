@@ -40,7 +40,7 @@
   /** The ABI this file was written against. The module refuses to load if the
       .wasm disagrees, which turns "a stale build" from a mystery into a line
       of text. */
-  const WANT_ABI = 15;
+  const WANT_ABI = 16;
 
   let wasm = null;      // the instance's exports
   let buffer = null;    // the ArrayBuffer the current views were made over
@@ -790,6 +790,10 @@
    *               so the renderer, the lights and the collision resolver see
    *               remote cars as normal cars and nothing above here changes.
    */
+  /** Seats in a room. Mirrors MAX_PLAYERS in the wire protocol, and the
+      stride `synx_net_peers` writes its block at. */
+  const MAX_SEATS = 4;
+
   const Net = {
     /** True once the core has a netcode build in it. */
     get available() { return !!(wasm && wasm.synx_net_reset); },
@@ -936,6 +940,40 @@
       out.snapFlags = F64[p + 9] | 0;
       out.synced = F64[p + 10] !== 0;
       out.smoothing = F64[p + 11];
+      return out;
+    },
+
+    /** Every seat's LIVE standing: place, ping and how far round the course.
+     *
+     * See `synx_net_peers` in crates/synx-core/src/abi.rs for the block layout
+     * and for why the standings used to be wrong without it. Rows are reused
+     * between calls rather than rebuilt: this is read on every repaint of the
+     * card, and a fresh array of four objects five times a second is garbage
+     * for nothing. */
+    peers(out) {
+      const w = M();
+      out = out || { rows: [], place: 0, rtt: 0 };
+      const rows = out.rows || (out.rows = []);
+      while (rows.length < MAX_SEATS) rows.push({ slot: rows.length });
+      if (!w || !w.synx_net_peers) return out;
+      const p = w.synx_net_peers() >> 3;
+      for (let i = 0; i < MAX_SEATS; i++) {
+        const b = p + i * 8, r = rows[i];
+        r.slot = i;
+        r.known = F64[b] !== 0;
+        r.place = F64[b + 1] | 0;
+        r.rtt = F64[b + 2];
+        r.s = F64[b + 3];
+        r.flags = F64[b + 4] | 0;
+        r.lagMs = F64[b + 5];
+        r.extrapolated = F64[b + 6] !== 0;
+        r.speed = F64[b + 7];
+        // synx_net::flag::FINISHED and ::IDLE
+        r.finished = (r.flags & (1 << 4)) !== 0;
+        r.idle = (r.flags & (1 << 6)) !== 0;
+      }
+      out.place = F64[p + MAX_SEATS * 8] | 0;
+      out.rtt = F64[p + MAX_SEATS * 8 + 1];
       return out;
     },
 

@@ -306,6 +306,16 @@
   function installPointerFx() {
     const cursor = document.getElementById('synxCursor');
     const fine = window.matchMedia && window.matchMedia('(pointer: fine)').matches;
+    /* Defined before the early return so that every caller can call it
+       unconditionally: on a touch device, or wherever the drawn cursor is not
+       running, the page is showing the real pointer and there is nothing to
+       reveal. See the note on the real one below. */
+    window.NR = window.NR || {};
+    window.NR.revealCursor = () => {};
+    /* Whether there is an honest position to draw a pointer at. True in this
+       default because the branch below hands the REAL pointer back, and the
+       real one is always exactly where it is. */
+    window.NR.pointerKnown = () => true;
     if (!cursor || !fine) {
       /* No drawn cursor means the page must stop hiding the real one. Every
          fine-pointer surface is cursor:none so the game can draw its own; if
@@ -354,6 +364,35 @@
       cursor.classList.add('show');
       if (!frame) frame = window.requestAnimationFrame(render);
     };
+
+    /* A PANEL CAN ASK FOR THE POINTER BACK.
+     *
+     * The drawn cursor appears on the first pointer MOVE, which is the right
+     * rule while the game is being played and the wrong one the moment
+     * something puts a panel with buttons on it over a running race. The
+     * player finished that race on the keyboard, so nothing has moved the
+     * mouse - and the multiplayer results board arrived with no pointer drawn
+     * anywhere, over a page whose every surface is `cursor: none` so the real
+     * one could be replaced by this. The board had a cursor policy, which is
+     * why `body.race-active` comes off correctly; what it did not have was
+     * anything that put a cursor on the screen.
+     *
+     * Only when a position is already known. This arrow is cosmetic - clicks
+     * land wherever the operating system's pointer actually is - so drawing it
+     * at a guessed position would point at the wrong button, which is worse
+     * than not drawing it. Before the first move there is nothing honest to
+     * draw, and that first move is what reveals it. */
+    window.NR.revealCursor = () => { if (ready) cursor.classList.add('show'); };
+    /* ...and the honest answer when there is nowhere to draw it.
+     *
+     * Until the mouse has moved once, this page has never been told where the
+     * pointer is - the platform only says so in an event. A player who has
+     * come this far on the keyboard, which in a driving game is most of them,
+     * is in exactly that position, and guessing a spot for the arrow would
+     * point it at a button other than the one a click would land on. So the
+     * caller is told, and hands the real pointer back instead. See
+     * `syncCursorVisibility` in js/game.js and `body.pointer-fallback`. */
+    window.NR.pointerKnown = () => ready;
 
     window.addEventListener('pointermove', move, { passive: true });
     window.addEventListener('pointerdown', () => cursor.classList.add('pressed'), { passive: true });

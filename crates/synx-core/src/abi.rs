@@ -34,6 +34,7 @@ use crate::ai::{self, Driver, Personality, RacingLine, WorldView};
 use crate::track::{self, Centreline, Track};
 use crate::vehicle::{self, HitKind, Input, Vehicle};
 use crate::world;
+use synx_net::MAX_PLAYERS;
 
 /// The per-vehicle state block, declared once.
 ///
@@ -1372,6 +1373,69 @@ pub extern "C" fn synx_net_stats() -> *const f64 {
     s[9] = flags as f64;
     s[10] = if have { 1.0 } else { 0.0 };
     s[11] = mag;
+    s.as_ptr()
+}
+
+/// Every seat's LIVE standing, in one call: the block the standings card reads.
+///
+/// # Why this exists
+///
+/// Race position, round trip and how far round the course a car is are all in
+/// every snapshot, twenty times a second. None of them had a way out of the
+/// core, so the interface read them off the lobby's JSON `room` message
+/// instead - and that message is sent when somebody joins, readies, or
+/// finishes, and at no point during a race. The standings card therefore spent
+/// every race showing the positions and the gaps that were true on the grid:
+/// every opponent pinned at the start line while the player's own distance ran
+/// away from them, which reads as a distance counter that is simply wrong.
+///
+/// Eight doubles per seat, `MAX_PLAYERS` seats, then two for this client:
+///
+/// `+0` known (1 when there is a pose worth reading), `+1` place, `+2` round
+/// trip ms, `+3` arc length along the course, `+4` [`CarState::flags`],
+/// `+5` how far behind the newest state the drawn pose is, in ms, `+6` 1 while
+/// the car is being extrapolated rather than interpolated, `+7` speed over the
+/// ground. Then `[MAX_PLAYERS * 8]` this client's own place and `+1` its round
+/// trip.
+///
+/// The arc length is the DRAWN one, not the newest received one, so the number
+/// on the card agrees with the car on the screen rather than with a position
+/// that car has not visibly reached yet.
+#[no_mangle]
+pub extern "C" fn synx_net_peers() -> *const f64 {
+    const STRIDE: usize = 8;
+    let (rows, self_place, self_rtt) = {
+        let c = crate::net::client();
+        let mut rows = [[0.0f64; STRIDE]; MAX_PLAYERS];
+        for (i, p) in c.peers.iter().enumerate() {
+            if !p.active || !p.visible {
+                // place and round trip are still worth publishing for a seat
+                // whose first snapshot has not landed; everything else is not.
+                rows[i][1] = p.place as f64;
+                rows[i][2] = p.rtt_ms as f64;
+                continue;
+            }
+            let s = &p.render;
+            rows[i] = [
+                1.0,
+                p.place as f64,
+                p.rtt_ms as f64,
+                s.s as f64,
+                s.flags as f64,
+                p.last_gap_ms,
+                if p.extrapolated { 1.0 } else { 0.0 },
+                (s.speed_sq() as f64).sqrt(),
+            ];
+        }
+        (rows, c.self_place, c.self_rtt_ms)
+    };
+    let w = world();
+    let s = &mut w.scratch;
+    for (i, row) in rows.iter().enumerate() {
+        s[i * STRIDE..i * STRIDE + STRIDE].copy_from_slice(row);
+    }
+    s[MAX_PLAYERS * STRIDE] = self_place as f64;
+    s[MAX_PLAYERS * STRIDE + 1] = self_rtt as f64;
     s.as_ptr()
 }
 
