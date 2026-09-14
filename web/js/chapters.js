@@ -310,11 +310,6 @@
       gl.bindVertexArray(part._mesh.vao);
       this.scene.drawPart(part,this.world);
     }
-    drawMesh(part, parent) {
-      const gl=this.gl;
-      gl.bindVertexArray(part._mesh.vao);
-      this.scene.drawPart(part,parent);
-    }
 
     draw(model, charge, opts) {
       const gl=this.gl,sc=this.scene,q=clamp(charge||0,0,1);
@@ -3206,7 +3201,9 @@
           car.x+=fx*sgn*push;car.z+=fz*sgn*push;
           car.vLong*=.18;car.vLat*=.4;
         }
-        car.sTrack=track.project(car.x,car.z,car.sTrack).sExact;
+        // its own scratch: `p` above is still the projection this resolve
+        // started from, and the lane arithmetic below reads it
+        car.sTrack=track.project(car.x,car.z,car.sTrack,this._hitProj||(this._hitProj={})).sExact;
         // a press shoving a car back down the road is the trial working; the
         // backtrack wall must give way to it rather than fight it
         car.maxS=Math.max(car.sTrack,Math.min(car.maxS===undefined?car.sTrack:car.maxS,car.sTrack+40));

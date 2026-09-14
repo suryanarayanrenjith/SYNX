@@ -73,6 +73,9 @@
      when it turns edge-on. Tyre marks are not: they are offset in the ground
      plane, because a mark burned into the road is a flat thing and billboarding
      it would peel it off the tarmac. */
+  /** The one linear blend the trail colours are built from. */
+  const mix = (a, b, t) => a + (b - a) * t;
+
   const TRAIL_NODES = 170;       // ~140 units of light trail behind the car
   const TRAIL_STEP = 0.85;       // world units between nodes
   const MARK_NODES = 150;
@@ -85,6 +88,11 @@
   /* Where each tyre stands, in the solver's own order: FL, FR, RL, RR
      (WHEELS in vehicle.rs), and the slip-ratio field each one reports through. */
   const MARK_SEATS = [[-1.06, 1.83], [1.06, 1.83], [-1.06, -1.88], [1.06, -1.88]];
+  /* The smoke emitter's own seats: a side (-1 or +1 of the half track) and
+     which end of the car (0 rear, 1 front), in the order Fx.wheels returns.
+     A flat const rather than the four nested literals the loop used to build
+     on every call. */
+  const WHEEL_SEATS = [-1, 0, 1, 0, -1, 1, 1, 1];
   const MARK_SLIP = ['w0slipRatio', 'w1slipRatio', 'w2slipRatio', 'w3slipRatio'];
 
   class Ribbon {
@@ -283,8 +291,17 @@
       }
       this.next = 0;
       this.count = 0;
-      this.smokeAcc = 0;
-      this.dustAcc = 0;
+      /* Which emitter slot each car owns in the core. Assigned on first
+         sight, like the ribbon set beside it. */
+      this.slots = new Map();
+      /* PARTICLE DENSITY, from the options screen. A multiplier on every
+         emitter's RATE, never on the buffer - the cap is what the vertex
+         buffer can hold and moving it would mean reallocating.
+       *
+       * It is applied where a rate is accumulated rather than inside spawn,
+       * so a burst still reads as a burst: turning it down thins a plume and
+       * shortens a shower, and does not make a collision throw four sparks. */
+      this.density = 1;
 
       /* Ribbons, per car. Two light trails off the tail lamps and two tyre
          marks under the rear wheels; a car gets its set the first time it is
@@ -324,6 +341,29 @@
       gl.bindVertexArray(null);
     }
 
+    /* THE PARTICLE BUFFER, RE-DERIVED IF THE CORE HAS MOVED UNDER US.
+     *
+     * `this.core` is a view onto the module's linear memory, taken once when
+     * the system is built. Any allocation inside the core can grow that
+     * memory, and growing it replaces `memory.buffer` outright - which
+     * DETACHES every view over the old one.
+     *
+     * A detached typed array does not throw when you write to it. The write
+     * is simply dropped. So the failure mode here is not a crash: it is the
+     * one-off effects the chapter directors spawn through this quietly
+     * ceasing to exist, at whatever point in a session the core last grew,
+     * with nothing in the log. (It throws on `fill`, which is how this was
+     * found at all.)
+     *
+     * `byteLength` is zero on a detached view and on nothing else, so that is
+     * the test. The re-derive is one call and only happens when the memory
+     * has actually moved - see the note on M in js/wasm.js. */
+    particles() {
+      const c = this.core;
+      if (c && c.byteLength === 0) return (this.core = global.NR.fxParticles(MAX));
+      return c;
+    }
+
     spawn(o) {
       const i = this.next;
       this.next = (this.next + 1) % MAX;
@@ -332,7 +372,8 @@
            declares. The field order is fixed on the Rust side and read from
            there; writing it out twice is how a layout drifts, and a drifted
            particle layout is sparks that are the wrong colour and fall up. */
-        const c = this.core, b = i * PF.STRIDE;
+        const c = this.particles(), b = i * PF.STRIDE;
+        if (!c) return null;
         c[b + PF.LIFE] = o.life; c[b + PF.MAX] = o.life;
         c[b + PF.X] = o.x; c[b + PF.Y] = o.y; c[b + PF.Z] = o.z;
         c[b + PF.VX] = o.vx || 0; c[b + PF.VY] = o.vy || 0; c[b + PF.VZ] = o.vz || 0;
@@ -365,7 +406,13 @@
       return q;
     }
 
-    /** The four wheel contact patches, in world space. */
+    /* The four wheel contact patches, in world space: rear left, rear right,
+       front left, front right, as twelve floats.
+     *
+     * This built an outer array, two pairs of seat literals and four point
+     * arrays - seven allocations - to answer with four points that the smoke
+     * emitter reads and drops on the same line. It is one flat buffer now,
+     * indexed `w * 3 + axis`, which is also how the caller was using it. */
     wheels(car) {
       const sy = Math.sin(car.yaw), cy = Math.cos(car.yaw);
       const half = 1.1, front = 1.83, back = -1.88;
@@ -373,14 +420,15 @@
       // see surfaceY. Tyre smoke on an elevated route was being emitted
       // underneath the deck and was invisible for the whole of Chapter 7.
       const y = surfaceY(car) + 0.12;
-      const out = [];
-      for (const [lx, lz] of [[-half, back], [half, back]]) {
-        out.push([car.x + cy * lx + sy * lz, y, car.z - sy * lx + cy * lz]);
+      const o = this._wheelBuf || (this._wheelBuf = new Float64Array(12));
+      const SEAT = WHEEL_SEATS;
+      for (let i = 0; i < 4; i++) {
+        const lx = SEAT[i * 2] * half, lz = SEAT[i * 2 + 1] === 0 ? back : front;
+        o[i * 3] = car.x + cy * lx + sy * lz;
+        o[i * 3 + 1] = y;
+        o[i * 3 + 2] = car.z - sy * lx + cy * lz;
       }
-      for (const [lx, lz] of [[-half, front], [half, front]]) {
-        out.push([car.x + cy * lx + sy * lz, y, car.z - sy * lx + cy * lz]);
-      }
-      return out;
+      return o;
     }
 
     /** A burst of sparks where the car scraped the barrier, sized by the hit. */
@@ -392,7 +440,7 @@
       const pz = car.z - sy * side * 1.1;
       const body = (car.y === undefined ? 1 : car.y);
       const floor = surfaceY(car) + 0.05;
-      const n = Math.round(10 + 44 * f);
+      const n = Math.max(6, Math.round((10 + 44 * f) * this.density));
       for (let i = 0; i < n; i++) {
         const a = Math.random() * Math.PI * 2;
         const sp = 6 + Math.random() * 22;
@@ -419,12 +467,15 @@
       const sy = Math.sin(car.yaw), cy = Math.cos(car.yaw);
       const cvx = car.vx || sy * (car.vLong || car.speed || 0);
       const cvz = car.vz || cy * (car.vLong || car.speed || 0);
-      for (let i = 0; i < 54; i++) {
+      const n = Math.max(18, Math.round(54 * this.density));
+      for (let i = 0; i < n; i++) {
         const lx = (Math.random() - .5) * 2.55;
         const lz = -2.55 + Math.random() * 4.65;
         const side = (Math.random() < .5 ? -1 : 1) * (4 + Math.random() * 13);
         const back = 12 + Math.random() * 32;
-        const core = i < 18;
+        // a third of the burst is the hot core, whatever the density scaled
+        // the count to - at LOW an unscaled 18 would have made all of it core
+        const core = i * 3 < n;
         this.spawn({
           x: car.x + cy * lx + sy * lz,
           y: (car.y || 1) - .48 + Math.random() * 1.12,
@@ -449,9 +500,14 @@
     /** A new race: nothing from the last one may be left hanging in the air. */
     reset() {
       for (const q of this.p) q.life = 0;
+      { const c = this.particles(); if (c) c.fill(0); }
       this.count = 0;
       this.next = 0;
       if (this.acc) this.acc.clear();
+      /* ...including half a puff of smoke banked in an accumulator, and the
+         slot table, whose cars are about to be replaced. */
+      if (this.slots) this.slots.clear();
+      if (global.NR.fxEmitReset) global.NR.fxEmitReset();
       for (const set of this.ribbons.values()) {
         for (const r of set.trails) r.clear();
         for (const r of set.marks) r.clear();
@@ -486,7 +542,15 @@
      * @param {boolean} active
      */
     update(dt, cars, active) {
-      const list = Array.isArray(cars) ? cars : [cars];
+      /* A single car is the common case - every mode but a race has one -
+         and wrapping it in a fresh array every frame is an allocation to
+         iterate over one element. The scratch is refilled per call and holds
+         nothing between them. */
+      let list = cars;
+      if (!Array.isArray(cars)) {
+        list = this._one || (this._one = [null]);
+        list[0] = cars;
+      }
       // per-car emitter accumulators: the rival throws its own smoke and runs
       // its own afterburner, and sharing one counter between two cars halves
       // both of them
@@ -526,7 +590,6 @@
          does change it, because on boost the exhaust genuinely is the
          brightest thing back there and it genuinely is blue. */
       const base = set.col;
-      const mix = (a, b, t) => a + (b - a) * t;
       let r = mix(base[0], 0.45, boost);
       let g = mix(base[1], 0.80, boost);
       let b = mix(base[2], 1.00, boost);
@@ -557,18 +620,22 @@
       const roadBodyPitch=(car.pitch||0)+(car.roadPitch||0);
       const cp = Math.cos(roadBodyPitch), sp = Math.sin(roadBodyPitch);
       const cr = Math.cos(car.roll || 0), sr = Math.sin(car.roll || 0);
-      const world = (lx, ly, lz, out) => {
-        // the same basis M4.trs builds for the car itself
-        out[0] = car.x + (cy * cr + sy * sp * sr) * lx + (-cy * sr + sy * sp * cr) * ly + (sy * cp) * lz;
-        out[1] = (car.y || 1) + (cp * sr) * lx + (cp * cr) * ly + (-sp) * lz;
-        out[2] = car.z + (-sy * cr + cy * sp * sr) * lx + (sy * sr + cy * sp * cr) * ly + (cy * cp) * lz;
-        return out;
-      };
+      /* The nine coefficients of the same basis M4.trs builds for the car,
+         named once rather than recomputed inside a closure that was itself
+         rebuilt for every car on every frame. Only the two lamps are
+         transformed, and they differ in one coordinate. */
+      const m00 = cy * cr + sy * sp * sr, m01 = -cy * sr + sy * sp * cr, m02 = sy * cp;
+      const m10 = cp * sr,                m11 = cp * cr,                 m12 = -sp;
+      const m20 = -sy * cr + cy * sp * sr, m21 = sy * sr + cy * sp * cr, m22 = cy * cp;
       const lampX = 0.95, lampY = -0.31, lampZ = -2.66;
-      const wp = [0, 0, 0];
+      const cxw = car.x, cyw = (car.y || 1), czw = car.z;
       for (let i = 0; i < 2; i++) {
-        world(i === 0 ? -lampX : lampX, lampY, lampZ, wp);
-        set.trails[i].push(wp[0], wp[1], wp[2], width, r, g, b, alpha);
+        const lx = i === 0 ? -lampX : lampX;
+        set.trails[i].push(
+          cxw + m00 * lx + m01 * lampY + m02 * lampZ,
+          cyw + m10 * lx + m11 * lampY + m12 * lampZ,
+          czw + m20 * lx + m21 * lampY + m22 * lampZ,
+          width, r, g, b, alpha);
         set.trails[i].life = 1.15 + raceMode * .52;
       }
 
@@ -596,16 +663,13 @@
        * comes in cooler and dimmer - two different things that look like two
        * different things. */
       const surf = surfaceY(car);
-      const slipOf = (i) => {
-        const v = car[MARK_SLIP[i]];
-        return v === undefined ? 0 : v;
-      };
       const braking01 = Math.min(1, brake);
       const rolling = active && car.speed > 6;
       for (let i = 0; i < MARK_RIBBONS; i++) {
         const m = set.marks[i];
         const rear = i >= 2;
-        const sr = slipOf(i);
+        const sv = car[MARK_SLIP[i]];
+        const sr = sv === undefined ? 0 : sv;
         /* How hard this tyre is scrubbing, 0..1.
            - lateral: the whole car's slide angle, felt by every corner
            - spin:    a driven wheel turning faster than the road (rears only)
@@ -634,9 +698,47 @@
       for (const rb of set.marks) rb.age(dt);
     }
 
+    /* THE FOUR CONTINUOUS EMITTERS.
+     *
+     * Tyre smoke, the twin afterburner, the shower off a barrier and the grit
+     * whipping past the lens. All four are RATE driven - a number of particles
+     * per second, accumulated across frames so the rate survives any frame
+     * time - and all four ran here, building an eighteen-field object per
+     * particle for `spawn` to read back out and throw away.
+     *
+     * They run in the core now. See the note at the head of
+     * crates/synx-core/src/particles.rs for the whole argument; the short
+     * version is that the arithmetic was never the cost and the allocation
+     * was. What crosses the boundary is one call per car per frame carrying
+     * the car's state, and what comes back is the spawn cursor.
+     *
+     * The JavaScript below is kept, unchanged, for a checkout with no
+     * compiled .wasm - the same arrangement `integrate` and `stripsInJs`
+     * already have in this file, and for the same reason: the browser build
+     * has to run without one. It is not the path the shipped game takes.
+     */
     emit(dt, car, active, isPlayer) {
-      if (!this.acc.has(car)) this.acc.set(car, { smoke: 0, dust: 0, wind: 0, wasBoost: false });
-      const acc = this.acc.get(car);
+      if (!car) return;
+      if (this.core) {
+        /* A stable slot per car, so a car keeps its own accumulators and its
+           own random stream rather than inheriting the plume of whichever car
+           happened to be emitted before it. */
+        let slot = this.slots.get(car);
+        if (slot === undefined) { slot = this.slots.size; this.slots.set(car, slot); }
+        if (active) {
+          const n = global.NR.fxEmit(slot, this.next, dt, this.density,
+            car, surfaceY(car), !!isPlayer);
+          // -1 is "there is no such export"; anything else is the new cursor
+          if (n >= 0) { this.next = n; return; }
+        } else {
+          return;                       // nothing emits while nothing is driving
+        }
+      }
+      let acc = this.acc.get(car);
+      if (!acc) {
+        acc = { smoke: 0, dust: 0 };
+        this.acc.set(car, acc);
+      }
       // --- emitters -------------------------------------------------------
       if (car && active) {
         const sy = Math.sin(car.yaw), cy = Math.cos(car.yaw);
@@ -650,19 +752,20 @@
            which. wheelSpinFx is the signed one. */
         const slide = Math.max(car.driftAmount, car.wheelSpinFx || 0);
         if (slide > 0.12 && car.speed > 4) {
-          acc.smoke += dt * (18 + slide * 70);
+          acc.smoke += dt * (18 + slide * 70) * this.density;
           const w = this.wheels(car);
           while (acc.smoke > 1) {
             acc.smoke -= 1;
-            const p = w[Math.random() < 0.5 ? 0 : 1];
+            // rear left or rear right, as an offset into the flat patch buffer
+            const p = Math.random() < 0.5 ? 0 : 3;
             this.spawn({
-              x: p[0] + (Math.random() - 0.5) * 0.8,
-              y: p[1] + Math.random() * 0.3,
-              z: p[2] + (Math.random() - 0.5) * 0.8,
+              x: w[p] + (Math.random() - 0.5) * 0.8,
+              y: w[p + 1] + Math.random() * 0.3,
+              z: w[p + 2] + (Math.random() - 0.5) * 0.8,
               vx: -sy * car.speed * 0.10 + (Math.random() - 0.5) * 3.5,
               vy: 1.4 + Math.random() * 2.2,
               vz: -cy * car.speed * 0.10 + (Math.random() - 0.5) * 3.5,
-              floor: p[1] - 0.07,
+              floor: w[p + 1] - 0.07,
               life: 0.75 + Math.random() * 0.8,
               size: 1.4, grow: 6.5, drag: 1.4,
               // lit by the neon around it rather than plain grey
@@ -688,7 +791,8 @@
            not what an exhaust does at 160 km/h. */
         if (car.boosting) {
           const cvx = car.vx || 0, cvz = car.vz || 0;
-          for (const side of [-1, 1]) {
+          // both nozzles, without building a two-element array to name them
+          for (let side = -1; side <= 1; side += 2) {
             const lx = side * 0.62, lz = -2.65;
             const nx = car.x + cy * lx + sy * lz;
             const ny = (car.y || 1) - 0.66;
@@ -758,13 +862,11 @@
           }
         }
 
-        acc.wasBoost = !!car.boosting;
-
         /* Scraping the barrier. The only thing in the game that throws sparks
            and the only thing the player asked to keep: a continuous shower off
            whichever flank is against the wall, for as long as it is. */
         if (car.scrape > 0.06) {
-          acc.spark = (acc.spark || 0) + dt * car.scrape * 220;
+          acc.spark = (acc.spark || 0) + dt * car.scrape * 220 * this.density;
           const side = car.lateral >= 0 ? 1 : -1;
           const scrapeFloor = surfaceY(car) + 0.05;
           const scrapeBody = (car.y === undefined ? 1 : car.y);
@@ -791,7 +893,7 @@
         // dust and grit whipping past once the car is really moving
         // the dust is a camera effect, so only the car being followed makes it
         if (isPlayer && car.speed > 26) {
-          acc.dust += dt * (car.speed - 20) * 1.6;
+          acc.dust += dt * (car.speed - 20) * 1.6 * this.density;
           const dustBase = surfaceY(car);
           while (acc.dust > 1) {
             acc.dust -= 1;
@@ -991,10 +1093,18 @@
     draw(vp, view) {
       const gl = this.gl;
       if (!this.count) return;
-      // world-space camera right, up and forward, so every sprite faces the lens
-      const right = [view[0], view[4], view[8]];
-      const up = [view[1], view[5], view[9]];
-      const fwd = [view[2], view[6], view[10]];
+      /* World-space camera right, up and forward, so every sprite faces the
+         lens. Read out of the view matrix into scratch that lives as long as
+         the system: three arrays a frame is not much on its own, and it is
+         exactly the kind of per-frame litter that adds up to a collection in
+         the middle of a corner. */
+      const B = this._basis || (this._basis = {
+        right: new Float32Array(3), up: new Float32Array(3), fwd: new Float32Array(3),
+      });
+      const right = B.right, up = B.up, fwd = B.fwd;
+      right[0] = view[0]; right[1] = view[4]; right[2] = view[8];
+      up[0] = view[1]; up[1] = view[5]; up[2] = view[9];
+      fwd[0] = view[2]; fwd[1] = view[6]; fwd[2] = view[10];
 
       if (this.core) {
         /* The whole build, in one call. What comes back is a view straight onto

@@ -93,10 +93,27 @@
       }
       return r;
     },
+    /* THE SCRATCH IS THE POINT.
+     *
+     * This allocated four Float32Array(3) every call, and it is not called
+     * once a frame: the view matrix, three shadow cascades and six reflection
+     * probe faces all go through it, so it was forty short-lived typed arrays
+     * a frame for arithmetic that needs none of them. A typed array is the
+     * most expensive small allocation JavaScript has - it is an object, a
+     * backing store and an entry in the collector's remembered set - and
+     * forty a frame is what turns into a collection every few seconds, which
+     * in a racing game is a dropped frame somebody feels.
+     *
+     * Safe because the values do not outlive the call: everything is read
+     * into `o` before this returns, and the renderer is single threaded, so
+     * no two lookAts are ever in flight at once. */
+    _lz: new Float32Array(3),
+    _lx: new Float32Array(3),
+    _ly: new Float32Array(3),
     lookAt(o, eye, center, up) {
-      const z = V3.norm(V3.make(), V3.sub(V3.make(), eye, center));
-      const x = V3.norm(V3.make(), V3.cross(V3.make(), up, z));
-      const y = V3.cross(V3.make(), z, x);
+      const z = V3.norm(M4._lz, V3.sub(M4._lz, eye, center));
+      const x = V3.norm(M4._lx, V3.cross(M4._lx, up, z));
+      const y = V3.cross(M4._ly, z, x);
       o[0] = x[0]; o[1] = y[0]; o[2] = z[0]; o[3] = 0;
       o[4] = x[1]; o[5] = y[1]; o[6] = z[1]; o[7] = 0;
       o[8] = x[2]; o[9] = y[2]; o[10] = z[2]; o[11] = 0;
@@ -287,20 +304,131 @@
     gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
   }`;
 
-  // guarded uniform setters: unused uniforms get optimised away
+  /* ================= THE REDUNDANT UNIFORM FILTER ======================
+   *
+   * Guarded setters - an unused uniform is optimised out of the program and
+   * its location comes back null - and, on top of that, a filter that will
+   * not send a value the program already has.
+   *
+   * WHY, WHEN THE STATE FILTER IN js/game.js DELIBERATELY DECLINED TO.
+   * That filter's note says a uniform cache "would have to be keyed on
+   * program and location, and the values are mostly matrices that change
+   * every frame anyway". The first half is true and the second is not, and
+   * the call pattern is what settles it:
+   *
+   *   Scene.bind uploads about sixty uniforms and runs SEVEN times a frame -
+   *   once for the main view and once for each of the reflection probe's six
+   *   faces. Exactly two of those sixty differ between the seven: uVP and
+   *   uCamPos. The other fifty-eight are the ambient, the sun, the fog, the
+   *   headlights, the rival lamps, the cascade matrices and the probe box,
+   *   restated identically six times over - about three hundred and fifty
+   *   calls a frame that cannot change the picture.
+   *
+   *   drawCasters restates uST and uCutout per caster per cascade, and for
+   *   almost every caster uST is (1,1,0,0) three times in a row.
+   *
+   *   Every blit in the post chain re-binds the same sampler indices to the
+   *   same units on every frame for the life of the process.
+   *
+   * WHY KEYING ON THE LOCATION ALONE IS CORRECT. Uniform values are
+   * per-PROGRAM-OBJECT state, and a WebGLUniformLocation belongs to exactly
+   * one program - `program()` below fetches each one once at link time and
+   * nothing re-links - so a location identifies a program and a slot
+   * together. There is no key to combine it with.
+   *
+   * WHY THE CACHE LIVES ON THE LOCATION. A Map lookup would hash an object
+   * per uniform per draw; a property read on the location is a shape check.
+   * The locations are ours, created by `program`, and are not shared.
+   *
+   * WHY IT IS COMPARED BY VALUE AND NEVER BY REFERENCE. `uModel` is handed
+   * the SAME scratch Float32Array on consecutive draws with different
+   * contents in it (see Scene.drawCar). A cache that trusted identity would
+   * draw every part of a car at the first part's transform.
+   *
+   * AND IT HAS TO FORGET. A lost context resets every uniform to zero, so a
+   * cache that survived one would suppress the writes that put them back.
+   * Rather than walk every location, the epoch is bumped and every entry
+   * misses once. See U.forget, called from the context-loss handler in
+   * js/game.js.
+   */
+  let uEpoch = 1;
+
   const U = {
-    f: (gl, l, v) => { if (l != null) gl.uniform1f(l, v); },
-    i: (gl, l, v) => { if (l != null) gl.uniform1i(l, v); },
-    v2: (gl, l, a, b) => { if (l != null) gl.uniform2f(l, a, b); },
-    v3: (gl, l, a, b, c) => { if (l != null) gl.uniform3f(l, a, b, c); },
-    v3v: (gl, l, v) => { if (l != null) gl.uniform3fv(l, v); },
-    v4: (gl, l, a, b, c, d) => { if (l != null) gl.uniform4f(l, a, b, c, d); },
+    /** Drop every cached value. The context has gone; nothing is set. */
+    forget() { uEpoch++; },
+
+    f: (gl, l, v) => {
+      if (l == null) return;
+      if (l._e === uEpoch && l._a === v) return;
+      l._e = uEpoch; l._a = v;
+      gl.uniform1f(l, v);
+    },
+    i: (gl, l, v) => {
+      if (l == null) return;
+      if (l._e === uEpoch && l._a === v) return;
+      l._e = uEpoch; l._a = v;
+      gl.uniform1i(l, v);
+    },
+    v2: (gl, l, a, b) => {
+      if (l == null) return;
+      if (l._e === uEpoch && l._a === a && l._b === b) return;
+      l._e = uEpoch; l._a = a; l._b = b;
+      gl.uniform2f(l, a, b);
+    },
+    v3: (gl, l, a, b, c) => {
+      if (l == null) return;
+      if (l._e === uEpoch && l._a === a && l._b === b && l._c === c) return;
+      l._e = uEpoch; l._a = a; l._b = b; l._c = c;
+      gl.uniform3f(l, a, b, c);
+    },
+    /* NOT three scalars. Four of this setter's five callers hand it a vec3
+       ARRAY - the rival lamp positions, their aim axes and the two taillight
+       tables - and `uniform3fv` uploads the whole array where `uniform3f`
+       would upload only its first element and leave five lamps dark. So it
+       stays a bulk upload and takes the element-wise cache below, which is
+       what it wanted anyway: the table is identical on six of the seven binds
+       a frame. */
+    v3v: (gl, l, v) => { if (l != null && changed(l, v)) gl.uniform3fv(l, v); },
+    v4: (gl, l, a, b, c, d) => {
+      if (l == null) return;
+      if (l._e === uEpoch && l._a === a && l._b === b && l._c === c && l._d === d) return;
+      l._e = uEpoch; l._a = a; l._b = b; l._c = c; l._d = d;
+      gl.uniform4f(l, a, b, c, d);
+    },
     /* A whole vec4 array in one call. `program` strips the "[0]" off an array
        uniform's reported name, so `u.uDent` is the location of element zero -
        which is what uniform4fv wants for an array upload. */
-    v4a: (gl, l, v) => { if (l != null) gl.uniform4fv(l, v); },
-    m4: (gl, l, v) => { if (l != null) gl.uniformMatrix4fv(l, false, v); },
+    v4a: (gl, l, v) => { if (l != null && changed(l, v)) gl.uniform4fv(l, v); },
+    /** ...and a float array, for the rival taillight intensities. */
+    fa: (gl, l, v) => { if (l != null && changed(l, v)) gl.uniform1fv(l, v); },
+    m4: (gl, l, v) => { if (l != null && changed(l, v)) gl.uniformMatrix4fv(l, false, v); },
   };
+
+  /* The array case. Sixteen float compares against a matrix upload, or
+     twenty-four against the dent table: an element-wise test that MISSES is
+     still a small fraction of the call it was deciding about, and the ones
+     that hit - every cascade matrix on six of the seven binds, the dent table
+     on every draw of an undamaged car - are the whole point.
+   *
+   * `_ea` rather than the `_e` the scalar setters use, so the two caches
+   * cannot alias. A location written through `v3` and then through `v3v`
+   * would otherwise find a same-epoch array cache that `v3` never updated
+   * and skip a write it had to make. Nothing does that today; the cost of
+   * making it impossible is one field. */
+  function changed(l, v) {
+    const n = v.length;
+    let c = l._m;
+    if (c === undefined || c.length !== n) {
+      c = l._m = new Float32Array(n);
+    } else if (l._ea === uEpoch) {
+      let same = true;
+      for (let i = 0; i < n; i++) { if (c[i] !== v[i]) { same = false; break; } }
+      if (same) return false;
+    }
+    for (let i = 0; i < n; i++) c[i] = v[i];
+    l._ea = uEpoch;
+    return true;
+  }
 
   global.NR = global.NR || {};
   Object.assign(global.NR, { M, V3, M4 });

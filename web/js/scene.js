@@ -36,6 +36,10 @@
      40 units is the car and the barrier beside it; 150 is the corner
      ahead; 520 is the straight. Past that a shadow would be thinner than
      a texel and the aerial perspective has taken over anyway. */
+  /** How many of the world's own lights one frame can carry. Must match
+      WORLD_LAMPS in the scene fragment shader. */
+  const WORLD_LAMPS = 6;
+
   const SHADOW_CASCADES = 3;
   const SHADOW_RADII = [42, 150, 520];
   /* ...and how much road is gathered into each, in arc length. A cascade
@@ -110,6 +114,18 @@
     // while the visuals move through ruins and volcanic country.
     return (z === 'ruins' || z === 'volcanic' || z === 'factory' || z === 'neon7') ? 'city' : z;
   }
+
+  /* The six cube faces: a look direction and an up vector each, flat, so the
+     probe's per-frame loop reads a table rather than rebuilding nineteen
+     arrays every time it runs. See renderProbe. */
+  const PROBE_DIRS = new Float32Array([
+     1,  0,  0,   0, -1,  0,
+    -1,  0,  0,   0, -1,  0,
+     0,  1,  0,   0,  0,  1,
+     0, -1,  0,   0,  0, -1,
+     0,  0,  1,   0, -1,  0,
+     0,  0, -1,   0, -1,  0,
+  ]);
 
   const TUNNEL_ARC = [
     [-0.990, -0.27], [-0.972, 3.48], [-0.916, 7.16], [-0.824, 10.60],
@@ -804,6 +820,83 @@
     return cone * fall * smoothstep(0.4, 6.0, dist);
   }
 
+  /* ------------------------------------------- THE LIGHTS BESIDE THE ROAD --
+   *
+   * The street lamps and the gantry neon, as LIGHTS rather than as bright
+   * shapes.
+   *
+   * Until this, every glowing thing in the world was emissive geometry and
+   * nothing else: the lamp face was a bright quad, the arch was a bright bar,
+   * and the only reason the road under them was not pitch black is that the
+   * car's own headlights were on it. What a player reads as "a street light"
+   * is not the lamp - it is the POOL, the ellipse of light on the tarmac
+   * underneath it that slides past as you drive - and there was none. So the
+   * frame was a lot of glow standing over a road that none of it touched, and
+   * the bloom was doing all the work, which is exactly what makes it read as
+   * a screen effect rather than as a place.
+   *
+   * Six of them, the nearest six, chosen on the CPU every frame - see
+   * Scene.setWorldLights. Past the range the whole evaluation is a subtract, a
+   * dot and a compare, which is the same lever that makes the rival lamps
+   * affordable.
+   *
+   * A LAMP AND A GANTRY ARE THE SAME LIGHT WITH DIFFERENT EXTENT. A street
+   * lamp is a point over one side of the carriageway; a gantry's neon is a
+   * forty-unit bar across the whole of it, and a point light at the middle of
+   * that would light the centre line and leave both verges dark. Both are
+   * therefore LINE lights - a centre, an axis and a half-length - and a lamp
+   * is simply the case where the half-length is zero. The closest point on
+   * the segment costs a dot and a clamp, and it is the difference between a
+   * gantry that washes the full width of the road and one with a hot spot
+   * under its middle.
+   */
+  #define WORLD_LAMPS 6
+  uniform vec4 uLampP[WORLD_LAMPS];   // xyz the centre, w the range
+  uniform vec4 uLampC[WORLD_LAMPS];   // rgb colour x intensity, w half-length
+  uniform vec4 uLampD[WORLD_LAMPS];   // xyz the axis, w how far down it throws
+  uniform int uLampN;
+
+  vec3 worldLamps(vec3 P, vec3 N) {
+    vec3 lit = vec3(0.0);
+    for (int i = 0; i < WORLD_LAMPS; i++) {
+      if (i >= uLampN) break;
+      float range = uLampP[i].w;
+      /* The closest point on the source. For a lamp the half-length is zero
+         and this collapses to the centre, so there is one code path. */
+      vec3 rel = P - uLampP[i].xyz;
+      float t = clamp(dot(rel, uLampD[i].xyz), -uLampC[i].w, uLampC[i].w);
+      vec3 d = rel - uLampD[i].xyz * t;
+      float d2 = dot(d, d);
+      if (d2 > range * range) continue;
+      float dist = sqrt(max(d2, 1e-4));
+      vec3 dir = d / dist;          // from the lamp toward this surface
+
+      /* Inverse-square, softened in the first couple of units so the top of
+         the post the lamp is bolted to does not blow out, and taken to zero
+         at the range - a light that is merely very dim at its cut-off pops
+         when the CPU swaps it for a nearer one. */
+      float fall = 1.0 / (1.0 + d2 * 0.0022);
+      fall *= 1.0 - smoothstep(range * 0.55, range, dist);
+
+      /* A lamp in a housing throws DOWN. Without this the underside of every
+         gantry beam and the whole sky side of the barrier picks up light from
+         a fitting that is physically pointing at the road, and the verge ends
+         up brighter than the carriageway. The w component is how directional this one is:
+         a street lamp is almost fully downward, a neon run on an arch is a
+         bare tube and throws nearly everywhere. */
+      float down = mix(1.0, clamp(-dir.y, 0.0, 1.0), uLampD[i].w);
+
+      /* The incidence term, wrapped. A road surface directly under a lamp has
+         N straight up and -dir straight down, so the plain dot is 1 there and
+         falls to 0 across the pool - which is right. The wrap keeps a barrier
+         face standing edge-on to the light from going completely black, the
+         way a real surface picks up the bounce off the tarmac. */
+      float ndl = max(dot(N, -dir), 0.0);
+      lit += uLampC[i].rgb * (ndl * 0.88 + 0.12) * fall * down;
+    }
+    return lit;
+  }
+
   vec3 rivalLights(vec3 P, vec3 N) {
     vec3 lit = vec3(0.0);
     for (int i = 0; i < RIVAL_LAMPS; i++) {
@@ -1027,6 +1120,11 @@
       vec3 f0 = mix(vec3(0.04), albedo * baseCol, uMetal);
 
       vec3 lamp = headlights(vWorld, N);
+      /* ...and the lights the ROAD has of its own. Added to the same term the
+         headlights use, so it flows into the diffuse AND the specular lobe
+         below - which is the half that matters on a wet surface: a pool of
+         light with no streak in it reads as paint. */
+      lamp += worldLamps(vWorld, N);
       if (uFillOn > 0.001) {
         float fl = max(dot(N, uFillDir), 0.0);
         // wrapped, so the far side of the body falls off instead of clipping
@@ -2501,7 +2599,7 @@
      */
     buildDressing() {
       const C = this.man.centre;
-      if (!C) { this.dressing = []; this.dressingOpaque = []; this.dressingGlow = []; return; }
+      if (!C) { this.dressing = []; this.dressingOpaque = []; this.dressingGlow = []; this.worldLights = []; return; }
       const gl = this.gl;
       const parts = [];
       const shipped = C.shippedCount || C.count;
@@ -4155,7 +4253,7 @@
        * before the arena is uploaded - which is here.
        */
       this.buildPalms({ Geo, parts, push, tri, sweep, C, at });
-      if (!Geo.iLen) { this.dressing = []; this.dressingOpaque = []; this.dressingGlow = []; return; }
+      if (!Geo.iLen) { this.dressing = []; this.dressingOpaque = []; this.dressingGlow = []; this.worldLights = []; return; }
 
       this.exVao = gl.createVertexArray();
       gl.bindVertexArray(this.exVao);
@@ -4199,6 +4297,8 @@
          dressing; they are the shipped meshes, the cars, and the shadow and
          probe passes, which run a different program and re-state everything
          regardless. Left in road order, which is what the emitters produce. */
+      // road order, so the per-frame pick is a binary search - see setWorldLights
+      this.sortWorldLights();
       this.dressingOpaque = parts.filter(p => p.mode === 0);
       this.dressingGlow = parts.filter(p => p.mode !== 0);
       this.dressingVerts = Geo.vLen / 8;
@@ -4925,6 +5025,33 @@
          same chunk one after the other. Working it out twice for every one of
          the sixteen hundred standards on the course is most of a second of
          load, spent on an answer that was already known. */
+      /* WHERE EVERY LIGHT IN THE WORLD IS, harvested as the geometry that
+         carries it is emitted.
+       *
+       * The renderer needs these as LIGHTS as well as as bright shapes - see
+       * worldLamps in the fragment shader - and the only place that knows
+       * where a lamp ended up is the code that put it there. Collecting them
+       * anywhere else means a second copy of the station arithmetic, and the
+       * failure mode of a second copy is a pool of light beside a post rather
+       * than under it.
+       *
+       * Keyed on the station so a chunk that is swept twice contributes one
+       * light, sorted by arc length at the end so the per-frame pick is a
+       * binary search rather than a walk over the whole course. */
+      const lampSeen = new Set();
+      const LIGHTS = this.worldLights = [];
+      const addLight = (key, s, x, y, z, r, g, b, watt, range, half, ax, ay, az, down) => {
+        if (lampSeen.has(key)) return;
+        lampSeen.add(key);
+        /* The colour carries the intensity, because that is what the shader
+           wants and because the two are never useful apart: a lamp is not a
+           hue and a brightness, it is an amount of light of a colour. The
+           scale is against the headlight term, which is the only other local
+           source in the frame and therefore the only thing a roadside lamp
+           can look right or wrong NEXT to. */
+        LIGHTS.push({ s, x, y, z, r: r * watt, g: g * watt, b: b * watt,
+                      range, half, ax, ay, az, down });
+      };
       const postMemo = new Map();
       const postsIn = (a2, b2) => {
         const key = a2 + ':' + b2;
@@ -4989,6 +5116,27 @@
             quad(push(P(H - 2.3, yy, -1.15), n, [0, 0]), push(P(H + 2.3, yy, -1.15), n, [1, 0]),
                  push(P(H + 2.3, yy, 1.15), n, [1, 1]), push(P(H - 2.3, yy, 1.15), n, [0, 1]));
           }
+          /* ...AND THE POOL IT THROWS.
+             The lamp face itself, as a light, a shade under the emissive quad
+             so the housing is not lit by its own bulb. A point rather than a
+             line - a street lamp is one fitting - and almost fully downward,
+             because it is in a housing that is pointing at the road. The
+             colour is the neon strip warmed toward white: a magenta lamp
+             casting magenta over everything is what the first version of this
+             looked like, and a real discharge lamp on a violet fitting still
+             puts something close to white on the tarmac. */
+          const lp = P(H, 15.9, 0);
+          /* THE RANGE IS NOT A GUESS. Standards are ninety units apart on
+             alternating sides, so a point on the road can be forty-five units
+             from the nearest one along the carriageway and fifteen out from
+             under it: a range much under seventy leaves a dark band between
+             every pair of pools, which reads worse than no lamps at all
+             because the road then pulses light-dark-light as you drive. At
+             seventy-eight consecutive pools just overlap and the carriageway
+             is continuously lit, with the bright ellipses still visible under
+             each fitting. */
+          addLight('p' + i, i * C.step, lp[0], lp[1], lp[2],
+            1.00, 0.64, 0.86, 6.4, 78, 0, 0, 1, 0, 0.88);
           /* ...and a strip up the road side of the column. It is what the
              magenta used to be spent on, spent on a line instead of a
              silhouette: at speed a row of these converging down the verge is
@@ -5132,6 +5280,19 @@
           const nb = [0, -1, 0], e = ROAD_HALF + 1.0;
           quad(push(W(-e, 24.1, -0.95), nb, [0, 0]), push(W(e, 24.1, -0.95), nb, [1, 0]),
                push(W(e, 24.1, 0.95), nb, [1, 1]), push(W(-e, 24.1, 0.95), nb, [0, 1]));
+          /* THE BEAM, AS A LIGHT ACROSS THE WHOLE CARRIAGEWAY.
+             A LINE, not a point. The run is forty-two units wide and a point
+             light at the middle of it would put a hot spot on the centre line
+             and leave both verges dark, which is the one thing that would
+             give away that this is not a real tube. The axis is the road s
+             own lateral direction at this station and the half-length is the
+             span, so the closest-point test in the shader walks along the
+             beam exactly as the light does.
+             Less directional than a street lamp: this is a bare run of neon
+             on the underside of a beam, so it throws sideways onto the
+             uprights and the barrier tops as well as down. */
+          addLight('a' + i, i * C.step, C.x[i], 23.7, C.z[i],
+            0.34, 0.88, 1.00, 3.6, 96, e, rx, 0, rz, 0.55);
         }
       });
 
@@ -5940,12 +6101,25 @@
 
       // stand the light well back, so nothing the box contains is behind it
       const back = radius * 4 + 400;
-      const eyeL = V3.make(qx + sunDir[0] * back, qy + sunDir[1] * back, qz + sunDir[2] * back);
-      const at = V3.make(qx, qy, qz);
-      const up = Math.abs(sunDir[1]) > 0.95 ? V3.make(0, 0, 1) : V3.make(0, 1, 0);
-      const view = M4.lookAt(M4.make(), eyeL, at, up);
-      const proj = M4.ortho(M4.make(), -radius, radius, -radius, radius, 1, back * 2 + radius * 2);
-      M4.mul(c.vp, proj, view);
+      /* Scratch, kept, for the same reason the probe's is: this runs three
+         times a frame and built two 4x4 matrices and three vec3 on each of
+         them - fifteen typed arrays a frame to produce two matrices that are
+         read once and thrown away. The cascade keeps its own `vp`; everything
+         between here and it is working space. */
+      const S = this._csmScratch || (this._csmScratch = {
+        eye: new Float32Array(3), at: new Float32Array(3), up: new Float32Array(3),
+        view: M4.make(), proj: M4.make(),
+      });
+      S.eye[0] = qx + sunDir[0] * back;
+      S.eye[1] = qy + sunDir[1] * back;
+      S.eye[2] = qz + sunDir[2] * back;
+      S.at[0] = qx; S.at[1] = qy; S.at[2] = qz;
+      // a light straight overhead has no usable up vector along Y
+      const side = Math.abs(sunDir[1]) > 0.95;
+      S.up[0] = 0; S.up[1] = side ? 0 : 1; S.up[2] = side ? 1 : 0;
+      M4.lookAt(S.view, S.eye, S.at, S.up);
+      M4.ortho(S.proj, -radius, radius, -radius, radius, 1, back * 2 + radius * 2);
+      M4.mul(c.vp, S.proj, S.view);
       c.radius = radius;
       // where the box is, so a caster outside it is never transformed
       c.cx = qx; c.cy = qy; c.cz = qz;
@@ -5969,12 +6143,16 @@
       const sun = this.sunDirection(eye);
       // a sun on the horizon casts shadows the length of the level; clamp the
       // elevation the CASCADE uses so the box stays a usable shape
-      const sd = V3.make(sun[0], Math.max(sun[1], 0.28), sun[2]);
+      const W = this._csmWork || (this._csmWork = {
+        sd: new Float32Array(3), fwd: new Float32Array(3),
+      });
+      const sd = W.sd, fwd = W.fwd;
+      V3.set(sd, sun[0], Math.max(sun[1], 0.28), sun[2]);
       V3.norm(sd, sd);
 
-      let fwd = V3.make(target[0] - eye[0], 0, target[2] - eye[2]);
-      const fl = Math.hypot(fwd[0], fwd[2]) || 1;
-      fwd = V3.make(fwd[0] / fl, 0, fwd[2] / fl);
+      const fdx = target[0] - eye[0], fdz = target[2] - eye[2];
+      const fl = Math.hypot(fdx, fdz) || 1;
+      V3.set(fwd, fdx / fl, 0, fdz / fl);
 
       gl.useProgram(this.shadowProg.prog);
       gl.enable(gl.DEPTH_TEST);
@@ -5989,9 +6167,17 @@
       gl.cullFace(gl.FRONT);
 
       const camSv = camS === undefined ? 0 : camS;
+      /* SHADOW DISTANCE, as a scale on every cascade's box rather than as a
+         cascade dropped. The surface shader picks its cascade by comparing
+         the fragment's distance against uCsmR0..2 and blends across the
+         seam, so the three radii are a ladder it reads - remove one and the
+         blend bands it was written against are gone with it. Scaling them
+         keeps the ladder and moves where it ends, which is the question the
+         row is actually asking. */
+      const reach = this.shadowReach === undefined ? 1 : this.shadowReach;
       for (let i = 0; i < S.cascades.length; i++) {
         const c = S.cascades[i];
-        this.fitCascade(c, eye, fwd, sd, SHADOW_RADII[i], c.px);
+        this.fitCascade(c, eye, fwd, sd, SHADOW_RADII[i] * reach, c.px);
         gl.bindFramebuffer(gl.FRAMEBUFFER, c.fb);
         gl.viewport(0, 0, c.px, c.px);
         gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -6056,7 +6242,9 @@
       /* How much road each cascade gathers, in arc length. The near one is a
          couple of hundred units around the car; past the far one a shadow is
          thinner than a texel and the aerial perspective has taken over. */
-      const arc = SHADOW_REACH[index];
+      // ...and the arc window each one gathers moves with its box, or a
+      // shortened cascade would still be submitted a kilometre of road
+      const arc = SHADOW_REACH[index] * (this.shadowReach === undefined ? 1 : this.shadowReach);
 
       gl.bindVertexArray(this.vao);
       gl.activeTexture(gl.TEXTURE0);
@@ -6215,25 +6403,36 @@
        * costs six views of a 128-pixel cube instead of one - and the capture
        * was cut down to the near dressing and its glow precisely so that it
        * could be afforded. */
-      P.centre = [centre[0], centre[1] + 3.2, centre[2]];
+      /* EVERY SCRATCH HERE IS PERMANENT, and that is the whole of this block.
+       *
+       * This ran once a frame and built, every time: the centre array, a
+       * six-entry table of direction/up pairs (nineteen arrays), three 4x4
+       * matrices, and then three more vec3 per face inside the loop - on top
+       * of the four M4.lookAt allocates internally. Sixty-odd short-lived
+       * typed arrays and arrays a frame, for a table of constants and some
+       * arithmetic that writes its answer into a matrix anyway.
+       *
+       * The direction table is a `const` at module scope now (PROBE_DIRS),
+       * the matrices are built once and kept, and the projection - which
+       * cannot change, since a cube face is always ninety degrees square - is
+       * built on the first call rather than on all of them. */
+      const C = P.centre || (P.centre = new Float32Array(3));
+      C[0] = centre[0]; C[1] = centre[1] + 3.2; C[2] = centre[2];
 
-      const dirs = [
-        [[ 1, 0, 0], [0, -1, 0]], [[-1, 0, 0], [0, -1, 0]],
-        [[ 0, 1, 0], [0, 0, 1]],  [[ 0,-1, 0], [0, 0, -1]],
-        [[ 0, 0, 1], [0, -1, 0]], [[ 0, 0,-1], [0, -1, 0]],
-      ];
-
-      const proj = M4.make();
       /* The SAME left-handed projection the main view uses. The world's axes
          came out of Unity and are left-handed; rendering the probe with a
          right-handed projection would mirror every face, and a mirrored
          reflection puts the left-hand barrier's neon on the right of the road,
          which is worse than no reflection at all. */
-      M4.perspectiveLH(proj, Math.PI / 2, 1, 0.6, 2600);
-
-      const view = M4.make();
-      const vp = M4.make();
-      const eye = P.centre;
+      if (!P.proj) {
+        P.proj = M4.perspectiveLH(M4.make(), Math.PI / 2, 1, 0.6, 2600);
+        P.view = M4.make();
+        P.vp = M4.make();
+        P.at = new Float32Array(3);
+        P.up = new Float32Array(3);
+      }
+      const proj = P.proj, view = P.view, vp = P.vp;
+      const eye = C;
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, P.fb);
       if (gl.drawBuffers) gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
@@ -6250,10 +6449,13 @@
         gl.clearColor(0.02, 0.01, 0.05, 1);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-        const dir = dirs[i][0], up = dirs[i][1];
-        M4.lookAt(view, V3.make(eye[0], eye[1], eye[2]),
-          V3.make(eye[0] + dir[0], eye[1] + dir[1], eye[2] + dir[2]),
-          V3.make(up[0], up[1], up[2]));
+        const d = i * 6;
+        const at = P.at, up = P.up;
+        at[0] = eye[0] + PROBE_DIRS[d];
+        at[1] = eye[1] + PROBE_DIRS[d + 1];
+        at[2] = eye[2] + PROBE_DIRS[d + 2];
+        up[0] = PROBE_DIRS[d + 3]; up[1] = PROBE_DIRS[d + 4]; up[2] = PROBE_DIRS[d + 5];
+        M4.lookAt(view, eye, at, up);
         M4.mul(vp, proj, view);
 
         /* THE SKY GOES IN THE PROBE AFTER ALL.
@@ -6303,7 +6505,8 @@
       /* The origin the parallax correction uses is the point these faces were
          actually taken from - which is now this frame's centre, not one from
          several frames ago. */
-      P.origin = [P.centre[0], P.centre[1], P.centre[2]];
+      const O = P.origin || (P.origin = new Float32Array(3));
+      O[0] = P.centre[0]; O[1] = P.centre[1]; O[2] = P.centre[2];
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
 
@@ -6352,6 +6555,20 @@
           if (part.mat && part.mat.name === name) part.mat.color = col.slice();
         }
       };
+      /* HOW HARD THE ROADSIDE LIGHTS BURN ON THIS ROUTE.
+       *
+       * The lamps are real lights now (see worldLamps in the shader), so they
+       * belong to the route's air the way every other light in the scene
+       * already does: the same fitting on a coast road at dusk and in a
+       * midnight city is not the same amount of light on the tarmac, because
+       * one of them has a sky to compete with and the other does not.
+       *
+       * Derived from the palette rather than added to it as a fourteenth
+       * hand-tuned field: `ambient` is how much fill the route carries, and a
+       * lamp has to beat the fill to be seen at all. A bright ambient means a
+       * lighter night and a lamp that reads as a glow on the surface; a dark
+       * one means the pool under it is most of what there is. */
+      this.lampGain = Math.max(0.55, Math.min(1.6, 1.75 - (p.ambient || 1.2) * 0.62));
       set('EdgeLine', p.edge);
       set('BarrierCap', p.cap);
       // Aurora Forge is an enclosed production hall: its crash barriers are
@@ -7009,16 +7226,32 @@
       }
     }
 
-    sunDirection(camPos) {
+    /* WHERE THE SUN IS FROM HERE.
+     *
+     * Nine calls a frame - once for the main bind, once for each of the six
+     * probe faces, once for the cascades and once for the composite - and it
+     * allocated TWO arrays on every one of them, for three divisions.
+     *
+     * `out` is where the answer goes. It defaults to a scratch owned by the
+     * scene, which is right for every caller that reads the result
+     * immediately; the one caller that HOLDS it across other work - the
+     * composite in Game.draw, which takes it before the reflection and
+     * occlusion passes and reads it in the volumetric one - passes its own,
+     * so a later call cannot move the sun underneath it. */
+    sunDirection(camPos, out) {
       if (!this.sunPos) {
         const inst = (this.man.world || []).find(
           i => i.name === 'Sun' || (i.mats || []).some(
             m => m >= 0 && this.man.materials[m] && this.man.materials[m].name === 'Sun'));
         this.sunPos = inst ? [inst.m[12], inst.m[13], inst.m[14]] : [0, 6745, 48408];
       }
-      const d = [this.sunPos[0] - camPos[0], this.sunPos[1] - camPos[1], this.sunPos[2] - camPos[2]];
-      const l = Math.hypot(d[0], d[1], d[2]) || 1;
-      return [d[0] / l, d[1] / l, d[2] / l];
+      const o = out || this._sunDir || (this._sunDir = new Float32Array(3));
+      const dx = this.sunPos[0] - camPos[0];
+      const dy = this.sunPos[1] - camPos[1];
+      const dz = this.sunPos[2] - camPos[2];
+      const l = Math.hypot(dx, dy, dz) || 1;
+      o[0] = dx / l; o[1] = dy / l; o[2] = dz / l;
+      return o;
     }
 
     /** Where the cars are, for the contact shadows they press into the road. */
@@ -7042,6 +7275,101 @@
       }
     }
 
+    /* WHICH SIX OF THE WORLD'S LIGHTS THIS FRAME GETS.
+     *
+     * The course carries roughly two thousand street lamps and four hundred
+     * gantries. The shader can afford six, so the question is which six, and
+     * it has to be answered without walking the list.
+     *
+     * The list is sorted by arc length - the emitters produce it in road
+     * order and `sortWorldLights` guarantees it - so the candidates are a
+     * contiguous window around the camera found by binary search. Everything
+     * outside that window is further away than the furthest light's own
+     * range and could not contribute a photon.
+     *
+     * Inside the window they are picked by distance, nearest first, by the
+     * same partial selection the rival lamps use: six slots, no allocation,
+     * and no comparison sort for a podium.
+     *
+     * WHY THIS IS NOT A POP. A light is faded to nothing over the last
+     * forty-five per cent of its own range (see worldLamps), so by the time
+     * one is far enough away to lose its slot it is contributing nothing to
+     * lose. The swap is invisible because the thing being swapped is zero.
+     */
+    setWorldLights(camPos, camS) {
+      const L = this.worldLights;
+      const B = this._lampBuf || (this._lampBuf = {
+        p: new Float32Array(WORLD_LAMPS * 4),
+        c: new Float32Array(WORLD_LAMPS * 4),
+        d: new Float32Array(WORLD_LAMPS * 4),
+        near: new Array(WORLD_LAMPS).fill(null),
+        dist: new Float32Array(WORLD_LAMPS),
+        n: 0,
+      });
+      B.n = 0;
+      if (!L || !L.length || this.worldLampsOn === false) return B;
+
+      /* The window, in arc length. Generous on both sides: the camera sits
+         behind the car and a lamp the car has passed is still lighting the
+         road the camera is looking down. */
+      const s = camS === undefined ? 0 : camS;
+      const REACH = 260;
+      let lo = 0, hi = L.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (L[m].s < s - REACH) lo = m + 1; else hi = m; }
+
+      let have = 0;
+      for (let i = lo; i < L.length; i++) {
+        const e = L[i];
+        if (e.s > s + REACH) break;
+        const dx = e.x - camPos[0], dy = e.y - camPos[1], dz = e.z - camPos[2];
+        /* A LIGHT UNDER THE ROAD IS NOT A LIGHT.
+         *
+         * Chapter 7 races on a deck twenty-six units above the country, and
+         * the base dressing still plants its standards on the ground beneath
+         * it - so the six nearest lights to a car on the expressway are six
+         * street lamps buried under the carriageway it is driving on. They
+         * contribute almost nothing once the downward bias and the incidence
+         * term have had them (a surface cannot be lit by something behind
+         * it), but they would take all six slots and leave the gantry run
+         * overhead with none.
+         *
+         * A lamp head stands twelve to fourteen units above its own road and
+         * the camera rides about two and a half above it, so anything more
+         * than twelve BELOW the camera is under a different road. */
+        if (dy < -12) continue;
+        const d = dx * dx + dy * dy + dz * dz;
+        // past its own range it cannot contribute, so it cannot take a slot
+        if (d > e.range * e.range) continue;
+        let at = have;
+        while (at > 0 && B.dist[at - 1] > d) {
+          if (at < WORLD_LAMPS) { B.near[at] = B.near[at - 1]; B.dist[at] = B.dist[at - 1]; }
+          at--;
+        }
+        if (at < WORLD_LAMPS) { B.near[at] = e; B.dist[at] = d; }
+        if (have < WORLD_LAMPS) have++;
+      }
+
+      for (let k = 0; k < have; k++) {
+        const e = B.near[k], o = k * 4;
+        B.p[o] = e.x; B.p[o + 1] = e.y; B.p[o + 2] = e.z; B.p[o + 3] = e.range;
+        /* The intensity the route asks for. A lamp on the coast road at dusk
+           and a lamp in the midnight city are the same fitting in different
+           air, and the palette already carries that difference for every
+           other light in the scene. */
+        const g = (this.lampGain === undefined ? 1 : this.lampGain)
+                * (this.lampScale === undefined ? 1 : this.lampScale);
+        B.c[o] = e.r * g; B.c[o + 1] = e.g * g; B.c[o + 2] = e.b * g; B.c[o + 3] = e.half;
+        B.d[o] = e.ax; B.d[o + 1] = e.ay; B.d[o + 2] = e.az; B.d[o + 3] = e.down;
+      }
+      B.n = have;
+      return B;
+    }
+
+    /** Road order, so `setWorldLights` can binary search it. */
+    sortWorldLights() {
+      if (this.worldLights) this.worldLights.sort((a, b) => a.s - b.s);
+    }
+
     /** Aim the headlights and taillights from the car's transform. */
     setHeadlights(car, on) {
       const h = this.head;
@@ -7060,24 +7388,28 @@
          x 0.70 and z 3.18 are those meshes' centres too. The pool on the
          road moves with it, because the scene pass and the volumetrics read
          this same point. */
+      /* WRITTEN IN PLACE, NOT REBUILT.
+         Six arrays a frame, for six points that are read straight back out
+         into uniforms - and on a route with the volumetrics on they are read
+         twice, because the march wants the same lamp basis the surface pass
+         used. The head record owns its vectors from construction; this only
+         ever moves the numbers in them. */
       const lx = 0.70, ly = -0.493, lz = 3.18;
-      h.fwd = [sy, 0, cy];
-      h.right = [cy, 0, -sy];
-      h.L = [car.x - cy * lx + sy * lz, car.y + ly, car.z + sy * lx + cy * lz];
-      h.R = [car.x + cy * lx + sy * lz, car.y + ly, car.z - sy * lx + cy * lz];
+      h.fwd[0] = sy; h.fwd[1] = 0; h.fwd[2] = cy;
+      h.right[0] = cy; h.right[1] = 0; h.right[2] = -sy;
+      h.L[0] = car.x - cy * lx + sy * lz; h.L[1] = car.y + ly; h.L[2] = car.z + sy * lx + cy * lz;
+      h.R[0] = car.x + cy * lx + sy * lz; h.R[1] = car.y + ly; h.R[2] = car.z - sy * lx + cy * lz;
       /* One source behind the tail panel. Normally the red of the lamps; on
          reheat the exhaust is by far the brightest thing back there, so it
          turns blue-white and the plume lights the road it is passing over. */
       // ...and the tail lamps, at the height the tail lamp meshes sit at
-      h.tail = [car.x - sy * 2.9, car.y - 0.50, car.z - cy * 2.9];
+      h.tail[0] = car.x - sy * 2.9; h.tail[1] = car.y - 0.50; h.tail[2] = car.z - cy * 2.9;
       const burn = car.boosting ? 1 : 0;
       this.burn = M.damp(this.burn === undefined ? 0 : this.burn, burn, 12, 1 / 60);
       const b = this.burn;
-      h.tailCol = [
-        1.00 * (1 - b) + 0.38 * b,
-        0.10 * (1 - b) + 0.72 * b,
-        0.07 * (1 - b) + 1.00 * b,
-      ];
+      h.tailCol[0] = 1.00 * (1 - b) + 0.38 * b;
+      h.tailCol[1] = 0.10 * (1 - b) + 0.72 * b;
+      h.tailCol[2] = 0.07 * (1 - b) + 1.00 * b;
       h.tailOn = (0.28 + this.brakeLight * 0.95) * (1 - b) + 2.4 * b;
     }
 
@@ -7094,28 +7426,48 @@
       const R = this.rivalLights;
       R.n = 0; R.tailN = 0;
       if (!cars || !cars.length) return;
-      const live = [];
+      /* THE THREE NEAREST, WITHOUT BUILDING A LIST TO FIND THEM.
+       *
+       * This allocated an array, then one wrapper object per car in it, then
+       * sorted the lot - every frame - to answer a question about three
+       * entries. Chapter 4 fields five cars, so that is six allocations and a
+       * comparison sort a frame to pick a podium.
+       *
+       * A partial selection sort over three slots is the same answer: it is
+       * O(3n) against a sort's O(n log n) at these sizes, it allocates
+       * nothing, and it is stable in the only way that matters here - two
+       * cars at exactly the same distance keep the order `cars` gave them. */
+      const near = this._nearCars || (this._nearCars = [null, null, null]);
+      const nearD = this._nearDist || (this._nearDist = [0, 0, 0]);
+      let have = 0;
       for (const c of cars) {
         if (!c) continue;
         const dx = c.x - camPos[0], dz = c.z - camPos[2];
-        live.push({ c, d: dx * dx + dz * dz });
+        const d = dx * dx + dz * dz;
+        let at = have;
+        while (at > 0 && nearD[at - 1] > d) {
+          if (at < 3) { near[at] = near[at - 1]; nearD[at] = nearD[at - 1]; }
+          at--;
+        }
+        if (at < 3) { near[at] = c; nearD[at] = d; }
+        if (have < 3) have++;
       }
-      live.sort((a, b) => a.d - b.d);
       const D = this.head.dip, TOE = this.head.toe;
-      for (let k = 0; k < live.length && k < 3; k++) {
-        const car = live[k].c;
+      for (let k = 0; k < have; k++) {
+        const car = near[k];
         const sy = Math.sin(car.yaw), cy = Math.cos(car.yaw);
         // the same body-space lamp positions the player's car uses
         const lx = 0.83, ly = -0.22, lz = 3.26;
-        const fwd = [sy, 0, cy], right = [cy, 0, -sy];
+        // forward is (sy, 0, cy) and right is (cy, 0, -sy); only the two
+        // components the aim actually uses are named
         for (let side = -1; side <= 1; side += 2) {
           const i = R.n * 3;
           R.lamp[i] = car.x + cy * lx * side + sy * lz;
           R.lamp[i + 1] = (car.y || 0) + ly;
           R.lamp[i + 2] = car.z - sy * lx * side + cy * lz;
-          const ax = fwd[0] + right[0] * TOE * side;
+          const ax = sy + cy * TOE * side;
           const ay = -D;
-          const az = fwd[2] + right[2] * TOE * side;
+          const az = cy + -sy * TOE * side;
           const l = Math.hypot(ax, ay, az) || 1;
           R.aim[i] = ax / l; R.aim[i + 1] = ay / l; R.aim[i + 2] = az / l;
           R.n++;
@@ -7197,7 +7549,20 @@
       if (R.tailN) {
         U.v3v(gl, this.prog.u.uRivalTailP, R.tailP);
         U.v3v(gl, this.prog.u.uRivalTailC, R.tailC);
-        if (this.prog.u.uRivalTailI != null) gl.uniform1fv(this.prog.u.uRivalTailI, R.tailI);
+        U.fa(gl, this.prog.u.uRivalTailI, R.tailI);
+      }
+      /* The world's own lights. Picked here rather than in the frame loop
+         because the probe binds six more times a frame from six more places,
+         and the six nearest a probe face are the six nearest its centre -
+         which is the car, which is what this is passed. */
+      {
+        const B = this.setWorldLights(camPos, this.camS);
+        U.i(gl, this.prog.u.uLampN, B.n);
+        if (B.n) {
+          U.v4a(gl, this.prog.u.uLampP, B.p);
+          U.v4a(gl, this.prog.u.uLampC, B.c);
+          U.v4a(gl, this.prog.u.uLampD, B.d);
+        }
       }
       U.f(gl, this.prog.u.uHeadInner, h.inner);
       U.f(gl, this.prog.u.uHeadOuter, h.outer);
@@ -7478,24 +7843,35 @@
       const hidden = 1.8 / fog;                 // where the fog is ~94%
       const shrink = (d) => Math.min(d, Math.max(d * vs, hidden));
       const GROUND_VIEW = shrink(4200);         // how far the country is drawn
+      const GROUND_VIEW2 = GROUND_VIEW * GROUND_VIEW;
+      /* THE WINDOWS ARE FOUR NUMBERS, not a function call per batch.
+       *
+       * `inRange` runs on every batch in the dressing - several hundred a
+       * frame, and again for each of the probe's faces - and it was calling
+       * `shrink` once or twice inside every one of them to arrive at one of
+       * exactly two answers. There are two kinds of batch, `far` and not, so
+       * there are two back windows and two forward ones; they are computed
+       * here, once, and the per-batch test is then four comparisons. */
+      const BACK_FAR = 3000 * vs, BACK_NEAR = 900 * vs;
+      const FWD_FAR = shrink(9000), FWD_NEAR = shrink(3400);
       const inRange = (p) => {
         if (p.worldCull) {
           // distance from the camera to the batch's own box, in the plane
           const a = p.aabb;
           const dx = Math.max(a[0] - camPos[0], 0, camPos[0] - a[3]);
           const dz = Math.max(a[2] - camPos[2], 0, camPos[2] - a[5]);
-          if (dx * dx + dz * dz >= GROUND_VIEW * GROUND_VIEW) return false;
+          if (dx * dx + dz * dz >= GROUND_VIEW2) return false;
           return this.boxVisible(a);
         }
         if (p.s1 === undefined) return true;
         // behind the camera the fog argument does not apply - nothing is
         // looked at through it - so the back window takes the full cut
-        const back = (p.far ? 3000 : 900) * vs;
+        const back = p.far ? BACK_FAR : BACK_NEAR;
         /* A batch that asked to be culled sooner is culled sooner, and never
            later than the window it would otherwise have had. */
         const fwd = p.fwdLimit
-          ? Math.min(p.fwdLimit, shrink(3400))
-          : shrink(p.far ? 9000 : 3400);
+          ? Math.min(p.fwdLimit, FWD_NEAR)
+          : (p.far ? FWD_FAR : FWD_NEAR);
         if (p.s1 < camS - back || p.s0 > camS + fwd) return false;
         /* ...and then whether it is actually in front of the camera. The arc
            window has to be generous - the chase camera sits behind the car, so
@@ -8852,11 +9228,46 @@
         if (e.cabin && !inside) continue;
         if (bound !== e.mesh) { gl.bindVertexArray(e.mesh.vao); bound = e.mesh; }
         const m = this.viewAt(pose, i);
-        this.sc.drawPart({ mesh: { iOff: 0, vCount: 0, name: e.mesh.name },
-          sub: { start: 0, count: e.mesh.count }, mode: 0,
-          mat: (e.slot === 'btn' && press > 0.5) ? L.btnLit : L[e.slot], m }, m);
+        /* THE SAME FIX THE MATRIX VIEWS ALREADY HAD, on the descriptor.
+         *
+         * The note above `viewAt` is about exactly this loop: seventeen parts
+         * a car, every car on the road, every pass that submits the world.
+         * The views were made permanent and the DESCRIPTOR was not, so each
+         * of those iterations still built three objects - the part, its
+         * `mesh` and its `sub` - purely to hand `drawPart` five fields it
+         * reads and throws away. That is the several hundred short-lived
+         * objects a frame the note set out to remove, minus the typed arrays.
+         *
+         * One descriptor per rig entry, built on first use and then only
+         * written to. Safe because drawPart reads it synchronously and keeps
+         * nothing: the only thing it caches is `mat`, by identity, and the
+         * material objects here are the livery's own and are stable. */
+        const d = this.partOf(i, e);
+        d.mat = (e.slot === 'btn' && press > 0.5) ? L.btnLit : L[e.slot];
+        d.m = m;
+        this.sc.drawPart(d, m);
       }
       gl.bindVertexArray(this.sc.vao);
+    }
+
+    /* ONE DESCRIPTOR PER RIG ENTRY, MADE ONCE.
+     *
+     * `mesh` and `sub` never change for a given entry - they are the whole of
+     * one uploaded buffer - so they are filled here and never touched again.
+     * Only `mat` and `m` move, and `draw` writes those. See the note at the
+     * call site for why this is not a micro-optimisation.
+     */
+    partOf(i, e) {
+      let t = this._partDesc || (this._partDesc = []);
+      let d = t[i];
+      if (!d || d.mesh.name !== e.mesh.name || d.sub.count !== e.mesh.count) {
+        d = t[i] = {
+          mesh: { iOff: 0, vCount: 0, name: e.mesh.name },
+          sub: { start: 0, count: e.mesh.count },
+          mode: 0, mat: null, m: null,
+        };
+      }
+      return d;
     }
 
     /* ONE VIEW PER PART, MADE ONCE.

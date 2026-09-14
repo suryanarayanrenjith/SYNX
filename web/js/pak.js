@@ -42,7 +42,6 @@
     toc: null,
     /** name -> blob: URL, made on demand. */
     _urls: Object.create(null),
-    _blobs: Object.create(null),
     _buf: null,
     loaded: false,
     bytes: 0,
@@ -97,7 +96,6 @@
       if (u) return u;
       const blob = new Blob([new Uint8Array(this._buf, e.o, e.l)], { type: e.t });
       u = URL.createObjectURL(blob);
-      this._blobs[key] = blob;
       this._urls[key] = u;
       return u;
     },
@@ -154,39 +152,10 @@
       return b === null ? null : new TextDecoder().decode(new Uint8Array(b));
     },
 
-    /**
-     * Install the shipped typefaces from the archive.
-     *
-     * The stylesheet cannot ask JavaScript to resolve a path, so an
-     * `@font-face` pointing at a loose file was the one thing keeping two
-     * assets out of the pack. The rule is built here instead, against a blob
-     * URL, and added before the first frame - which is safe because the host
-     * keeps the window hidden until then, and because the faces are declared
-     * `font-display: block` so nothing paints in a fallback first.
-     */
-    installFonts(faces) {
-      if (!this.toc) return false;
-      const parts = [];
-      for (const f of faces) {
-        const u = this.url(f.file);
-        if (u === f.file) continue;                  // not in the archive
-        parts.push('@font-face{font-family:"' + f.family + '";font-style:normal;' +
-          'font-weight:' + f.weight + ';font-display:block;' +
-          'src:url("' + u + '") format("truetype");}');
-      }
-      if (!parts.length) return false;
-      const el = global.document.createElement('style');
-      el.setAttribute('data-synx', 'fonts');
-      el.textContent = parts.join(String.fromCharCode(10));
-      global.document.head.appendChild(el);
-      return true;
-    },
-
     /** Give back every blob URL. Only for teardown; the game never calls it. */
     release() {
       for (const k of Object.keys(this._urls)) URL.revokeObjectURL(this._urls[k]);
       this._urls = Object.create(null);
-      this._blobs = Object.create(null);
     },
   };
 

@@ -40,7 +40,7 @@
   /** The ABI this file was written against. The module refuses to load if the
       .wasm disagrees, which turns "a stale build" from a mystery into a line
       of text. */
-  const WANT_ABI = 16;
+  const WANT_ABI = 17;
 
   let wasm = null;      // the instance's exports
   let buffer = null;    // the ArrayBuffer the current views were made over
@@ -261,13 +261,26 @@
       return out;
     }
 
-    /** Nearest centreline point, searched around `hint`. */
-    project(x, z, hint) {
+    /* Nearest centreline point, searched around `hint`.
+     *
+     * `out` is where the answer goes, the same way `at` takes one: this is
+     * called per car per frame by the chapter collision resolver and again
+     * inside its own hit loop, and a fresh six-field object for each of them
+     * is litter for a struct that is read and dropped on the next line.
+     *
+     * It defaults to a scratch owned by the track, which is right for a
+     * caller that reads the result immediately. A caller that holds one
+     * ACROSS another project - or that projects twice and wants both - passes
+     * its own, and the two then cannot alias however the reads are later
+     * moved about. */
+    project(x, z, hint, out) {
       const p = M().synx_track_project(x, z, hint) >> 3;
-      return {
-        s: F64[p], sExact: F64[p + 1], lateral: F64[p + 2],
-        index: F64[p + 3] | 0, yaw: F64[p + 4], curv: F64[p + 5],
-      };
+      const o = out || this._proj || (this._proj = {
+        s: 0, sExact: 0, lateral: 0, index: 0, yaw: 0, curv: 0,
+      });
+      o.s = F64[p]; o.sExact = F64[p + 1]; o.lateral = F64[p + 2];
+      o.index = F64[p + 3] | 0; o.yaw = F64[p + 4]; o.curv = F64[p + 5];
+      return o;
     }
   }
 
@@ -977,16 +990,6 @@
       return out;
     },
 
-    /** The offset the renderer should still add to the local car. */
-    localOffset(out) {
-      const w = M();
-      out = out || [0, 0, 0];
-      if (!w || !w.synx_net_local_offset) return out;
-      const p = w.synx_net_local_offset() >> 3;
-      out[0] = F64[p]; out[1] = F64[p + 1]; out[2] = F64[p + 2];
-      return out;
-    },
-
     // ------------------------------------------------------ proof of work --
 
     /* One slice of the registration proof of work.
@@ -1168,6 +1171,38 @@
     if (!w || !w.synx_fx_integrate) return -1;
     return w.synx_fx_integrate(dt);
   }
+  /* One frame of every continuous emitter for one car.
+   *
+   * The four rate-driven emitters - tyre smoke, the afterburner, the shower
+   * off a barrier and the grit past the lens - run on the core side now; see
+   * the note at the head of crates/synx-core/src/particles.rs for what they
+   * were costing in JavaScript object churn.
+   *
+   * `slot` is the index js/fx.js has assigned this car, and `next` is its own
+   * round-robin spawn cursor, handed over and handed back so the one-off
+   * effects the chapter directors still spawn share the same ring.
+   *
+   * Returns the new cursor, or -1 when there is no core - which is the signal
+   * js/fx.js uses to run its own copy instead. */
+  function fxEmit(slot, next, dt, density, car, surfY, isPlayer) {
+    const w = M();
+    if (!w || !w.synx_fx_emit) return -1;
+    return w.synx_fx_emit(
+      slot, next, dt, density,
+      car.x, car.y === undefined ? 1 : car.y, car.z, car.yaw,
+      car.speed || 0, car.vx || 0, car.vz || 0,
+      car.driftAmount || 0, car.wheelSpinFx || 0,
+      car.raceModeMultiplier || 1,
+      car.scrape || 0, car.lateral || 0, surfY,
+      (car.boosting ? 1 : 0) | (isPlayer ? 2 : 0));
+  }
+
+  /** Forget every emitter accumulator. A new race opens with nothing banked. */
+  function fxEmitReset() {
+    const w = M();
+    if (w && w.synx_fx_emit_reset) w.synx_fx_emit_reset();
+  }
+
   /** Expand to triangles and hand back the vertex data, or null. */
   function fxBuild(right, up, fwd) {
     const w = M();
@@ -1248,6 +1283,8 @@
   NR.fxParticles = fxParticles;
   NR.fxIntegrate = fxIntegrate;
   NR.fxBuild = fxBuild;
+  NR.fxEmit = fxEmit;
+  NR.fxEmitReset = fxEmitReset;
 
   NR.bakeBegin = bakeBegin;
   NR.bakeRun = bakeRun;

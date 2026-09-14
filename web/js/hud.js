@@ -106,6 +106,65 @@
     return 1 - u * u * u * (1 - 1.7 * t);
   };
 
+  /* ------------------------------------------------- THE GLOW, AND FONTS --
+   *
+   * Two things this file does on nearly every call, both of which are far
+   * more expensive than they look, and both of which are now answered once.
+   *
+   * SHADOW BLUR IS A SEPARATE RENDER. Setting `shadowBlur` and then filling
+   * anything makes the 2D context rasterise the shape, blur it in a scratch
+   * surface and composite the result underneath - per call. This file does
+   * that forty-odd times a frame, over a canvas that is the size of the
+   * window times the device pixel ratio, and it is the whole of what the HUD
+   * costs the CPU. It is also exactly what makes the interface look like it
+   * is made of light, so it is not something to simply delete: it is
+   * something to put a control on.
+   *
+   * `GLOW` scales every blur radius in the file. At 0 the assignment is a
+   * literal zero and the context skips the blur path entirely - the interface
+   * is drawn flat, sharp and cheap. At 1 it is what it always was, and above
+   * that the neon opens up for a machine that can afford it. See the HUD GLOW
+   * row in js/settings.js.
+   *
+   * A BLUR RADIUS ALSO HAS TO STAY A RADIUS. It is in device pixels, so it
+   * already scales with the canvas - `gb` only ever applies the player's
+   * multiplier and never touches the layout.
+   */
+  let GLOW = 1;
+  const gb = (px) => px * GLOW;
+
+  /* ASSIGNING `font` PARSES A CSS FONT SHORTHAND. Every `label` call built a
+     fresh string and assigned it, and the HUD draws dozens of labels a frame
+     at a handful of distinct sizes - so the same half-dozen strings were
+     rebuilt and re-parsed a few hundred times a second. The cache lives on
+     the context because there are two of them, the live canvas and the
+     scratch buffer the tinted digits are recoloured in, and they carry
+     independent state. */
+  function setFont(c, str) {
+    if (c.__f === str) return;
+    c.__f = str;
+    c.font = str;
+  }
+
+  /* ...AND THE CACHE HAS TO FORGET, at the two places the context puts the
+     font back without being asked.
+   *
+   * `restore()` pops the whole 2D state, font included, so a cache that
+   * survived one would report a typeface the context no longer has - and the
+   * symptom is the worst kind: the NEXT label, at a size that happens to
+   * match the cached string, silently draws at whatever size was current
+   * before the save. Every primitive in this file sets its font inside a
+   * save/restore pair, so that is every label after the first.
+   *
+   * Resizing the backing store is the other one: assigning `width` or
+   * `height` resets the context to its defaults outright. See `resize` and
+   * the scratch buffer in `digits`.
+   *
+   * Clearing is conservative - the worst it costs is one assignment that was
+   * not strictly needed - and it is the only version of this that cannot be
+   * wrong. */
+  function hRestore(c) { c.restore(); c.__f = ''; }
+
   class Hud {
     constructor(canvas, data) {
       this.canvas = canvas;
@@ -176,7 +235,7 @@
       if (alpha !== undefined) c.globalAlpha = alpha;
       c.drawImage(this.img[s.tex], r[0], r[1], r[2] * f, r[3],
         this.vx(p.x) - w / 2, this.vy(p.y) - h / 2, w * f, h);
-      c.restore();
+      hRestore(c);
       return true;
     }
 
@@ -199,13 +258,14 @@
       if (this.scratch.width < w || this.scratch.height < h) {
         this.scratch.width = Math.max(this.scratch.width, w);
         this.scratch.height = Math.max(this.scratch.height, h);
+        this.sctx.__f = '';
       }
       const sc = this.sctx;if (!sc) return false;
       sc.setTransform(1,0,0,1,0,0);sc.clearRect(0,0,this.scratch.width,this.scratch.height);
       sc.drawImage(this.img[s.tex],r[0],r[1],r[2]*f,r[3],0,0,w,h);
-      sc.save();sc.globalCompositeOperation='source-atop';sc.fillStyle=tint;sc.globalAlpha=.92;sc.fillRect(0,0,w,h);sc.restore();
-      const c=this.ctx;c.save();if(alpha!==undefined)c.globalAlpha=alpha;c.shadowColor=tint;c.shadowBlur=this.vs(11);
-      c.drawImage(this.scratch,0,0,w,h,this.vx(p.x)-this.vs(wgt.w)/2,this.vy(p.y)-h/2,w,h);c.restore();
+      sc.save();sc.globalCompositeOperation='source-atop';sc.fillStyle=tint;sc.globalAlpha=.92;sc.fillRect(0,0,w,h);hRestore(sc);
+      const c=this.ctx;c.save();if(alpha!==undefined)c.globalAlpha=alpha;c.shadowColor=tint;c.shadowBlur = gb(this.vs(11));
+      c.drawImage(this.scratch,0,0,w,h,this.vx(p.x)-this.vs(wgt.w)/2,this.vy(p.y)-h/2,w,h);hRestore(c);
       return true;
     }
 
@@ -220,7 +280,7 @@
       if (alpha !== undefined) c.globalAlpha = alpha;
       c.drawImage(this.img[s.tex], r[0], r[1], r[2], r[3],
         this.vx(cx) - dw / 2, this.vy(cy) - dh / 2, dw, dh);
-      c.restore();
+      hRestore(c);
       return true;
     }
 
@@ -252,6 +312,9 @@
       this.dpr = dpr;
       this.canvas.width = Math.round(w * dpr);
       this.canvas.height = Math.round(h * dpr);
+      // assigning width or height resets the 2D state to its defaults - see
+      // the note on hRestore
+      this.ctx.__f = '';
       this.canvas.style.width = w + 'px';
       this.canvas.style.height = h + 'px';
       this.w = w; this.h = h;
@@ -272,27 +335,33 @@
 
     toast(text, color) { this.toasts.push({ text, color: color || CYAN, t: 0 }); }
 
+    /* How far the interface glows, from the HUD GLOW row. 0 draws it flat and
+       skips the blur path in the 2D context altogether, which is the single
+       largest thing the HUD costs a CPU; 1 is the shipped look. See the note
+       on `gb` at the top of this file. */
+    setGlow(scale) { GLOW = scale === undefined ? 1 : Math.max(0, scale); }
+
     // -------------------------------------------------------- primitives --
     label(txt, x, y, size, color, align, weight, alpha) {
       const c = this.ctx;
       c.save();
       if (alpha !== undefined) c.globalAlpha = alpha;
-      c.font = (weight || 700) + ' ' + this.vs(size) + 'px "Orbitron", "Segoe UI", system-ui, sans-serif';
+      setFont(c, (weight || 700) + ' ' + this.vs(size) + 'px "Orbitron", "Segoe UI", system-ui, sans-serif');
       c.textAlign = align || 'left';
       c.textBaseline = 'middle';
       c.shadowColor = color;
-      c.shadowBlur = this.vs(size) * 0.5;
+      c.shadowBlur = gb(this.vs(size) * 0.5);
       c.fillStyle = color;
       c.fillText(txt, this.vx(x), this.vy(y));
-      c.restore();
+      hRestore(c);
     }
 
     measure(txt, size) {
       const c = this.ctx;
       c.save();
-      c.font = '700 ' + this.vs(size) + 'px "Orbitron", system-ui, sans-serif';
+      setFont(c, '700 ' + this.vs(size) + 'px "Orbitron", system-ui, sans-serif');
       const w = c.measureText(txt).width;
-      c.restore();
+      hRestore(c);
       return w / this.k;
     }
 
@@ -307,25 +376,7 @@
       const c = this.ctx;
       if (alpha !== undefined) { c.save(); c.globalAlpha = alpha; }
       c.drawImage(im, r[0], r[1], r[2], r[3], this.vx(cx) - w / 2, this.vy(cy) - h / 2, w, h);
-      if (alpha !== undefined) c.restore();
-      return true;
-    }
-
-    /** Clip a sprite horizontally to `frac` of its width, from the left. */
-    spriteClipped(name, cx, cy, scale, frac, alpha) {
-      const s = this.sprites[name];
-      if (!s || !s.tex || !this.img[s.tex]) return false;
-      const r = s.r;
-      const k = (scale === undefined ? 1 : scale) * this.k;
-      const w = r[2] * k, h = r[3] * k;
-      const f = Math.max(0, Math.min(1, frac));
-      if (f <= 0) return true;
-      const c = this.ctx;
-      c.save();
-      if (alpha !== undefined) c.globalAlpha = alpha;
-      c.drawImage(this.img[s.tex], r[0], r[1], r[2] * f, r[3],
-        this.vx(cx) - w / 2, this.vy(cy) - h / 2, w * f, h);
-      c.restore();
+      if (alpha !== undefined) hRestore(c);
       return true;
     }
 
@@ -360,7 +411,7 @@
         c.save();
         if (alpha !== undefined) c.globalAlpha = alpha;
         this.glyphRun(c, im, g, txt, pen, top, scale);
-        c.restore();
+        hRestore(c);
         return;
       }
 
@@ -375,6 +426,7 @@
       if (this.scratch.width < bw || this.scratch.height < bh) {
         this.scratch.width = bw;
         this.scratch.height = bh;
+        this.sctx.__f = '';
       }
       const sc = this.sctx;
       if (!sc) return;
@@ -386,16 +438,16 @@
       sc.fillStyle = tint;
       sc.globalAlpha = 0.85;
       sc.fillRect(0, 0, this.scratch.width, this.scratch.height);
-      sc.restore();
+      hRestore(sc);
 
       const c = this.ctx;
       c.save();
       if (alpha !== undefined) c.globalAlpha = alpha;
       c.shadowColor = tint;
-      c.shadowBlur = this.vs(size) * 0.35;
+      c.shadowBlur = gb(this.vs(size) * 0.35);
       c.drawImage(this.scratch, 0, 0, bw, bh,
         pen - padX, top - padY * 0.5, bw, bh);
-      c.restore();
+      hRestore(c);
     }
 
     /** Blit one run of bitmap glyphs into `c` starting at (pen, top). */
@@ -419,13 +471,13 @@
       const sx = this.vx(x), sy = this.vy(y);
       c.save();
       if (alpha !== undefined) c.globalAlpha = alpha;
-      c.font = '900 ' + px + 'px "Orbitron", system-ui, sans-serif';
+      setFont(c, '900 ' + px + 'px "Orbitron", system-ui, sans-serif');
       c.textAlign = 'center';
       c.textBaseline = 'middle';
 
       // bloom halo underneath
       c.shadowColor = glow || PINK;
-      c.shadowBlur = px * 0.7;
+      c.shadowBlur = gb(px * 0.7);
       c.fillStyle = glow || PINK;
       c.fillText(txt, sx, sy);
       c.fillText(txt, sx, sy);
@@ -449,7 +501,7 @@
         c.fillRect(sx - w / 2 - 4, ly, w + 8, Math.max(1, px * 0.022));
       }
       c.globalCompositeOperation = 'source-over';
-      c.restore();
+      hRestore(c);
     }
 
     /** Text with a wide outer glow and a bright core - a neon tube. */
@@ -458,21 +510,21 @@
       const px = this.vs(size);
       c.save();
       if (alpha !== undefined) c.globalAlpha = alpha;
-      c.font = (weight || 800) + ' ' + px + 'px "Orbitron", system-ui, sans-serif';
+      setFont(c, (weight || 800) + ' ' + px + 'px "Orbitron", system-ui, sans-serif');
       c.textAlign = align || 'center';
       c.textBaseline = 'middle';
       const sx = this.vx(x), sy = this.vy(y);
       c.shadowColor = color;
-      c.shadowBlur = px * 0.85;
+      c.shadowBlur = gb(px * 0.85);
       c.fillStyle = color;
       c.fillText(txt, sx, sy);
-      c.shadowBlur = px * 0.35;
+      c.shadowBlur = gb(px * 0.35);
       c.fillText(txt, sx, sy);
       c.shadowBlur = 0;
       c.fillStyle = '#ffffff';
       c.globalAlpha = (alpha === undefined ? 1 : alpha) * 0.55;
       c.fillText(txt, sx, sy);
-      c.restore();
+      hRestore(c);
     }
 
     /* THE FROSTED BACKDROP.
@@ -520,13 +572,13 @@
         c.globalAlpha = q * 0.55;
         c.drawImage(b, -this.w * 0.004, -this.h * 0.004,
           this.w * 1.008, this.h * 1.008);
-        c.restore();
+        hRestore(c);
         // ...and a colour wash over it, so the blur reads as glass rather than
         // as a mistake, and the type on top of it has a floor to sit on
         c.save();
         c.fillStyle = tint || 'rgba(7,2,22,0.62)';
         c.fillRect(0, 0, this.w, this.h);
-        c.restore();
+        hRestore(c);
         return true;
       } catch (e) {
         // some drivers refuse to hand back a WebGL canvas mid-frame; the
@@ -581,12 +633,12 @@
       if (drop > 0.04) {
         c.save();
         c.shadowColor = 'rgba(0,0,0,' + (0.30 + drop * 0.5).toFixed(3) + ')';
-        c.shadowBlur = this.vs(26);
+        c.shadowBlur = gb(this.vs(26));
         c.shadowOffsetY = this.vs(8);
         path();
         c.fillStyle = 'rgba(0,0,0,' + drop.toFixed(3) + ')';
         c.fill();
-        c.restore();
+        hRestore(c);
       }
 
       const g = c.createLinearGradient(0, Y, 0, Y + H);
@@ -612,15 +664,15 @@
       // ...and the highlight along the top face
       c.fillStyle = this._alpha(col, 0.55);
       c.fillRect(X + cut, Y, W - cut, Math.max(1, this.vs(1.2)));
-      c.restore();
+      hRestore(c);
 
       c.strokeStyle = col;
       c.lineWidth = Math.max(1, this.vs(1.6));
       c.shadowColor = col;
-      c.shadowBlur = this.vs(12);
+      c.shadowBlur = gb(this.vs(12));
       path();
       c.stroke();
-      c.restore();
+      hRestore(c);
     }
 
     /** A hex or rgb(a) colour at a given alpha. */
@@ -661,14 +713,14 @@
       c.strokeStyle = color || CYAN;
       c.lineWidth = Math.max(1, this.vs(2.2));
       c.shadowColor = color || CYAN;
-      c.shadowBlur = this.vs(8);
+      c.shadowBlur = gb(this.vs(8));
       c.beginPath();
       c.moveTo(X, Y + L); c.lineTo(X, Y); c.lineTo(X + L, Y);
       c.moveTo(X + W - L, Y); c.lineTo(X + W, Y); c.lineTo(X + W, Y + L);
       c.moveTo(X + W, Y + H - L); c.lineTo(X + W, Y + H); c.lineTo(X + W - L, Y + H);
       c.moveTo(X + L, Y + H); c.lineTo(X, Y + H); c.lineTo(X, Y + H - L);
       c.stroke();
-      c.restore();
+      hRestore(c);
     }
 
     /* The DRIVETRAIN readout.
@@ -771,15 +823,15 @@
       c.strokeStyle = col;
       c.lineWidth = Math.max(1, this.vs(1.6));
       c.shadowColor = col;
-      c.shadowBlur = this.vs(7);
+      c.shadowBlur = gb(this.vs(7));
       c.stroke();
       // a second, brighter pass down the middle gives the trace a filament
       c.globalAlpha = 0.55;
       c.strokeStyle = '#ffffff';
       c.lineWidth = Math.max(1, this.vs(0.7));
-      c.shadowBlur = this.vs(3);
+      c.shadowBlur = gb(this.vs(3));
       c.stroke();
-      c.restore();          // the scope cell's clip
+      hRestore(c);          // the scope cell's clip
 
       /* The gear cell: its own ground, so the numeral is read against a flat
          surface rather than against the waveform. */
@@ -793,16 +845,16 @@
       c.moveTo(X + SW, Y + this.vs(3));
       c.lineTo(X + SW, Y + H - this.vs(3));
       c.stroke();
-      c.restore();          // the panel's clip
+      hRestore(c);          // the panel's clip
 
       // frame and label
       c.globalAlpha = 1;
       c.strokeStyle = 'rgba(57,230,255,0.55)';
       c.lineWidth = Math.max(1, this.vs(1.3));
       c.shadowColor = col;
-      c.shadowBlur = this.vs(8);
+      c.shadowBlur = gb(this.vs(8));
       c.stroke();
-      c.restore();
+      hRestore(c);
       this.label('DRIVETRAIN', x - w / 2 + 9, y + h / 2 - 11, 11,
         'rgba(160,220,255,0.75)', 'left', 700);
 
@@ -827,13 +879,13 @@
       c.fillRect(this.vx(bx), this.vy(by), this.vs(bw), this.vs(bh));
       c.fillStyle = rev > 0.90 ? '#ff2e88' : (rev > 0.78 ? AMBER : CYAN);
       c.shadowColor = c.fillStyle;
-      c.shadowBlur = this.vs(6);
+      c.shadowBlur = gb(this.vs(6));
       c.fillRect(this.vx(bx), this.vy(by), this.vs(bw) * rev, this.vs(bh));
       // the upshift point, so the bar means something
       c.shadowBlur = 0;
       c.fillStyle = 'rgba(255,255,255,0.5)';
       c.fillRect(this.vx(bx + bw * 0.90), this.vy(by - 2), Math.max(1, this.vs(1.4)), this.vs(bh + 4));
-      c.restore();
+      hRestore(c);
     }
 
     /** A neon rule with a diamond at each end. */
@@ -844,7 +896,7 @@
       c.strokeStyle = color || CYAN;
       c.lineWidth = Math.max(1, this.vs(2));
       c.shadowColor = color || CYAN;
-      c.shadowBlur = this.vs(12);
+      c.shadowBlur = gb(this.vs(12));
       c.beginPath();
       c.moveTo(this.vx(x - w / 2), this.vy(y));
       c.lineTo(this.vx(x + w / 2), this.vy(y));
@@ -859,7 +911,7 @@
         c.lineTo(this.vx(sx) - d, this.vy(y));
         c.fill();
       }
-      c.restore();
+      hRestore(c);
     }
 
     /** The perspective grid the whole genre is built on. */
@@ -870,7 +922,7 @@
       c.strokeStyle = VIOLET;
       c.lineWidth = Math.max(1, this.vs(1.2));
       c.shadowColor = VIOLET;
-      c.shadowBlur = this.vs(6);
+      c.shadowBlur = gb(this.vs(6));
       const hy = this.vy(yHorizon);
       const bottom = this.h;
       // verticals converging on the vanishing point
@@ -891,7 +943,7 @@
         c.lineTo(this.w, ly);
         c.stroke();
       }
-      c.restore();
+      hRestore(c);
     }
 
     /** A scanline sweeping down the screen, as if a CRT were refreshing. */
@@ -907,25 +959,25 @@
       c.save();
       c.fillStyle = grad;
       c.fillRect(0, y - this.vs(70), this.w, this.vs(90));
-      c.restore();
+      hRestore(c);
     }
 
     /** Key cap, for the controls card. */
     keycap(txt, x, y, size) {
       const c = this.ctx;
       c.save();
-      c.font = '700 ' + this.vs(size * 0.62) + 'px "Orbitron", system-ui, sans-serif';
+      setFont(c, '700 ' + this.vs(size * 0.62) + 'px "Orbitron", system-ui, sans-serif');
       const w = c.measureText(txt).width / this.k + size * 0.85;
       const h = size * 1.15;
       this.panel(x + w / 2, y, w, h, CYAN, 0.35);
-      c.font = '700 ' + this.vs(size * 0.62) + 'px "Orbitron", system-ui, sans-serif';
+      setFont(c, '700 ' + this.vs(size * 0.62) + 'px "Orbitron", system-ui, sans-serif');
       c.textAlign = 'center';
       c.textBaseline = 'middle';
       c.fillStyle = WHITE;
       c.shadowColor = CYAN;
-      c.shadowBlur = this.vs(6);
+      c.shadowBlur = gb(this.vs(6));
       c.fillText(txt, this.vx(x + w / 2), this.vy(y));
-      c.restore();
+      hRestore(c);
       return w;
     }
 
@@ -959,7 +1011,7 @@
       rad.addColorStop(1, 'rgba(2,0,10,' + (0.55 * k) + ')');
       c.fillStyle = rad;
       c.fillRect(0, 0, this.w, this.h);
-      c.restore();
+      hRestore(c);
     }
 
     scrim(a) {
@@ -967,7 +1019,7 @@
       c.save();
       c.fillStyle = 'rgba(6,0,18,' + a + ')';
       c.fillRect(0, 0, this.w, this.h);
-      c.restore();
+      hRestore(c);
     }
 
     // ------------------------------------------------------------- draw --
@@ -1139,7 +1191,7 @@
          else in this file draws in. The instruments are along the bottom and
          down the right; the story cards come in from the middle. */
       c.fillRect(this.vx(-628), this.vy(344), this.vs(150), this.vs(46));
-      c.restore();
+      hRestore(c);
       this.label(now + ' FPS', -620, 330, 20, hue(now), 'left', 900);
       this.label('MIN ' + low, -620, 310, 13, hue(low), 'left', 700, 0.85);
     }
@@ -1149,7 +1201,7 @@
       c.save();
       c.fillStyle = '#05010f';
       c.fillRect(0, 0, this.w, this.h);
-      c.restore();
+      hRestore(c);
       this.chrome('SYNX', 0, 78, 62, PINK);
       this.neon('S Y N T H W A V E   e X T R E M E   R A C I N G', 0, 22, 18, CYAN, 'center', 900);
       this.label('LOADING', 0, -40, 18, CYAN, 'center', 700,
@@ -1162,10 +1214,10 @@
       c2.strokeRect(this.vx(-pw / 2), this.vy(-90), this.vs(pw), this.vs(10));
       c2.fillStyle = PINK;
       c2.shadowColor = PINK;
-      c2.shadowBlur = this.vs(12);
+      c2.shadowBlur = gb(this.vs(12));
       c2.fillRect(this.vx(-pw / 2) + 1, this.vy(-90) + 1,
         (this.vs(pw) - 2) * (g.loadProgress || 0), this.vs(10) - 2);
-      c2.restore();
+      hRestore(c2);
       this.digits(Math.round((g.loadProgress || 0) * 100) + '%', 0, -130, 26, 'center');
     }
 
@@ -1265,7 +1317,7 @@
       const frameH = Math.min(690, this.vh - 30);
       this.brackets(0, 0, frameW, frameH, 'rgba(139,92,246,0.55)', 34, 0.8);
       this.sweep(g, 1);
-      if (reveal < 1) c.restore();
+      if (reveal < 1) hRestore(c);
     }
 
     // ------------------------------------------------------------ HUD ----
@@ -1375,10 +1427,10 @@
           const c=this.ctx,n=18,fullW=this.vs(bw.w*.88),barH=this.vs(Math.max(8,bw.h*.34));
           const left=this.vx(bp.x)-fullW*.5,top=this.vy(bp.y)-barH*.5,gap=this.vs(2.4),seg=(fullW-gap*(n-1))/n;
           c.save();c.fillStyle='rgba(2,27,55,.94)';c.fillRect(left,top,fullW,barH);
-          c.shadowColor='#00aaff';c.shadowBlur=this.vs(12);
+          c.shadowColor='#00aaff';c.shadowBlur = gb(this.vs(12));
           const live=Math.ceil(Math.max(0,Math.min(1,car.boost))*n);
           for(let i=0;i<n;i++){c.fillStyle=i<live?(i>n*.72?'#6eeaff':'#078cff'):'rgba(18,74,112,.52)';c.fillRect(left+i*(seg+gap),top,seg,barH);}
-          c.restore();
+          hRestore(c);
           this.brackets(bp.x, bp.y, bw.w + 34, bw.h + 24, '#38bfff', 16, .88);
           this.label('BLUE RESERVE', bp.x, bp.y + bw.h * .5 + 16, 10,
             '#75e8ff', 'center', 800, .92);
@@ -1451,10 +1503,10 @@
         c.fillRect(this.vx(bx), this.vy(by), this.vs(bw), this.vs(3));
         const f = Math.max(-1, Math.min(1, (g.rivalGap || 0) / 200));
         const mid = bx + bw * 0.5;
-        c.fillStyle = col; c.shadowColor = col; c.shadowBlur = this.vs(7);
+        c.fillStyle = col; c.shadowColor = col; c.shadowBlur = gb(this.vs(7));
         c.fillRect(this.vx(mid + f * bw * 0.5) - this.vs(2), this.vy(by + 4),
           this.vs(4), this.vs(11));
-        c.restore();
+        hRestore(c);
       }
 
       /* raceMode, WHEREVER IT IS SPENT.
@@ -1594,7 +1646,7 @@
         c.fillRect(this.vx(-w / 2), this.vy(y), this.vs(w), this.vs(3));
         c.fillStyle = CYAN;
         c.shadowColor = CYAN;
-        c.shadowBlur = this.vs(8);
+        c.shadowBlur = gb(this.vs(8));
         c.fillRect(this.vx(-w / 2), this.vy(y), this.vs(w) * f, this.vs(3));
         /* Checkpoint ticks - or, on a Free Roam tour, the six handovers
            between the seven regions. Fifths of a hundred and twenty-seven
@@ -1624,7 +1676,7 @@
         c.lineTo(mx, my + this.vs(7));
         c.lineTo(mx - this.vs(6), my);
         c.fill();
-        c.restore();
+        hRestore(c);
         const left = Math.max(0, (g.finishAt - g.distance)) * 0.733 / 1000;
         this.label(left.toFixed(2) + ' KM TO GO', w / 2, y - 18, 13,
           INK.mute, 'right', 600);
@@ -1674,7 +1726,7 @@
         c.globalAlpha = a;
         c.fillStyle = PINK;
         c.shadowColor = PINK;
-        c.shadowBlur = this.vs(10);
+        c.shadowBlur = gb(this.vs(10));
         const n = Math.round(car.driftAmount * 7);
         for (let i = 0; i < n; i++) {
           const cx = x + (i - (n - 1) / 2) * 24;
@@ -1685,7 +1737,7 @@
           c.lineTo(this.vx(cx), this.vy(y - 48));
           c.fill();
         }
-        c.restore();
+        hRestore(c);
         // and the bank it is building, which pays out when the slide lands
         if (g.driftBank > 40) {
           this.digits('+' + Math.round(g.driftBank * g.combo), x, y - 78, 22,
@@ -1825,7 +1877,7 @@
       c.strokeStyle = bodyCol + '0.75)';
       c.lineWidth = Math.max(1, S(1.6));
       c.shadowColor = live ? CYAN : 'transparent';
-      c.shadowBlur = S(10);
+      c.shadowBlur = gb(S(10));
       c.stroke();
       c.shadowBlur = 0;
 
@@ -1839,12 +1891,12 @@
         c.fill();
         c.strokeStyle = lit ? on : bodyCol + '0.55)';
         c.lineWidth = Math.max(1, S(1.2));
-        if (lit) { c.shadowColor = on; c.shadowBlur = S(12); }
+        if (lit) { c.shadowColor = on; c.shadowBlur = gb(S(12)); }
         c.stroke();
         c.shadowBlur = 0;
         if (label) {
           c.fillStyle = lit ? '#1a0d00' : bodyCol + '0.85)';
-          c.font = '900 ' + S(r * 1.15) + 'px "Orbitron", system-ui, sans-serif';
+          setFont(c, '900 ' + S(r * 1.15) + 'px "Orbitron", system-ui, sans-serif');
           c.textAlign = 'center';
           c.textBaseline = 'middle';
           c.fillText(label, X(x), Y(y) + S(0.5));
@@ -1862,7 +1914,7 @@
         c.fill();
         c.strokeStyle = lit ? on : bodyCol + '0.5)';
         c.lineWidth = Math.max(1, S(1.1));
-        if (lit) { c.shadowColor = on; c.shadowBlur = S(10); }
+        if (lit) { c.shadowColor = on; c.shadowBlur = gb(S(10)); }
         c.stroke();
         c.shadowBlur = 0;
       };
@@ -1891,7 +1943,7 @@
         c.lineWidth = Math.max(1, S(1.3));
         if (pressed || moved) {
           c.shadowColor = pressed ? on : CYAN;
-          c.shadowBlur = S(12);
+          c.shadowBlur = gb(S(12));
         }
         c.stroke();
         c.shadowBlur = 0;
@@ -1913,12 +1965,12 @@
           else c.rect(x0, y0, S(fw), S(h));
           c.fillStyle = 'rgba(255,180,0,0.80)';
           c.shadowColor = on;
-          c.shadowBlur = S(10);
+          c.shadowBlur = gb(S(10));
           c.fill();
-          c.restore();
+          hRestore(c);
         }
         c.fillStyle = v > 0.5 ? '#1a0d00' : bodyCol + '0.9)';
-        c.font = '900 ' + S(8) + 'px "Orbitron", system-ui, sans-serif';
+        setFont(c, '900 ' + S(8) + 'px "Orbitron", system-ui, sans-serif');
         c.textAlign = 'center';
         c.textBaseline = 'middle';
         c.fillText(lbl, X(x), Y(y));
@@ -1932,7 +1984,7 @@
       box(-84, -52, 32, 9, held(B.LB), 4);
       box(84, -52, 32, 9, held(B.RB), 4);
       c.fillStyle = bodyCol + '0.9)';
-      c.font = '900 ' + S(7) + 'px "Orbitron", system-ui, sans-serif';
+      setFont(c, '900 ' + S(7) + 'px "Orbitron", system-ui, sans-serif');
       c.textAlign = 'center';
       c.textBaseline = 'middle';
       c.fillText('LB', X(-84), Y(-52));
@@ -1963,12 +2015,12 @@
       ring(-18, -14, 5.5, held(B.BACK), '');
       ring(18, -14, 5.5, held(B.START), '');
       c.fillStyle = bodyCol + '0.7)';
-      c.font = '700 ' + S(6) + 'px "Orbitron", system-ui, sans-serif';
+      setFont(c, '700 ' + S(6) + 'px "Orbitron", system-ui, sans-serif');
       c.textAlign = 'center';
       c.fillText('BACK', X(-18), Y(-24));
       c.fillText('START', X(18), Y(-24));
 
-      c.restore();
+      hRestore(c);
 
       // ------------------------------------------------------- the status --
       /* What the game thinks is plugged in, in the words the player needs. The
@@ -1999,9 +2051,9 @@
         c.arc(this.vx(x - 138), this.vy(y) + this.vs(1), this.vs(5), 0, Math.PI * 2);
         c.fillStyle = col;
         c.shadowColor = col;
-        c.shadowBlur = this.vs(12);
+        c.shadowBlur = gb(this.vs(12));
         c.fill();
-        c.restore();
+        hRestore(c);
       };
       if (!info.connected) {
         dot('rgba(150,180,222,0.45)');
@@ -2107,9 +2159,9 @@
             c.save();
             c.fillStyle = AMBER;
             c.shadowColor = AMBER;
-            c.shadowBlur = this.vs(8);
+            c.shadowBlur = gb(this.vs(8));
             c.fillRect(this.vx(cx - TW / 2), this.vy(TY - 17), this.vs(TW), this.vs(2.5));
-            c.restore();
+            hRestore(c);
           }
         }
       }
@@ -2179,7 +2231,7 @@
           c.moveTo(this.vx(gx), this.vy(gy) - this.vs(4));
           c.lineTo(this.vx(LX + ROW_W - 32), this.vy(gy) - this.vs(4));
           c.stroke();
-          c.restore();
+          hRestore(c);
         }
 
         if (sel) {
@@ -2192,9 +2244,9 @@
           c.save();
           c.fillStyle = AMBER;
           c.shadowColor = AMBER;
-          c.shadowBlur = this.vs(10);
+          c.shadowBlur = gb(this.vs(10));
           c.fillRect(this.vx(LX - 19), this.vy(y) - this.vs(13), this.vs(4), this.vs(26));
-          c.restore();
+          hRestore(c);
         }
 
         this.label(r.label, LX + 16, y, 19,
@@ -2253,12 +2305,12 @@
             const bx = 430 + (k - (n - 1) / 2) * 15;
             const lit = k <= cur;
             c.fillStyle = lit ? (sel ? AMBER : CYAN) : INK.faint;
-            if (lit) { c.shadowColor = sel ? AMBER : CYAN; c.shadowBlur = this.vs(6); }
+            if (lit) { c.shadowColor = sel ? AMBER : CYAN; c.shadowBlur = gb(this.vs(6)); }
             else c.shadowBlur = 0;
             c.fillRect(this.vx(bx) - this.vs(4), this.vy(y) - this.vs(7),
               this.vs(8), this.vs(14));
           }
-          c.restore();
+          hRestore(c);
         } else {
           const on = g.settings[r.key] === 1;
           c.save();
@@ -2268,10 +2320,10 @@
           c.strokeRect(this.vx(430) - this.vs(tw / 2), this.vy(y) - this.vs(th / 2),
             this.vs(tw), this.vs(th));
           c.fillStyle = on ? (sel ? AMBER : CYAN) : 'rgba(255,255,255,0.16)';
-          if (on) { c.shadowColor = sel ? AMBER : CYAN; c.shadowBlur = this.vs(8); }
+          if (on) { c.shadowColor = sel ? AMBER : CYAN; c.shadowBlur = gb(this.vs(8)); }
           c.fillRect(this.vx(430) + (on ? this.vs(2) : -this.vs(tw / 2 - 2)) - (on ? 0 : 0),
             this.vy(y) - this.vs(th / 2 - 2), this.vs(tw / 2 - 4), this.vs(th - 4));
-          c.restore();
+          hRestore(c);
         }
       }
 
@@ -2314,7 +2366,7 @@
         c.strokeStyle = 'rgba(57,230,255,0.20)';
         c.lineWidth = Math.max(1, this.vs(1));
         c.strokeRect(this.vx(-500), this.vy(hy) - this.vs(hh / 2), this.vs(1000), this.vs(hh));
-        c.restore();
+        hRestore(c);
         this.wrapLabel(hint || '', 0, hy, 14, INK.body, 900, 2);
       }
 
@@ -2325,9 +2377,9 @@
     textWidth(txt, size, weight) {
       const c = this.ctx;
       c.save();
-      c.font = (weight || 700) + ' ' + this.vs(size) + 'px "Orbitron", system-ui, sans-serif';
+      setFont(c, (weight || 700) + ' ' + this.vs(size) + 'px "Orbitron", system-ui, sans-serif');
       const w = c.measureText(txt).width / this.k;
-      c.restore();
+      hRestore(c);
       return w;
     }
 
@@ -2394,7 +2446,7 @@
           if (kc === '+') { this.label('+', x + 10, y, 22, VIOLET, 'left', 700); x += 34; continue; }
           x += this.keycap(kc, x, y, 30) + 14;
         }
-        this.ctx.restore();
+        hRestore(this.ctx);
       }
       this.label('PRESS SPACE BAR TO CONTINUE   //   CONTROLS TO REBIND',
         0, -168, T.body, AMBER, 'center', 700,
@@ -2413,7 +2465,7 @@
       c.globalAlpha = 1;
       c.fillStyle = 'rgba(0,0,0,' + Math.max(0, k) + ')';
       c.fillRect(0, 0, this.w, this.h);
-      c.restore();
+      hRestore(c);
     }
 
     drawCountdown(g) {
@@ -2426,11 +2478,11 @@
         c.strokeStyle = 'rgba(84,255,75,' + (1 - t) + ')';
         c.lineWidth = Math.max(1, this.vs(6 * (1 - t)));
         c.shadowColor = '#54ff4b';
-        c.shadowBlur = this.vs(24);
+        c.shadowBlur = gb(this.vs(24));
         c.beginPath();
         c.arc(this.vx(0), this.vy(83), this.vs(60 + t * 320), 0, Math.PI * 2);
         c.stroke();
-        c.restore();
+        hRestore(c);
         this.neon('GO!', 0, 83, 140, '#54ff4b', 'center', 900, 1 - t * 0.6);
         return;
       }
@@ -2453,19 +2505,19 @@
       glow.addColorStop(1, 'rgba(2,0,10,0)');
       c.fillStyle = glow;
       c.fillRect(0, 0, this.w, this.h);
-      c.restore();
+      hRestore(c);
       // a ring closing in behind the shipped countdown sprite
       c.save();
       c.globalAlpha = 0.9;
       c.strokeStyle = CYAN;
       c.lineWidth = Math.max(1, this.vs(3));
       c.shadowColor = CYAN;
-      c.shadowBlur = this.vs(16);
+      c.shadowBlur = gb(this.vs(16));
       c.beginPath();
       c.arc(this.vx(0), this.vy(83), this.vs(150 - frac * 40), -Math.PI / 2,
         -Math.PI / 2 + Math.PI * 2 * frac);
       c.stroke();
-      c.restore();
+      hRestore(c);
       if (!this.sprite('countdown_' + n, 0, 83, scale, alpha)) {
         this.neon(String(n), 0, 83, 168, '#54ff4b', 'center', 900, alpha);
       }
@@ -2676,14 +2728,14 @@
         g.addColorStop(1, col);
         c.fillStyle = g;
         c.shadowColor = col;
-        c.shadowBlur = this.vs(10);
+        c.shadowBlur = gb(this.vs(10));
         c.fillRect(X, Y - H / 2, W * q, H);
         // the head of the fill, brighter, so the eye finds where it is
         c.fillStyle = '#ffffff';
         c.fillRect(X + W * q - this.vs(1.5), Y - H / 2 - this.vs(1.5),
           this.vs(3), H + this.vs(3));
       }
-      c.restore();
+      hRestore(c);
     }
 
     /* The finish card.

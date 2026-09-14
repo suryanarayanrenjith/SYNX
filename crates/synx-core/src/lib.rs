@@ -110,9 +110,17 @@ pub unsafe extern "C" fn synx_free(ptr: *mut u8) {
 ///      arc length. The standings card reads it; a stale wasm does not
 ///      export it at all, and the card silently falls back to the lobby
 ///      message, which is the frozen data this export exists to replace.
+/// v17: `synx_fx_emit` runs the four continuous particle emitters - tyre
+///      smoke, the afterburner, the barrier shower and the grit that streams
+///      past the lens - which were the last per-frame JavaScript in the
+///      effects system. The bridge keeps its own copy for a build with no
+///      core, so a stale wasm would still throw smoke; what it would not do
+///      is share the spawn cursor, and the two would then take turns
+///      overwriting each other's newest particles. Bumped rather than
+///      feature-sniffed for exactly that reason.
 #[no_mangle]
 pub extern "C" fn synx_abi_version() -> u32 {
-    16
+    17
 }
 
 // ------------------------------------------------------------------ world ---
@@ -149,13 +157,22 @@ static mut WORLD: Option<World> = None;
 /// the one JavaScript thread, so there is no aliasing to guard against. This
 /// is wrapped rather than written out at each use so the assumption is stated
 /// in exactly one place.
-#[allow(static_mut_refs)]
+///
+/// Reached through `addr_of_mut!` rather than by naming the static, which is
+/// what every other accessor in abi.rs already does. Naming it - `WORLD.is_none()`,
+/// `WORLD.as_mut()` - creates an intermediate reference to a `static mut`, and
+/// two of those alive at once is undefined behaviour even on a single thread.
+/// The lint that says so is `static_mut_refs`, and silencing it with an
+/// `allow` left this as the one place in the crate that still did it. Taking
+/// the raw pointer first means there is never more than the one reference the
+/// function hands back.
 pub(crate) fn world() -> &'static mut World {
     unsafe {
-        if WORLD.is_none() {
-            WORLD = Some(World { scratch: vec![0.0; 128], ..Default::default() });
+        let w = &mut *core::ptr::addr_of_mut!(WORLD);
+        if w.is_none() {
+            *w = Some(World { scratch: vec![0.0; 128], ..Default::default() });
         }
-        WORLD.as_mut().unwrap()
+        w.as_mut().unwrap()
     }
 }
 

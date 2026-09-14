@@ -169,12 +169,6 @@
       global.setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 520);
     }
 
-    /** What the card says it is doing, while it is doing it. */
-    bootSay(text) {
-      const el = doc.getElementById('bootLine');
-      if (el) el.textContent = text;
-    }
-
     /* The settings blob, whatever shape it is in.
        The desktop host stores real JSON; the browser fallback and older saves
        store a JSON document inside a JSON string. Both have to load. */

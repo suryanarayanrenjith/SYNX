@@ -156,12 +156,66 @@
     { where: 'launcher', tab: 1, key: 'bloom', label: 'NEON GLOW',
       opts: ['OFF', 'SUBTLE', 'NORMAL', 'HEAVY'], def: 2,
       hint: 'How far light bleeds past what emits it.' },
+    /* THE NEON ROW, as opposed to the bloom row above it.
+       Bloom decides how much of the glow is added back to the frame. This
+       decides how much of it a SATURATED source gets in the first place - the
+       threshold pass weights coloured light above white light, because a
+       magenta tube and a white headlamp at the same brightness are not the
+       same event. Turning it up is the cheapest way to make the game more
+       neon: it is one multiply on a quarter-resolution pass. */
+    { where: 'launcher', tab: 1, key: 'neonBoost', label: 'NEON BOOST',
+      opts: ['OFF', 'LOW', 'NORMAL', 'HIGH', 'EXTREME'], def: 2,
+      hint: 'How much extra glow saturated light gets over white light. This is what separates a neon tube from a headlamp. HIGH and EXTREME also split the widest glow into its colours at the edge, the way a real anamorphic lens does. Costs almost nothing.' },
+    { where: 'launcher', tab: 1, key: 'glowQuality', label: 'GLOW QUALITY',
+      opts: ['FAST', 'STANDARD'], def: 1,
+      hint: 'How the glow pyramid is built. STANDARD is a thirteen-tap filter that is stable when the camera moves. FAST is four taps - about a third of the cost, and the only visible difference is a little more shimmer on thin bright lines.' },
+    { where: 'launcher', tab: 1, key: 'anamorphic', label: 'ANAMORPHIC STREAK',
+      opts: ['OFF', 'SUBTLE', 'NORMAL', 'WIDE'], def: 2,
+      hint: 'How far the widest glow smears sideways, the way a wide-screen lens does on a bright light. Free - it is the same taps at a different spacing.' },
+    { where: 'launcher', tab: 1, key: 'flare', label: 'LENS FLARE',
+      opts: ['OFF', 'SUBTLE', 'NORMAL', 'HEAVY'], def: 2,
+      hint: 'Ghosts mirrored through the centre of the frame and a halo round the sun. Only ever visible with the sun in shot.' },
+    /* The street lamps and the gantry neon, as LIGHTS rather than as bright
+       shapes. This is the row that decides whether the road is lit by the
+       things standing over it or only by the car's own headlights - see
+       worldLamps in the scene shader. Six local sources evaluated per pixel,
+       so it is not free, but it is the cheapest lighting in the frame by a
+       wide margin: no shadow map, no extra pass, no extra geometry. */
+    { where: 'launcher', tab: 1, key: 'roadLights', label: 'ROAD LIGHTING',
+      opts: ['OFF', 'SOFT', 'NORMAL', 'BRIGHT'], def: 2,
+      hint: 'Whether the street lamps and the gantry neon actually cast light on the road, or only glow. OFF leaves the carriageway to the headlights, the way it was before; NORMAL puts a pool under every fitting. Six local lights in the surface shader — the cheapest lighting in the game, and the one that does most for how the road reads at night.' },
     { where: 'launcher', tab: 1, key: 'volumetrics', label: 'VOLUMETRIC FOG', opts: ['OFF', 'ON'], def: 1,
       hint: 'Light in the air: headlight beams, god rays, haze with depth in it.' },
     { where: 'launcher', tab: 1, key: 'reflections', label: 'WET REFLECTIONS', opts: ['OFF', 'ON'], def: 1,
       hint: 'Screen-space reflections in the road surface, and the local probe that feeds them.' },
     { where: 'launcher', tab: 1, key: 'motionBlur', label: 'SPEED BLUR', opts: ['OFF', 'ON'], def: 1,
       hint: 'Radial blur that builds with speed.' },
+
+    /* ------------------------------------------------------ WHAT IS DRAWN --
+     *
+     * The rows above decide which PASSES run. These four decide how much
+     * work each of them is given, and they are separated because that is a
+     * different trade: a pass that is switched off is a feature the player
+     * has lost, and a pass given less to do is the same feature costing less.
+     *
+     * Every one of them defaults to exactly what the game shipped with, so a
+     * save file that has never seen these rows renders identically. They are
+     * here for the machine that needs frames and would rather keep the
+     * reflections than have them at all - and, at the top of each ladder, for
+     * the machine that has frames to spare.
+     */
+    { where: 'launcher', tab: 1, group: 'WORKLOAD', key: 'viewDistance', label: 'DRAW DISTANCE',
+      opts: ['SHORT', 'NORMAL', 'LONG'], def: 1,
+      hint: 'How far up the road the scenery and the country are submitted. Geometry, not pixels - so this is the row that helps when a smaller RENDER SCALE did not. Never draws past the fog, so on the hazier routes SHORT costs nothing to look at.' },
+    { where: 'launcher', tab: 1, key: 'reflectionRate', label: 'REFLECTION UPDATE',
+      opts: ['EVERY THIRD FRAME', 'EVERY FRAME'], def: 1,
+      hint: 'How often the local reflection probe is recaptured. EVERY FRAME keeps what the road reflects exactly under the car; EVERY THIRD FRAME draws two of its six faces instead of all six and is about a third of the cost, at the price of the reflections trailing very slightly at speed.' },
+    { where: 'launcher', tab: 1, key: 'shadowDistance', label: 'SHADOW DISTANCE',
+      opts: ['NEAR', 'NORMAL', 'FAR'], def: 1,
+      hint: 'How far the cast shadows reach. NEAR keeps the car and the barrier beside it and drops the far cascade, which is the one that gathers a kilometre of road for shadows a texel wide.' },
+    { where: 'launcher', tab: 1, key: 'particles', label: 'PARTICLE DENSITY',
+      opts: ['LOW', 'NORMAL', 'HIGH'], def: 1,
+      hint: 'How much tyre smoke, exhaust flame, grit and spark the car throws. Every one of them is an additive sprite over the whole lower frame, so this is felt on a weak fill rate more than anywhere else.' },
 
     /* THE IMAGE GROUP. The picture, as opposed to what is in it. Separated
        because none of these three costs anything measurable: they are taste,
@@ -174,6 +228,14 @@
       hint: 'Contrast-adaptive sharpening over the finished frame. It restores the bite a temporal resolve costs, and too much of it rings on the neon.' },
     { where: 'launcher', tab: 1, key: 'grain', label: 'CRT FILTER', opts: ['OFF', 'ON'], def: 1,
       hint: 'Scanlines and film grain over the finished frame.' },
+    /* The one row on this screen that is not about the 3D at all.
+       The instruments are drawn on a 2D canvas, and every glowing thing on
+       them is a blur the context rasterises separately and composites - which
+       is the whole of what the interface costs a CPU. See the note on `gb` in
+       js/hud.js. */
+    { where: 'launcher', tab: 1, key: 'hudGlow', label: 'HUD GLOW',
+      opts: ['OFF', 'LOW', 'NORMAL', 'HIGH'], def: 2,
+      hint: 'How far the instruments glow. Drawn on the processor rather than the graphics card, so OFF is the one graphics row that helps a machine which is short of CPU rather than GPU - the interface is simply sharp and flat instead.' },
 
     // ===================================================== LAUNCHER: audio ==
     { where: 'launcher', tab: 2, group: 'AUDIO', key: 'music', label: 'MUSIC',

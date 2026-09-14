@@ -1596,6 +1596,82 @@ pub extern "C" fn synx_fx_build(
     parts().build([rx, ry, rz], [ux, uy, uz], [fx, fy, fz])
 }
 
+/// The per-car emitter state, one slot per car on the road.
+///
+/// Kept here rather than handed back and forth because it is exactly the state
+/// that must SURVIVE a frame: the fractional accumulators are what stop an
+/// eighteen-a-second emitter rounding to nothing at 144fps, and the generator
+/// is what stops every car scattering its grit identically.
+///
+/// Indexed by the slot JavaScript assigns each car - the same index it uses
+/// for the ribbon set - so a car that leaves the road takes its accumulators
+/// with it rather than inheriting another car's plume.
+static mut EMITTERS: Option<Vec<crate::particles::Emitter>> = None;
+
+fn emitter(slot: usize) -> &'static mut crate::particles::Emitter {
+    unsafe {
+        let e = &mut *core::ptr::addr_of_mut!(EMITTERS);
+        if e.is_none() {
+            *e = Some(Vec::new());
+        }
+        let v = e.as_mut().unwrap();
+        while v.len() <= slot {
+            // a distinct, non-zero seed per slot: xorshift is dead at zero,
+            // and two cars sharing a seed would throw the same sparks
+            let n = v.len() as u32;
+            v.push(crate::particles::Emitter::new(n.wrapping_mul(2_654_435_761).wrapping_add(1)));
+        }
+        &mut v[slot]
+    }
+}
+
+/// One frame of every continuous emitter for one car.
+///
+/// This replaces the four rate-driven emitters that were the last per-frame
+/// JavaScript in the particle system - see the note at the head of
+/// `particles.rs` for what they were costing and what is deliberately not
+/// identical about them now.
+///
+/// `next` is JavaScript's own round-robin spawn cursor, passed in and handed
+/// back, so the one-off effects the chapter directors still spawn through
+/// `Fx.spawn` share the same ring as these and neither can trample the other.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn synx_fx_emit(
+    slot: u32,
+    next: u32,
+    dt: f32,
+    density: f32,
+    x: f32, y: f32, z: f32, yaw: f32,
+    speed: f32, vx: f32, vz: f32,
+    drift: f32, spin_fx: f32,
+    race_mode: f32, scrape: f32, lateral: f32, surf_y: f32,
+    flags: u32,
+) -> u32 {
+    let c = crate::particles::CarFx {
+        x, y, z, yaw, speed, vx, vz, drift, spin_fx, race_mode, scrape, lateral, surf_y,
+        // bit 0: the boost is lit. bit 1: this is the car the camera follows,
+        // which is the only one that makes the grit stream past the lens.
+        boosting: (flags & 1) != 0,
+        is_player: (flags & 2) != 0,
+    };
+    let e = emitter(slot as usize);
+    let p = parts();
+    p.emit(e, &c, dt, density, next as usize) as u32
+}
+
+/// Drop every accumulator and re-seed. A new race must not open with half a
+/// puff of smoke banked from the last one.
+#[no_mangle]
+pub extern "C" fn synx_fx_emit_reset() {
+    unsafe {
+        let e = &mut *core::ptr::addr_of_mut!(EMITTERS);
+        if let Some(v) = e.as_mut() {
+            v.clear();
+        }
+    }
+}
+
 // ---------------------------------------------------------------- driver --
 //
 // The figure in the seat, posed. See `driver` for why seventeen small

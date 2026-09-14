@@ -115,15 +115,40 @@
        the chroma back and a little past it, which is the genre. */
     saturation: 1.34,
     contrast: 1.06,
-    bloomThreshold: 1.30,
+    /* WHERE BLOOM STARTS. Raised, and it is the single biggest lever on the
+       "lights are all over the place" reading: at 1.30 a great deal of the
+       frame that is merely BRIGHT was over the line and bleeding - the lit
+       tarmac, the barrier steel catching the edge line, the fog itself - so
+       the glow was not coming off the neon, it was coming off everything, and
+       nothing could stand out from it because it was the whole picture. At
+       1.55 the sources that bloom are the ones that are actually emitting. */
+    bloomThreshold: 1.55,
     bloomKnee: 0.60,
     bloomRadius: 1.0,
-    bloomAmount: 0.155,
-    anamorphic: 2.6,       // sideways stretch on the widest bloom levels
+    // ...and how much of the pyramid comes back. Trimmed with the threshold
+    // rather than instead of it: a high threshold and a heavy add is a frame
+    // with a few very hot halos in it, which is a different kind of wrong.
+    bloomAmount: 0.125,
+    /* Sideways stretch on the widest bloom levels. 2.6 smeared every bright
+       thing into a horizontal band, and with a hundred metres of edge line in
+       shot that band was the whole horizon - the streaks stopped reading as a
+       lens and started reading as a fog of light with the road in it. */
+    anamorphic: 1.85,
     fogDensity: 1 / 4200,   // aerial perspective: 1 / the range where it bites
     volDensity: 0.00016,    // volumetric march: scattering per unit length
     godrayAmount: 0.16,
     flareAmount: 0.055,
+    /* How much more glow a fully saturated source gets than a white one, in
+       the threshold pass, and the number that decides how NEON the game looks.
+       The NEON BOOST row scales around it.
+     *
+       2.1 was too much for a route whose barriers, chevrons and turn signs are
+       already saturated at source: every one of them was tripled on the way
+       into the pyramid, and what came back was a magenta wash across the sky
+       with the scene somewhere behind it. 1.15 keeps the neon reading as neon
+       and lets the road be a road. Anyone who wants the old picture has it on
+       HIGH, which is 2.1 exactly. */
+    neon: 1.40,
     aoRadius: 4.2,          // world units: a contact cue, not a global one
     aoAmount: 0.95,
   };
@@ -940,6 +965,11 @@
       units = new Map();
       depthW = depthF = cull = front = blendS = blendD = undefined;
       vpx = vpy = vpw = vph = undefined;
+      /* ...and the uniforms, which are cached the same way and for the same
+         reason - see the filter in js/gl.js. A lost context zeroes every one
+         of them, so a cache that survived it would suppress exactly the
+         writes that put the frame back. */
+      U.forget();
     };
     forget();
     if (gl.canvas && gl.canvas.addEventListener) {
@@ -1890,6 +1920,7 @@
   uniform float uThreshold;
   uniform float uKnee;
   uniform float uSsrAmt;
+  uniform float uNeon;       // how much extra glow saturated light gets
   void main() {
     vec3 c = texture(uTex, vUv).rgb + texture(uSsr, vUv).rgb * uSsrAmt;
     /* THE BACKSTOP, and the reason it is HERE of all places.
@@ -1915,11 +1946,21 @@
     soft = soft * soft / (4.0 * uKnee + 1e-4);
     float w = max(soft, l - uThreshold) / max(l, 1e-4);
     c *= w;
-    // saturated light is neon and gets a much wider glow than white highlights
+    /* SATURATED LIGHT IS NEON, and gets a much wider glow than a white
+       highlight does. This is the term that makes the difference: a magenta
+       tube and a headlamp can sit at the same luminance and are not the same
+       event, and weighting by how far the source is from grey is what says
+       so. Squared, so the weighting falls away quickly - a slightly tinted
+       white is still a white.
+
+       The multiplier was 2.1 and is now the player's, because it is the one
+       number in the whole chain that decides how neon the game looks and it
+       costs a single multiply on a quarter-resolution pass to move. NORMAL is
+       2.1, which is what the game shipped with. */
     float mx = max(c.r, max(c.g, c.b));
     float mn = min(c.r, min(c.g, c.b));
     float sat = (mx - mn) / max(mx, 1e-4);
-    c *= 1.0 + sat * sat * 2.1;
+    c *= 1.0 + sat * sat * uNeon;
     // Karis average: keeps one very bright pixel from flickering the bloom
     c /= (1.0 + dot(c, vec3(0.2126, 0.7152, 0.0722)) * 0.18);
     outColor = vec4(c, 1.0);
@@ -1958,6 +1999,7 @@
   uniform sampler2D uTex;
   uniform float uRadius;
   uniform float uStretch;    // >1 smears sideways for an anamorphic streak
+  uniform float uDisperse;   // >0 splits the widest levels into their colours
   void main() {
     vec2 t = (1.0 / vec2(textureSize(uTex, 0))) * uRadius * vec2(uStretch, 1.0);
     vec3 o = texture(uTex, vUv).rgb * 4.0;
@@ -1965,7 +2007,59 @@
     o += (texture(uTex, vUv + vec2(0.0, -t.y)).rgb + texture(uTex, vUv + vec2(0.0, t.y)).rgb) * 2.0;
     o += texture(uTex, vUv + vec2(-t.x, -t.y)).rgb + texture(uTex, vUv + vec2(t.x, -t.y)).rgb;
     o += texture(uTex, vUv + vec2(-t.x,  t.y)).rgb + texture(uTex, vUv + vec2(t.x,  t.y)).rgb;
-    outColor = vec4(o * (1.0 / 16.0), 1.0);
+    o *= (1.0 / 16.0);
+    /* THE EDGE OF A GLOW IS NOT ONE COLOUR.
+     *
+     * A real lens does not focus every wavelength at the same radius, so the
+     * outside of a bright halo runs warm on one side and cold on the other -
+     * and an anamorphic lens, which is what the stretch above is imitating,
+     * does it hard enough to be part of the look rather than a defect. Two
+     * extra taps on the two widest levels, where the glow is already soft
+     * enough that nothing else is resolvable, give the neon a fringe instead
+     * of a flat coloured smear.
+     *
+     * Red is pulled outward along the streak and blue inward, which is the
+     * direction the dispersion actually runs; green stays where the tent
+     * filter put it, so the total energy and the hue of the CORE are both
+     * unchanged and only the skirt separates. Gated to nothing at uDisperse
+     * 0, which is where NEON BOOST leaves it below HIGH. */
+    if (uDisperse > 0.001) {
+      vec2 d = vec2(t.x, 0.0) * (1.6 + uDisperse * 2.4);
+      float r = texture(uTex, vUv + d).r;
+      float b = texture(uTex, vUv - d).b;
+      o.r = mix(o.r, max(o.r, r), uDisperse);
+      o.b = mix(o.b, max(o.b, b), uDisperse);
+    }
+    outColor = vec4(o, 1.0);
+  }`;
+
+  /* THE CHEAP HALF OF THE PYRAMID.
+   *
+   * The thirteen-tap filter above is the right one when the camera is moving
+   * - its overlapping taps are what stop a one-pixel bright line flickering
+   * between mip levels - and it is thirteen dependent texture reads on every
+   * level of the chain, on hardware whose problem is usually texture
+   * bandwidth.
+   *
+   * This is the dual-filter downsample (Marius Bjorge, Siggraph 2015): four
+   * bilinear taps on the diagonals at a half-texel offset, which is eight
+   * texels of coverage for four fetches. It is the standard cheap bloom and
+   * it looks very nearly the same on anything larger than a pixel. What it
+   * gives up is exactly what the extra nine taps were buying - a little more
+   * shimmer on thin bright lines under motion - which is the trade the GLOW
+   * QUALITY row names.
+   */
+  const DOWN_FAST_FRAG = `#version 300 es
+  precision highp float;
+  in vec2 vUv; out vec4 outColor;
+  uniform sampler2D uTex;
+  void main() {
+    vec2 t = 1.0 / vec2(textureSize(uTex, 0));
+    vec3 o = texture(uTex, vUv + t * vec2(-1.0, -1.0)).rgb;
+    o += texture(uTex, vUv + t * vec2( 1.0, -1.0)).rgb;
+    o += texture(uTex, vUv + t * vec2(-1.0,  1.0)).rgb;
+    o += texture(uTex, vUv + t * vec2( 1.0,  1.0)).rgb;
+    outColor = vec4(o * 0.25, 1.0);
   }`;
 
   // --- depth of field: one blurred copy the composite fades toward ---------
@@ -2228,7 +2322,7 @@
        clamps to black - a magenta sign loses its green and turns into a hole.
        Eased back now that the rolloff above keeps the highlights coloured on
        its own: 1.52 on top of that oversaturates the midtones. */
-    col = max(mix(vec3(lum), col, 1.42), 0.0);
+    col = max(mix(vec3(lum), col, 1.30), 0.0);
 
     col *= smoothstep(1.15, 0.16, r2);                   // vignette
     // the CRT pass now runs after the temporal resolve, so the grain is not
@@ -3027,6 +3121,10 @@
       const gl = this.gl;
       this.pPre = G.program(gl, G.FS_VERT, BLOOM_PRE_FRAG, 'bloomPre');
       this.pDown = G.program(gl, G.FS_VERT, DOWN_FRAG, 'down');
+      // the four-tap alternative, for GLOW QUALITY = FAST. Compiled with the
+      // rest rather than on demand: a shader built the first time a row is
+      // touched is a hitch the player caused by changing a setting.
+      this.pDownFast = G.program(gl, G.FS_VERT, DOWN_FAST_FRAG, 'downFast');
       this.pUp = G.program(gl, G.FS_VERT, UP_FRAG, 'up');
       this.pVol = G.program(gl, G.FS_VERT, VOL_FRAG, 'volumetric');
       this.pOcc = G.program(gl, G.FS_VERT, OCCLUDE_FRAG, 'occlude');
@@ -3866,7 +3964,52 @@
       this.bloomAmount = [0, FX.bloomAmount * 0.5, FX.bloomAmount,
                           FX.bloomAmount * 1.9][st.bloom];
       const ultra = name === 'ULTRA';
-      this.anamorphic = ultra ? FX.anamorphic * 1.35 : FX.anamorphic;
+
+      /* ------------------------------------------------------- THE NEON ---
+       *
+       * How much more glow a SATURATED source gets than a white one, before
+       * anything is added back to the frame. It is the single number that
+       * decides how neon the game looks and it costs one multiply on a
+       * quarter-resolution pass, which is why it is a row of its own rather
+       * than something the preset decides.
+       *
+       * NORMAL is FX.neon, so a save file that has never seen this row
+       * renders exactly as the game shipped.
+       *
+       * The top two settings also turn on the dispersion in the upsample -
+       * the two widest glow levels split into their colours at the skirt, the
+       * way an anamorphic lens does. That is the "more glow" half of the row
+       * rather than simply "brighter": past a point, raising the weight alone
+       * only clips more of the frame to white. */
+      /* OFF, LOW, NORMAL, HIGH, EXTREME. HIGH is 2.1 - the value the game
+         shipped with before the wash was taken out of it - so the old picture
+         is one row away rather than gone. */
+      const NEON = [0, FX.neon * 0.5, FX.neon, 2.1, 3.4];
+      const nb = st.neonBoost === undefined ? 2 : st.neonBoost;
+      this.neonBoost = NEON[nb] === undefined ? FX.neon : NEON[nb];
+      this.bloomDisperse = [0, 0, 0, 0.55, 1.0][nb] || 0;
+      // FAST is the four-tap dual filter; STANDARD the thirteen-tap one
+      this.glowFast = st.glowQuality === 0;
+
+      /* The sideways smear on the widest glow levels. It was the preset's -
+         ULTRA got a third more of it and nothing else could be asked - which
+         made a piece of pure taste into something a player could only have by
+         also paying for ULTRA's shadow maps. */
+      const ANAMORPHIC = [1.0, FX.anamorphic * 0.55, FX.anamorphic, FX.anamorphic * 1.7];
+      const am = st.anamorphic === undefined ? 2 : st.anamorphic;
+      this.anamorphic = (ANAMORPHIC[am] === undefined ? FX.anamorphic : ANAMORPHIC[am])
+        * (ultra ? 1.35 : 1);
+      const FLARE = [0, FX.flareAmount * 0.45, FX.flareAmount, FX.flareAmount * 2.2];
+      const fl = st.flare === undefined ? 2 : st.flare;
+      this.flareAmount = FLARE[fl] === undefined ? FX.flareAmount : FLARE[fl];
+
+      /* The instruments, which are drawn on the processor rather than the
+         graphics card - so this is the one graphics row that helps a machine
+         short of CPU. See the note on `gb` in js/hud.js. */
+      if (this.hud && this.hud.setGlow) {
+        this.hud.setGlow([0, 0.55, 1, 1.6][st.hudGlow === undefined ? 2 : st.hudGlow]);
+      }
+
       this.fogDensity = FX.fogDensity * (ultra ? 1.10 : 1);
       this.volDensity = FX.volDensity * (ultra ? 1.35 : 1);
 
@@ -3893,17 +4036,73 @@
       if (this.scene && wantProbe) this.scene.initProbe(name === 'ULTRA' ? 256 : 128);
       this.useProbe = wantProbe;
       if (this.scene) this.scene.probeOn = wantProbe;
+      /* HOW MANY OF THE CUBE'S SIX FACES A FRAME CAPTURES.
+       *
+       * Six is all of them from one point, which is what keeps the
+       * reflections welded under the car at speed - see the note in
+       * Scene.renderProbe about what taking them from six different places
+       * looked like. It is also six extra views of the near world every
+       * frame, and on a machine that is short of them that is a large amount
+       * to spend on a 128-pixel cube read at a blurred mip.
+       *
+       * Two is the amortised capture: the cube is complete every third frame
+       * and about fifty milliseconds stale at worst, which at 100 km/h is a
+       * metre and a half of lag in a rough reflection. The row says plainly
+       * which of those the player is choosing; the default is six, so nothing
+       * changes for anyone who does not touch it. */
+      this.probeFaces = st.reflectionRate === 0 ? 2 : 6;
 
       /* Geometry, not just pixels. See Scene.drawWorld: a low preset used to
          shorten the frame but not the world, and on the hardware that needs a
          low preset the world is the expensive half. */
       if (this.scene) {
-        this.scene.viewScale = name === 'LOW' ? 0.58
-          : (name === 'MEDIUM' ? 0.80 : 1.0);
+        const presetView = name === 'LOW' ? 0.58 : (name === 'MEDIUM' ? 0.80 : 1.0);
+        /* DRAW DISTANCE SCALES THE PRESET rather than replacing it, for the
+           same reason the COLOUR row scales the shipped grade: the presets
+           were tuned against each other, and a row that sets an absolute
+           value re-tunes all four at once. SHORT is two thirds of whatever
+           this preset was already drawing and LONG is the full four
+           kilometres whatever it was - and both are still floored at the
+           distance the fog hides, so neither can put a popping line across a
+           clear-air route. See Scene.drawWorld. */
+        const VIEW = [0.66, 1.0, 1.0 / Math.max(presetView, 0.01)];
+        const vd = st.viewDistance === undefined ? 1 : st.viewDistance;
+        this.scene.viewScale = presetView * (VIEW[vd] === undefined ? 1 : VIEW[vd]);
         // the near-field normal octave: off on LOW, half strength on MEDIUM
         this.scene.detailNrm = name === 'LOW' ? 0 : (name === 'MEDIUM' ? 0.6 : 1);
+        /* How far the cascades reach. NEAR drops the outer box to a third of
+           its radius, which is most of what the shadow pass costs: it is the
+           one that gathers a kilometre of road to cast shadows a texel wide.
+           Applied to the radii rather than by dropping a cascade, so the
+           shader's three-way split and its blend bands are untouched. */
+        this.scene.shadowReach = [0.42, 1.0, 1.45][
+          st.shadowDistance === undefined ? 1 : st.shadowDistance] || 1;
       }
+      /* How much the emitters throw. A multiplier on the spawn rates rather
+         than on the particle budget: the cap is what the buffer can hold and
+         has to stay where it is, and what a player on a weak fill rate is
+         actually paying for is the number of additive sprites over the lower
+         half of the frame. */
+      this.particleDensity = [0.45, 1, 1.6][
+        st.particles === undefined ? 1 : st.particles] || 1;
+      if (this.fx) this.fx.density = this.particleDensity;
 
+      /* THE ROAD'S OWN LIGHTS. A scale on whatever the route's palette asked
+         for rather than a replacement of it, for the same reason DRAW
+         DISTANCE scales the preset: the per-route gain was tuned against the
+         routes and a row that sets an absolute value re-lights all seven. */
+      if (this.scene) {
+        const RL = [0, 0.62, 1, 1.45];
+        /* Read the way every other row here is: through the TABLE, so a saved
+           index that is missing, out of range or not a number at all lands on
+           the default rather than on whatever `undefined` compares as. A row
+           read as `index > 0` turns the feature off for a corrupt save and
+           says nothing, which is the failure this file already has a note
+           about further up. */
+        const rl = RL[st.roadLights];
+        this.scene.lampScale = rl === undefined ? 1 : rl;
+        this.scene.worldLampsOn = this.scene.lampScale > 0;
+      }
       this.useVolumetrics = q.volumetric && st.volumetrics === 1;
       this.useGodrays = q.godrays;
       this.useSsr = q.ssr && st.reflections === 1;
@@ -6979,7 +7178,15 @@
             Amortising it over six frames made the reflections visibly trail
             the car, because the six faces were then taken from six different
             places. See Scene.renderProbe. */
-        this.scene.renderProbe([this.car.x, this.car.y, this.car.z], this.distance, 6);
+        /* All six faces, or the amortised two - see the REFLECTION UPDATE
+           row. The centre is this frame's either way, so the two-face capture
+           is a cube assembled over three frames from ONE point rather than
+           the old one-face-per-frame capture, which took its six faces from
+           six different places and slid the reflections around underneath
+           the car. */
+        const probeAt = this._probePos || (this._probePos = new Float32Array(3));
+        probeAt[0] = this.car.x; probeAt[1] = this.car.y; probeAt[2] = this.car.z;
+        this.scene.renderProbe(probeAt, this.distance, this.probeFaces || 6);
         gl.viewport(0, 0, this.w, this.h);
       }
 
@@ -7131,7 +7338,11 @@
       gl.disable(gl.BLEND);
       gl.depthMask(false);
 
-      const sun = this.scene.sunDirection(this.eye);
+      /* Its OWN array, not the scene's scratch: this is read four passes
+         later, in the volumetric blit, and anything that asked the scene for
+         the sun in between would otherwise have moved it. */
+      const sun = this.scene.sunDirection(this.eye,
+        this._sunHold || (this._sunHold = new Float32Array(3)));
       const sunWorld = this.scene.sunPos || [0, 6745, 48408];
       const cx = this.vp[0] * sunWorld[0] + this.vp[4] * sunWorld[1] + this.vp[8] * sunWorld[2] + this.vp[12];
       const cy = this.vp[1] * sunWorld[0] + this.vp[5] * sunWorld[1] + this.vp[9] * sunWorld[2] + this.vp[13];
@@ -7317,16 +7528,19 @@
         U.f(gl, u.uThreshold, FX.bloomThreshold);
         U.f(gl, u.uKnee, FX.bloomKnee);
         U.f(gl, u.uSsrAmt, this.useSsr ? 1 : 0);
+        U.f(gl, u.uNeon, this.neonBoost === undefined ? FX.neon : this.neonBoost);
       });
 
       const nLev = Math.max(2, Math.min(this.bloom.length, this.bloomLevels || this.bloom.length));
       gl.activeTexture(gl.TEXTURE0);
-      gl.useProgram(this.pDown.prog);
+      // thirteen taps or four, from the GLOW QUALITY row
+      const down = this.glowFast ? this.pDownFast : this.pDown;
+      gl.useProgram(down.prog);
       for (let i = 1; i < nLev; i++) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloom[i].fb);
         gl.viewport(0, 0, this.bloom[i].w, this.bloom[i].h);
         gl.bindTexture(gl.TEXTURE_2D, this.bloom[i - 1].tex);
-        U.i(gl, this.pDown.u.uTex, 0);
+        U.i(gl, down.u.uTex, 0);
         this.fullscreenTri();
       }
 
@@ -7341,8 +7555,14 @@
         U.i(gl, this.pUp.u.uTex, 0);
         U.f(gl, this.pUp.u.uRadius, FX.bloomRadius);
         // the widest levels get stretched sideways: anamorphic streaks
+        const wide = i >= nLev - 2;
         U.f(gl, this.pUp.u.uStretch,
-          i >= nLev - 2 ? (this.anamorphic === undefined ? FX.anamorphic : this.anamorphic) : 1.0);
+          wide ? (this.anamorphic === undefined ? FX.anamorphic : this.anamorphic) : 1.0);
+        /* ...and split into their colours at the skirt, on the same two
+           levels and for the same reason: that is where the glow is wide
+           enough for a fringe to read as a lens rather than as an artefact.
+           See the note in UP_FRAG. */
+        U.f(gl, this.pUp.u.uDisperse, wide ? (this.bloomDisperse || 0) : 0);
         this.fullscreenTri();
       }
       gl.disable(gl.BLEND);
@@ -7420,7 +7640,7 @@
         U.f(gl, u.uGodAmt, FX.godrayAmount);
         U.f(gl, u.uSsrAmt, this.useSsr ? 1 : 0);
         U.f(gl, u.uDofAmt, this.useDof ? 1 : 0);
-        U.f(gl, u.uFlareAmt, FX.flareAmount * onScreen);
+        U.f(gl, u.uFlareAmt, (this.flareAmount === undefined ? FX.flareAmount : this.flareAmount) * onScreen);
         U.f(gl, u.uAoAmt, this.useAo ? FX.aoAmount : 0);
         U.v2(gl, u.uSunUv, sunU, sunV);
         U.v2(gl, u.uRes, this.w, this.h);

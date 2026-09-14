@@ -115,6 +115,12 @@ Everything under `tools/` is Node with no dependencies.
 | `checkdisplay.js` | proves the game opens on the display it was told to |
 | `checkdom.js`, `checkshaders.js`, `checksettings.js`, `checkupscale.js` | static checks |
 
+`smoke.js --set <key>=<index>,...` drives any settings row and reports what the
+renderer made of it. `checksettings.js` proves a row is READ; only a run proves
+the value reached the other side of `applySettings`, which is the join that
+fails silently. `--exercise` walks every row on every tab and reports the ones
+that do nothing.
+
 `smoke.js --probe <name>` runs a targeted investigation instead of a plain run:
 `palms`, `forge6`, `jump`, `tiles`, `batch`, `fps`, `advisory`, `predator`,
 `director`, `layout`, `ghost`, `coast`, `sink`, `options`, `multiplayer`.
@@ -141,18 +147,85 @@ writing. It does not quantise, reduce bit depth or drop channels.
 
 ## Recent work
 
-**Rendering.** `Scene.drawPart` caches material state; it used to upload
-eighteen uniforms unconditionally on every draw, which at 792 draws a frame was
-about fourteen thousand redundant GL calls. VAO binds are memoised at the GL
-method itself rather than at the twenty-odd call sites, so no caller can
-desync the cache. Item draws are sorted by material where blending allows it —
-opaque is depth-decided and additive commutes; alpha keeps road order. Ring
-instances are merged like cubes, which they never were.
+**The road is lit by the things standing over it.** Every glowing object in
+the world was emissive geometry and nothing else: the lamp face was a bright
+quad, the gantry a bright bar, and the only reason the tarmac underneath was
+not black is that the car's own headlights were on it. What a player reads as
+a street light is not the lamp — it is the POOL, the ellipse on the road that
+slides past as you drive — and there was none, so the frame was a great deal
+of glow standing over a road none of it touched, and the bloom was doing all
+the work. `worldLamps` in the scene shader takes the nearest six as real
+local sources. A street lamp and a gantry are the same light with different
+extent, so both are LINE lights — a centre, an axis and a half-length, where a
+lamp is the case with zero length: a point light at the middle of a forty-unit
+neon run would put a hot spot on the centre line and leave both verges dark.
+Positions are harvested by the emitters that place the geometry, because the
+only thing that knows where a lamp ended up is the code that put it there.
 
-**Particles in the core.** `particles.rs`. The sprite system was 900 plain
-objects walked twice a frame, with an array literal allocated inside the
-builder's inner loop. It is a flat `f32` buffer now, filled in place and handed
-to GL as a view.
+**The grade.** With the road genuinely lit, the glow no longer has to carry
+the picture, and it was carrying far too much of it. The bloom threshold was
+1.30 — low enough that lit tarmac, barrier steel and the fog itself were over
+the line — so the glow was not coming off the neon, it was coming off
+everything, and nothing could stand out from a wash that was the whole frame.
+Threshold, bloom amount, the saturated-neon weight and the anamorphic stretch
+all come down together; NEON BOOST on HIGH is the old picture exactly, for
+anyone who wants it.
+
+**The redundant-uniform filter.** The state filter in `js/game.js` deliberately
+declined to cache uniforms, on the grounds that they "are mostly matrices that
+change every frame anyway". The call pattern says otherwise: `Scene.bind`
+uploads about sixty uniforms and runs **seven** times a frame — once for the
+main view and once for each of the reflection probe's six faces — and exactly
+two of those sixty differ between the seven. The other fifty-eight are the
+ambient, the sun, the fog, the headlights, the rival lamps, the cascade
+matrices and the probe box, restated identically six times over. `js/gl.js`
+now filters them, keyed on the uniform location, which identifies a program and
+a slot together because a location belongs to exactly one program. Compared by
+value and never by reference, because `uModel` is handed the same scratch
+matrix on consecutive draws with different contents in it.
+
+**Per-frame allocation.** `Scene.renderProbe` rebuilt a six-entry table of
+direction/up pairs — nineteen arrays — three 4x4 matrices and the projection
+itself on every frame, then three more vectors per face inside its own loop.
+`M4.lookAt` allocated four `Float32Array(3)` on each of its fifteen-odd calls a
+frame. `DriverFigure.draw` built three objects per rig part per car per pass —
+the note above `viewAt` is about exactly that loop, and the fix had been applied
+to the matrix views but not to the descriptors. `setHeadlights` rebuilt six
+vectors, `setRivalLights` allocated a list and sorted it to pick three, and
+`sunDirection` allocated twice on each of its nine calls a frame. All of it is
+scratch that lives as long as the thing that owns it now.
+
+**The emitters in the core.** `particles.rs`. `integrate` and `build` moved
+first because they walked every particle; what stayed behind was the half that
+decides things. The arithmetic in that half was never the cost — the allocation
+was. Every one of the four continuous emitters produced its particles by
+building an eighteen-field JavaScript object for `spawn` to read back out and
+drop, at a few thousand a second with the boost lit. It is one call per car per
+frame now. The rates and constants are transcribed line for line; what is
+deliberately different is the random *sequence*, because `Math.random` does not
+exist on that side and the distribution is the only property any of these
+emitters relied on.
+
+**The HUD.** Setting `shadowBlur` and filling anything makes the 2D context
+rasterise the shape, blur it in a scratch surface and composite the result —
+per call, over a canvas the size of the window times the device pixel ratio.
+This file did it forty-three times a frame, and assigning `font` parsed a CSS
+shorthand on every label. Both are answered once now, and the blur radius is
+scaled by a row the player owns, so the interface can be drawn flat and sharp
+on a machine that is short of CPU rather than GPU.
+
+**Graphics rows.** Ten of them, and every one but the two the paragraphs above
+are about defaults to exactly what the game shipped with. ROAD LIGHTING is the
+new one: whether the lamps and the gantry neon cast light or only glow. NEON BOOST is the term in the threshold pass that weights
+saturated light over white light — the one number that decides how neon the
+game looks, for one multiply on a quarter-resolution pass — and its top two
+settings also split the two widest glow levels into their colours at the skirt,
+the way an anamorphic lens does. ANAMORPHIC STREAK and LENS FLARE were the
+preset's and are now taste. GLOW QUALITY offers a four-tap dual filter in place
+of the thirteen-tap one. DRAW DISTANCE, REFLECTION UPDATE, SHADOW DISTANCE and
+PARTICLE DENSITY scale how much work each pass is given rather than switching
+the pass off, which is a different trade: a pass that is off is a feature the
+player has lost.
 
 **Airborne physics.** The solver was road-locked — a car's height was the
 road's elevation plus its spring travel, so there was no state in which it
@@ -174,6 +247,14 @@ released and re-armed that commitment every time the lead changed hands — whic
 on a route whose design keeps the cars level meant the side flipped every few
 seconds and the car chased it across the road. The window is the one the race
 is in now, either car order, with a slew limit as a backstop.
+
+**Earlier.** `Scene.drawPart` caches material state; it used to upload eighteen
+uniforms unconditionally on every draw, which at 792 draws a frame was about
+fourteen thousand redundant GL calls. VAO binds are memoised at the GL method
+itself rather than at the twenty-odd call sites, so no caller can desync the
+cache. Item draws are sorted by material where blending allows it — opaque is
+depth-decided and additive commutes; alpha keeps road order. Ring instances are
+merged like cubes, which they never were.
 
 ## Tests
 

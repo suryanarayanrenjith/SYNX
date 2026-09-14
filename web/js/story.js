@@ -1598,11 +1598,6 @@
       global.setTimeout(() => first.focus(), 0);
     }
 
-    /** Every chapter cleared. What Free Roam is gated on. */
-    isCampaignComplete() {
-      return campaignComplete(this.save);
-    }
-
     returnToTitle() {
       this.closeStoryUi();
       this.mode = 'none';

@@ -55,6 +55,22 @@ const FREEROAM = arg('freeroam', '');
    reflection probe are the two passes that submit the world again - so the
    number is only meaningful next to the preset it was taken at. */
 const PRESET = parseInt(arg('preset', '0'), 10);
+/* Any other settings row, by key and index: --set neonBoost=4,hudGlow=0
+ *
+ * checksettings.js proves every row is READ by the game. It cannot prove
+ * the value reached the renderer - that is the join on the far side of
+ * applySettings, and it is the one that silently breaks (see THE PRESET
+ * MUST ACTUALLY BE THE PRESET below, which exists because it did). This is
+ * how a row that is not the preset gets driven, and read back, at all. */
+const SETS = (function () {
+  const out = {};
+  for (const pair of arg('set', '').split(',')) {
+    if (!pair) continue;
+    const [k, v] = pair.split('=');
+    if (k && v !== undefined) out[k.trim()] = parseInt(v, 10);
+  }
+  return out;
+})();
 /* Which camera view to drive in: 0 chase, 1 driver, 2 drone. The driver and
    the drone are the two the harness cannot otherwise reach - the key that
    cycles them is a key, and this driver has no keyboard. */
@@ -297,7 +313,7 @@ const PAGE_REPORTER = `
   };
 `;
 
-const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, scale, upscaler, camera, reel, park, steer, press) => `
+const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, scale, upscaler, camera, reel, park, steer, press, sets) => `
 (function () {
   var HOLD = '${hold}';
   var FREEROAM = '${freeroam}';
@@ -1475,6 +1491,9 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
         g.settings.quality = ${preset};
         g.settings.resolution = ${scale} >= 0 ? ${scale} : 0;
         if (${upscaler} >= 0) g.settings.upscaler = ${upscaler};
+        // ...and anything else --set named, applied through the same call
+        var __sets = ${JSON.stringify(sets || {})};
+        for (var __k in __sets) g.settings[__k] = __sets[__k];
         g.applySettings();
         note('pixels: scale=' + g.renderScale.toFixed(2) + ' upscaler=' + g.upscaler +
              ' render=' + g.w + 'x' + g.h + ' canvas=' + g.outW + 'x' + g.outH);
@@ -1487,6 +1506,60 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
              ' ssr=' + g.useSsr + ' vol=' + g.useVolumetrics + ' taa=' + g.useTaa +
              ' bloomLv=' + g.bloomLevels + ' bloomAmt=' + (g.bloomAmount || 0).toFixed(2) +
              ' grain=' + g.useGrain + ' blur=' + g.useMotionBlur);
+        /* The rows that decide how NEON it looks and how much of each
+           pass runs. Same reasoning as the line above: what is worth
+           reporting is the number the renderer ended up with, not the
+           index the row happens to hold. */
+        note('workload: neon=' + (g.neonBoost || 0).toFixed(2) +
+             ' disperse=' + (g.bloomDisperse || 0).toFixed(2) +
+             ' anamorphic=' + (g.anamorphic || 0).toFixed(2) +
+             ' flare=' + (g.flareAmount || 0).toFixed(3) +
+             ' glowFast=' + !!g.glowFast +
+             ' probeFaces=' + g.probeFaces +
+             ' viewScale=' + (g.scene.viewScale || 0).toFixed(2) +
+             ' shadowReach=' + (g.scene.shadowReach || 0).toFixed(2) +
+             ' particles=' + (g.particleDensity || 0).toFixed(2) +
+             ' hudGlow=' + (g.settings.hudGlow === undefined ? 2 : g.settings.hudGlow));
+        /* The lights the world has of its own - see worldLamps in the scene
+           shader. A count of zero here and a road that looks the same as it
+           always did is the whole failure mode: the geometry is emitted, the
+           lights are not, and nothing says so. */
+        (function () {
+          var W = g.scene.worldLights || [];
+          if (!W.length) return;
+          // ROAD LIGHTING OFF is a choice, not a fault - see the row in
+          // js/settings.js. Nothing below applies when the feature is off.
+          if (g.scene.worldLampsOn === false) {
+            note('world lights: ' + W.length + ' on the course, road lighting OFF');
+            return;
+          }
+          /* ASKED OF THE ROAD, NOT OF THE CAR.
+             Whether a light reaches the shader where the car happens to be
+             standing is a question about that spot - it may be in a bore, or
+             on the one stretch a zone excludes - so asking it there reports a
+             failure on a healthy build. The machinery is what is being
+             checked, so it is asked at twenty places spread down the whole
+             course, and the pass mark is that SOME of them are lit. A list
+             that is built but unsorted, mis-scaled or out of range answers
+             zero at every one of them, which is the fault this is for. */
+          var lit = 0, most = 0, sampled = 0;
+          for (var k = 0; k < 20; k++) {
+            var s = W[Math.floor(W.length * k / 20)].s;
+            var p = g.track.at(s, {});
+            var B = g.scene.setWorldLights([p.x, (p.y || 0) + 2.5, p.z], s);
+            sampled++;
+            if (B.n) lit++;
+            if (B.n > most) most = B.n;
+          }
+          note('world lights: ' + W.length + ' on the course, lighting ' + lit +
+               ' of ' + sampled + ' sampled stations, up to ' + most +
+               ' at once, gain ' + ((g.scene.lampGain || 0) *
+                 (g.scene.lampScale === undefined ? 1 : g.scene.lampScale)).toFixed(2));
+          if (!lit) {
+            window.__smoke.errors.push('the course carries ' + W.length +
+              ' lights and not one of ' + sampled + ' stations is lit by any of them');
+          }
+        })();
         /* THE PRESET MUST ACTUALLY BE THE PRESET.
  *
            This is the invariant the schema check cannot see and the
@@ -5010,7 +5083,7 @@ const DRIVER = (route, hold, freeroam, preset, nocull, probe, at, look, nobake, 
    being asked, and it costs a millisecond. */
 {
   const script = DRIVER(ROUTE, HOLD, FREEROAM, PRESET, NOCULL, PROBE, AT, LOOK,
-    NOBAKE, SCALE, UPSCALER, CAMERA, REEL, PARK, STEER, PRESS);
+    NOBAKE, SCALE, UPSCALER, CAMERA, REEL, PARK, STEER, PRESS, SETS);
   try {
     new Function(script);
   } catch (e) {
@@ -5039,7 +5112,7 @@ const server = http.createServer((req, res) => {
       '<script>' + COLLECTOR + '</script>';
     if (html.indexOf(gameAnchor) >= 0) {
       html = html.replace(gameAnchor, preamble + '\n' + gameAnchor);
-      html = html.replace('</body>', '<script>' + DRIVER(ROUTE, HOLD, FREEROAM, PRESET, NOCULL, PROBE, AT, LOOK, NOBAKE, SCALE, UPSCALER, CAMERA, REEL, PARK, STEER, PRESS) + '</script>\n</body>');
+      html = html.replace('</body>', '<script>' + DRIVER(ROUTE, HOLD, FREEROAM, PRESET, NOCULL, PROBE, AT, LOOK, NOBAKE, SCALE, UPSCALER, CAMERA, REEL, PARK, STEER, PRESS, SETS) + '</script>\n</body>');
     } else {
       html = html.replace('</head>', preamble + '<script>' + PAGE_REPORTER + '</script>' +
         (EXERCISE ? '<script>' + EXERCISER + '</script>' : '') + '\n</head>');
