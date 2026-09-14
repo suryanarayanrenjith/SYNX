@@ -166,7 +166,11 @@
 
     close() {
       this.shown = false;
-      if (this.ui.root) this.ui.root.setAttribute('aria-hidden', 'true');
+      // faded rather than cut - see NR.Screen in js/ui.js
+      if (this.ui.root) {
+        if (NR.Screen) NR.Screen.hide(this.ui.root);
+        else this.ui.root.setAttribute('aria-hidden', 'true');
+      }
       doc.body.classList.remove('freeroam-open');
     }
 
@@ -258,6 +262,15 @@
           const c = cards[i];
           const on = c === over && !c.classList.contains('locked');
           c.classList.toggle('is-hover', on);
+          /* ...AND IT TAKES THE KEYBOARD WITH IT.
+             ENTER commits the FOCUSED card, so a pointer that only lights
+             one up leaves two different selections on screen and starts
+             the wrong route. preventScroll because this list scrolls: a
+             tile half off the bottom must not jump the list out from under
+             the pointer that is choosing it. */
+          if (on && doc.activeElement !== c) {
+            try { c.focus({ preventScroll: true }); } catch (err) { c.focus(); }
+          }
         }
       };
       root.addEventListener('pointermove', sync);

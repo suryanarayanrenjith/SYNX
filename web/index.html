@@ -181,6 +181,28 @@
       </div>
     </section>
 
+    <!-- THE DECISION CARD.
+         Three of these across the campaign, and every one of them is a real
+         trade rather than a tone: one option makes the next rival harder and
+         leaves you on your own, the other keeps the rival where it is and buys
+         you a crew who tell you what is coming. It shares the continue
+         prompt's panel language on purpose - a player has already learned what
+         a card that stops the road means - and differs where it matters: the
+         stake is printed above the two doors, and neither door is the safe
+         one. See CHOICES in js/story.js. -->
+    <section id="storyChoice" class="story-layer" aria-hidden="true">
+      <div class="story-continue-panel story-choice-panel synx-cut">
+        <small id="storyChoiceKicker">DECISION</small>
+        <h2 id="storyChoiceQuestion" class="synx-chrome"></h2>
+        <p id="storyChoiceDetail"></p>
+        <div class="story-continue-actions">
+          <button id="storyChoiceEdge" class="synx-cut" type="button"><small></small><b></b><em></em></button>
+          <button id="storyChoiceOpen" class="synx-cut" type="button"><small></small><b></b><em></em></button>
+        </div>
+        <footer>LEFT / RIGHT &mdash; SELECT&nbsp;&nbsp;&nbsp;&nbsp;ENTER &mdash; COMMIT&nbsp;&nbsp;&nbsp;&nbsp;THIS ONE STAYS DECIDED</footer>
+      </div>
+    </section>
+
     <section id="storyContinuePrompt" class="story-layer" aria-hidden="true">
       <div class="story-continue-panel synx-cut">
         <small>STORY LINK // CHAPTER COMPLETE</small>
@@ -404,7 +426,7 @@
         <b>raceMode</b>
         <strong>R — SYNCHRONIZE</strong>
         <p>30 SEC ACTIVE&nbsp;&nbsp;·&nbsp;&nbsp;70 SEC COOLDOWN<br>BLUE RESERVE&nbsp;&nbsp;·&nbsp;&nbsp;+50% BOOST VELOCITY</p>
-        <p class="forge6-swap">ENGINE REBUILD&nbsp;&nbsp;·&nbsp;&nbsp;200 MPH CEILING</p>
+        <p class="forge6-swap" id="forge6Swap">ENGINE REBUILD&nbsp;&nbsp;·&nbsp;&nbsp;200 MPH CEILING</p>
       </div>
     </section>
     <div id="forge6Fatal">
@@ -424,6 +446,17 @@
       <b id="pred7EventText">SYSTEM READY</b>
     </aside>
     <aside id="pred7Checkpoint" class="synx-cut" aria-hidden="true">CHECKPOINT // NEON GATE</aside>
+    <!-- THE SAME WORD CHAPTER 5 USES, for the same thing happening.
+         A building comes down on the car in both chapters; in ASHFALL ZERO
+         that is a FATALITY in letters across the screen and in NEON HORIZON
+         it was a small orange status line reading ROUTE FAILURE. Two names
+         for one event is what makes a game feel like two games. Styled from
+         the same rules as #cine5.fatality - see the note in css/style.css. -->
+    <div id="pred7Fatality" aria-hidden="true">
+      <small id="pred7FatalKicker">NEON HORIZON</small>
+      <b>FATALITY</b>
+      <span id="pred7FatalText">CRUSHED // REWINDING TO THE LAST GATE</span>
+    </div>
     <span id="pred7Live" class="sr-only" aria-live="assertive"></span>
   </div>
 
@@ -441,6 +474,8 @@
 <script src="js/settings.js?v=rust-1"></script>
 <!-- The controller. Loaded before the game, which holds the only instance. -->
 <script src="js/ui.js?v=rust-1"></script>
+<script src="js/ignition.js?v=rust-1"></script>
+<script src="js/staging.js?v=rust-1"></script>
 <script src="js/intro.js?v=rust-1"></script>
 <script src="js/bench.js?v=rust-1"></script>
 <script src="js/gamepad.js?v=rust-1"></script>

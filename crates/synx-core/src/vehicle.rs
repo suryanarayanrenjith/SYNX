@@ -48,7 +48,34 @@ const DAMP_REB_F: f64 = 4100.0;
 const DAMP_REB_R: f64 = 3700.0;
 const ARB_F: f64 = 14000.0;
 const ARB_R: f64 = 8000.0;
+/* ROLL DAMPING, ON THE MODE ITSELF.
+ *
+ * The corner dampers resist roll already - one side in bump while the other is
+ * in rebound - and across both axles that is about sixteen thousand against a
+ * critical figure of thirty-eight, so the roll mode runs at about 0.43 of
+ * critical. That is fine for a corner and not enough for a REVERSAL: measured
+ * through a full-lock flick out of a drift, the body went from its two-degree
+ * cornering attitude to the nine-degree stop in three frames and sat there.
+ * The lateral force really does swing that far when a drifting car changes
+ * hands, so the excursion is not a bug in the tyres; what it wants is the
+ * damper valving a car built for this would have in roll.
+ *
+ * Twelve thousand takes the mode to about 0.75 of critical. It acts on roll
+ * VELOCITY only, so a steady corner - where that velocity is zero - is exactly
+ * the car it was: same attitude, same load transfer, same grip. All it changes
+ * is how violently the body is allowed to get between two attitudes. */
+const ROLL_DAMP: f64 = 12000.0;
 const TRAVEL: f64 = 0.16;
+/* How far the body may lean. It used to be written as the bare 0.16 that
+   TRAVEL happens to be, which reads as the same number meaning the same thing
+   and is a coincidence: one is a suspension displacement in metres, this is an
+   angle in radians.
+
+   Six and a half degrees rather than the nine the springs could physically
+   reach. A car this low does not lean nine degrees and look like anything but
+   a car falling over, and with ROLL_DAMP in the mode it should not be near
+   either number outside a collision. */
+const ROLL_MAX: f64 = 0.115;
 /* BUMP STOPS. Past this much compression beyond the static ride height the
    spring is not the only thing left: the rubber stop closes and the rate goes
    up as the square of how far into it the corner is.
@@ -114,6 +141,24 @@ const BOOST_TOP: f64 = 1.34;
 const SWAP_TOP: f64 = 88.0;
 const SWAP_CAP: f64 = 122.0;
 const SWAP_POWER: f64 = 1.20;
+/* THE CAR RYKER LEFT IN THE CALDERA: 70 mph, and it feels like it.
+ *
+ * Chapter 6 opens on a car that has just been put through a wall at the end
+ * of Chapter 5 and driven to the Forge on what was left of it - and it was
+ * doing a hundred and thirty-two miles an hour through every trial, which is
+ * the street car in perfect health. The rebuild at the end of the chapter is
+ * the whole point of the chapter, and it was a twelve-mile-an-hour present.
+ *
+ * Seventy on the block, seventy-eight if the reheat is asked for something it
+ * has not got, and a bit over half the power to get there with. The rebuild
+ * then doubles it, which is what a rebuild should feel like: the calibration
+ * run on Straight 07 is the first time the car has been a car all chapter.
+ *
+ * The numbers are in world units - see UNIT_METRES - so 70 mph is
+ * 70 / 2.23694 metres a second over 0.733 metres a unit. */
+const BROKEN_TOP: f64 = 42.7;
+const BROKEN_CAP: f64 = 47.6;
+const BROKEN_POWER: f64 = 0.58;
 const BOOST_BURN: f64 = 0.28;
 const BOOST_FILL: f64 = 1.6 / 12.0;
 const BOOST_ARM: f64 = 0.34;
@@ -581,16 +626,33 @@ impl Vehicle {
         aided + (MAX_STEER - aided) * blend
     }
 
-    /// Fit an engine. `swap` is the Forge rebuild; anything else is stock.
-    pub fn fit_engine(&mut self, swap: bool) {
-        if swap {
-            self.engine_top = SWAP_TOP;
-            self.speed_cap = SWAP_CAP;
-            self.engine_power = SWAP_POWER;
-        } else {
-            self.engine_top = TOP_SPEED;
-            self.speed_cap = f64::INFINITY;
-            self.engine_power = 1.0;
+    /// Which engine is in the car.
+    ///
+    /// Three of them, because the car has three lives in the campaign: the
+    /// street block it starts with, the wreck it is reduced to at the end of
+    /// ASHFALL ZERO, and what Javas builds out of it at the Forge.
+    pub const ENGINE_STOCK: u32 = 0;
+    pub const ENGINE_SWAP: u32 = 1;
+    pub const ENGINE_BROKEN: u32 = 2;
+
+    /// Fit an engine. See the three ENGINE_ constants above.
+    pub fn fit_engine(&mut self, kind: u32) {
+        match kind {
+            Self::ENGINE_SWAP => {
+                self.engine_top = SWAP_TOP;
+                self.speed_cap = SWAP_CAP;
+                self.engine_power = SWAP_POWER;
+            }
+            Self::ENGINE_BROKEN => {
+                self.engine_top = BROKEN_TOP;
+                self.speed_cap = BROKEN_CAP;
+                self.engine_power = BROKEN_POWER;
+            }
+            _ => {
+                self.engine_top = TOP_SPEED;
+                self.speed_cap = f64::INFINITY;
+                self.engine_power = 1.0;
+            }
         }
     }
 
@@ -964,16 +1026,48 @@ impl Vehicle {
             // ...and the rubber, once this corner has used up its travel
             let into_stop = x - (s0 + BUMP_GAP);
             let stop = if into_stop > 0.0 { BUMP_STOP * into_stop * into_stop } else { 0.0 };
-            let spring = k_s * x + stop + c_d * rate_up;
+            /* WHAT THIS CORNER ACTUALLY CARRIES.
+             *
+             * A strut pushes the body up. It has never been able to pull it
+             * down, and it cannot push at all once it has run out of travel -
+             * at which point the wheel is hanging and the corner is carrying
+             * nothing. Neither of those was true here, and both showed:
+             *
+             * `x` is clamped at zero, so the spring term vanishes when a
+             * corner unloads - but `c_d * rate_up` was still added at the full
+             * damper rate, and in rebound that term is NEGATIVE. So an
+             * unloaded corner produced a negative force, and that force went
+             * into `sum_f` and `roll_m` and pulled the body down and over,
+             * while `self.w[i].load` was floored at zero so the tyre never
+             * felt any of it. The body and the contact patch were being told
+             * two different things about the same corner.
+             *
+             * Measured, at a hard steering reversal in a drift: the inside
+             * corners unloaded, their dampers hauled the body down through its
+             * whole travel in a tenth of a second, and roll went from two
+             * degrees to the nine-degree stop in three frames and rang there.
+             * That is the rollover and the floating in the report.
+             *
+             * One number for the body and the tyre, and it only ever pushes.
+             * In a steady corner every wheel carries positive load, so this is
+             * identical to what it replaces - it bites only where a corner has
+             * gone light, which is the only place it was ever wrong.
+             *
+             * NOT gated on `x > 0` as well: at full droop the wheel is hanging
+             * on its own stop and that stop still holds the body up. Gating it
+             * let the body free-fall through its travel while the car was
+             * airborne, so it arrived at touchdown with nothing left to
+             * compress - which the landing test catches. */
+            let carried = (k_s * x + stop + c_d * rate_up).max(0.0);
             // aero pushes the whole car down and is not carried by the
             // springs' static travel, so it goes straight to the contact load
-            let load = spring
-                + aero * (if k.front { AERO_FRONT } else { 1.0 - AERO_FRONT }) * 0.5;
+            let load =
+                carried + aero * (if k.front { AERO_FRONT } else { 1.0 - AERO_FRONT }) * 0.5;
             self.w[i].load = load.max(0.0);
             self.w[i].contact = self.w[i].load > 1.0;
-            sum_f += spring;
-            pitch_m += k.l * spring;
-            roll_m += k.w * spring;
+            sum_f += carried;
+            pitch_m += k.l * carried;
+            roll_m += k.w * carried;
         }
         /* THE TRANSFER THE LINKS CARRY, which arrives in the same instant the
            force that causes it does - see RC_FRONT. Both terms read the
@@ -1020,6 +1114,8 @@ impl Vehicle {
             }
         }
         roll_m += (-HW) * arb_f + HW * (-arb_f) + (-HW) * arb_r + HW * (-arb_r);
+        // ...and the damping the mode itself wants. See ROLL_DAMP.
+        roll_m -= ROLL_DAMP * self.roll_v;
 
         // ---- tyres --------------------------------------------------------
         // Slip angle and slip ratio per wheel, both passed through a relaxation
@@ -1299,9 +1395,17 @@ impl Vehicle {
         self.heave_v = (self.heave_v + d_heave * h) * 0.999;
         self.pitch_v = (self.pitch_v + d_pitch * h) * 0.999;
         self.roll_v = (self.roll_v + d_roll * h) * 0.999;
+        /* THE TRAVEL LIMITS ARE A BACKSTOP, NOT THE SUSPENSION.
+           Arresting the body's velocity when it touches one was tried and
+           reverted: a landing is caught by the bump rubber taking the body's
+           momentum out over the last of its travel, and zeroing the velocity
+           at the limit takes that momentum away from the rubber and leaves the
+           body resting on the clamp instead - which is the thing
+           `a_landing_is_caught_by_the_bump_stops` exists to catch. The clamp
+           stays what it was: a last line that should never be reached. */
         self.heave = clamp(self.heave + self.heave_v * h, -TRAVEL, TRAVEL);
         self.pitch = clamp(self.pitch + self.pitch_v * h, -0.10, 0.10);
-        self.roll = clamp(self.roll + self.roll_v * h, -0.16, 0.16);
+        self.roll = clamp(self.roll + self.roll_v * h, -ROLL_MAX, ROLL_MAX);
     }
 
     /// The barrier, resolved as an impulse at the corner that touched it.
@@ -1546,14 +1650,37 @@ pub fn collide_cars(a: &mut Vehicle, b: &mut Vehicle) -> f64 {
  * from the wrong side, none of which a collision mesh gives for free.
  */
 
-/// A launch ramp: an arc-length window and how high its lip stands.
+/// A ramp: an arc-length window, a height, and an optional deck to drive on.
+///
+/// THE CREST IS THE PART YOU DRIVE ALONG.
+///
+/// A launch ramp is a wedge: climb, leave. That is the whole of what the three
+/// on Chapter 7's stunt course are, and for a jump it is right. It is NOT what
+/// a ramp built to get over something is - a plank thrown across a blocked
+/// tunnel mouth has a top you drive ALONG before you run out of it, and a
+/// structure with no top reads as a jump rather than as a way past.
+///
+/// So a ramp has three marks rather than two:
+///
+///   s0 .. s1   the incline, `h * u^2`, as it always was
+///   s1 .. s2   the CREST: a long shallow run from `h` up to `lip`
+///   s2         the end of it, where the car runs out of structure
+///
+/// `s2 == s1` with `lip == h` is exactly the old wedge, which is what
+/// `arm_ramp` still builds - so the eight launch ramps on the course are
+/// untouched by any of this.
 #[derive(Clone, Copy, Default)]
 pub struct Ramp {
-    /// Where the incline starts and where the lip is, in arc length.
+    /// Where the incline starts, where it levels onto the crest, and where the
+    /// crest ends, in arc length.
     pub s0: f64,
     pub s1: f64,
-    /// The height of the lip above the road, in world units.
+    pub s2: f64,
+    /// Height at the crest and at the far end of it, in world units. A crest
+    /// that rises slightly is what makes a makeshift ramp throw the car at all
+    /// rather than simply drop it off the end.
     pub h: f64,
+    pub lip: f64,
 }
 
 /* WHY THE FIRST TUNE FELT LIKE A PAPER CAR, AND WHAT FIXED IT.
@@ -1589,7 +1716,7 @@ pub struct Ramp {
 /// the moon. Arcade racers all exaggerate this for the same reason; the value
 /// is chosen from the flight TIME, which lands a good launch in a little
 /// under a second.
-const AIR_G: f64 = 27.0;
+pub const AIR_G: f64 = 27.0;
 /// Aerodynamic drag while airborne, per second, as a fraction of speed.
 ///
 /// The tyre model carries all the drag this solver has and it is switched off
@@ -1598,7 +1725,7 @@ const AIR_G: f64 = 27.0;
 /// which is small enough not to feel like a handbrake and large enough that
 /// the landing is visibly slower than the launch - which is the thing that
 /// makes it read as having weight.
-const AIR_DRAG: f64 = 0.055;
+pub const AIR_DRAG: f64 = 0.055;
 /// How fast the steering can yaw the car in the air, in radians a second.
 ///
 /// A fifth of what it was. Enough to straighten a car that left the lip a few
@@ -1615,12 +1742,12 @@ const AIR_YAW_DAMP: f64 = 1.15;
 /// under its own weight, so the rotation builds through the flight instead of
 /// running at a constant speed. This is what turns "a model sliding through
 /// the air at a fixed angle" into something that tips.
-const AIR_PITCH_ACC: f64 = 0.85;
+pub const AIR_PITCH_ACC: f64 = 0.85;
 /// ...bounded, so a long flight cannot put the car on its roof.
-const AIR_PITCH_MAX: f64 = 0.85;
+pub const AIR_PITCH_MAX: f64 = 0.85;
 /// The heading error, in radians, at which a landing scores nothing. Twelve
 /// degrees: past that the car is visibly sideways as it touches down.
-const LAND_TOL: f64 = 0.21;
+pub const LAND_TOL: f64 = 0.21;
 
 impl Vehicle {
     /// Arm the next ramp, or clear it with `h <= 0`.
@@ -1628,7 +1755,18 @@ impl Vehicle {
     /// One at a time, because only one can be being driven at once and holding
     /// a list here would put course layout inside the solver.
     pub fn arm_ramp(&mut self, s0: f64, s1: f64, h: f64) {
-        self.ramp = if h > 0.0 && s1 > s0 { Some(Ramp { s0, s1, h }) } else { None };
+        self.arm_ramp_deck(s0, s1, s1, h, h);
+    }
+
+    /// Arm a ramp with a crest to drive along. `s1` is where the climb levels
+    /// off and `s2` where the structure runs out; `lip` is the height there.
+    /// Passing `s2 == s1` and `lip == h` is the plain wedge `arm_ramp` builds.
+    pub fn arm_ramp_deck(&mut self, s0: f64, s1: f64, s2: f64, h: f64, lip: f64) {
+        self.ramp = if h > 0.0 && s1 > s0 && s2 >= s1 {
+            Some(Ramp { s0, s1, s2, h, lip: if lip > 0.0 { lip } else { h } })
+        } else {
+            None
+        };
     }
 
     /// True while no wheel is on the ground.
@@ -1646,24 +1784,37 @@ impl Vehicle {
         if !self.airborne {
             let mut launched = false;
             if let Some(r) = self.ramp {
-                if self.s_track >= r.s0 && self.s_track <= r.s1 {
-                    /* Quadratic, not linear: a ramp with a constant slope has
-                       a corner at the bottom that the car hits rather than
-                       rides, and the whole feel of a jump is in the transition
-                       being smooth. The vertical speed is read back off the
-                       profile rather than assumed, so what leaves the lip is
-                       what the car was actually doing. */
-                    let span = (r.s1 - r.s0).max(1.0);
-                    let u = ((self.s_track - r.s0) / span).clamp(0.0, 1.0);
+                let end = r.s2.max(r.s1);
+                if self.s_track >= r.s0 && self.s_track <= end {
                     let prev = self.air_y;
-                    self.air_y = r.h * u * u;
+                    if self.s_track <= r.s1 {
+                        /* THE INCLINE. Quadratic, not linear: a ramp with a
+                           constant slope has a corner at the bottom that the
+                           car hits rather than rides, and the whole feel of a
+                           jump is in the transition being smooth. */
+                        let span = (r.s1 - r.s0).max(1.0);
+                        let u = ((self.s_track - r.s0) / span).clamp(0.0, 1.0);
+                        self.air_y = r.h * u * u;
+                        self.air_pitch = (2.0 * r.h * u / span).atan();
+                    } else {
+                        /* THE CREST, which is the part that is driven along.
+                           Straight rather than curved: it is a deck somebody
+                           laid, not a moulded kicker, and the shallow rise
+                           along it is the only thing throwing the car at the
+                           far end. */
+                        let span = (end - r.s1).max(1.0);
+                        let v = ((self.s_track - r.s1) / span).clamp(0.0, 1.0);
+                        self.air_y = r.h + (r.lip - r.h) * v;
+                        self.air_pitch = ((r.lip - r.h) / span).atan();
+                    }
+                    /* The vertical speed is read back off the profile rather
+                       than assumed, so what leaves the end is what the car was
+                       actually doing - on either section. */
                     self.air_v = if dt > 1e-6 { (self.air_y - prev) / dt } else { 0.0 };
-                    // the nose follows the surface it is climbing
-                    self.air_pitch = (2.0 * r.h * u / span).atan();
                     self.air_time = 0.0;
                     return;
                 }
-                if self.s_track > r.s1 && self.air_y > 0.02 {
+                if self.s_track > end && self.air_y > 0.02 {
                     launched = true;
                 }
             }
@@ -1843,7 +1994,7 @@ mod tests {
         // ...and the rebuild is worth what Javas says it is worth.
         let mut swapped = Vehicle::new(&t, 0.0);
         swapped.reset(&t, 100.0, 0.0);
-        swapped.fit_engine(true);
+        swapped.fit_engine(Vehicle::ENGINE_SWAP);
         drive(&mut swapped, &t, 60.0, Input { throttle: 1.0, ..Default::default() });
         let smph = swapped.speed_mph();
         assert!(smph > 140.0 && smph <= 146.0, "swapped engine reached {smph:.1} mph, wanted ~144");
@@ -1853,6 +2004,28 @@ mod tests {
         drive(&mut swapped, &t, 40.0, Input { throttle: 1.0, boost: true, ..Default::default() });
         let rmph = swapped.speed_mph();
         assert!(rmph <= 201.0, "raceMode blew past the 200 mph cap at {rmph:.1}");
+
+        /* ...AND THE WRECK IS A WRECK.
+
+           Chapter 6 opens on the car Ryker left in the caldera, and it used to
+           be doing the full street 132 through every trial in the Forge - so
+           the rebuild that the whole chapter is built around was worth twelve
+           miles an hour. Seventy is a car that is hurt, and it makes the
+           hundred and forty-four at the end of it mean something. */
+        let mut wreck = Vehicle::new(&t, 0.0);
+        wreck.reset(&t, 100.0, 0.0);
+        wreck.fit_engine(Vehicle::ENGINE_BROKEN);
+        drive(&mut wreck, &t, 60.0, Input { throttle: 1.0, ..Default::default() });
+        let wmph = wreck.speed_mph();
+        assert!(wmph > 66.0 && wmph <= 72.0, "the wreck reached {wmph:.1} mph, wanted ~70");
+
+        /* And the rebuild is the thing that fixes it: the same car, fitted
+           with what Javas builds, has to roughly double. */
+        wreck.fit_engine(Vehicle::ENGINE_SWAP);
+        drive(&mut wreck, &t, 60.0, Input { throttle: 1.0, ..Default::default() });
+        let fixed = wreck.speed_mph();
+        assert!(fixed > 140.0 && fixed <= 146.0,
+            "the rebuilt wreck reached {fixed:.1} mph, wanted ~144");
     }
 
     /// A car on full throttle in a straight line must not wander off it.
@@ -2120,6 +2293,58 @@ mod tests {
             "a crooked landing cost only {:.1} u/s ({v_good:.1} vs {v_bad:.1})",
             v_good - v_bad
         );
+    }
+
+    /* A CREST IS DRIVEN ALONG, NOT FLOWN OVER.
+     *
+     * The bypass at MIRAGE CIRCUIT's blocked bore is a structure somebody threw
+     * up over the rubble: climb, a long shallow top the car actually drives
+     * along, and then the end of it. Three things have to be true and none of
+     * them is true of a plain wedge:
+     *
+     *   the car is still ON THE GROUND for the whole crest - a ramp whose top
+     *   launches you at the near end is a kicker, not a way past;
+     *   it holds its height there rather than continuing to climb;
+     *   and it is the shallow rise ALONG the crest that throws it at the far
+     *   end, so the launch is gentle and the drop is what makes the jump.
+     */
+    #[test]
+    fn a_crested_ramp_is_driven_along_before_it_launches() {
+        let t = straight_track(4000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 400.0, 0.0);
+        car.v_long = 70.0;
+        car.speed = 70.0;
+        // climb 500..600 to 10, crest 600..660 rising to 11.4, then nothing
+        car.arm_ramp_deck(500.0, 600.0, 660.0, 10.0, 11.4);
+
+        let dt = 1.0 / 120.0;
+        let (mut crest_frames, mut airborne_on_crest, mut top) = (0, 0, 0.0f64);
+        let mut launched_at = 0.0;
+        let mut landed_at = 0.0;
+        for _ in 0..(120 * 20) {
+            car.update(&t, dt, Input { throttle: 1.0, ..Default::default() }, true);
+            if car.s_track > 600.0 && car.s_track < 660.0 {
+                crest_frames += 1;
+                if car.is_airborne() { airborne_on_crest += 1; }
+                top = top.max(car.air_y);
+            }
+            if car.is_airborne() && launched_at == 0.0 { launched_at = car.s_track; }
+            if car.landed != 0.0 && landed_at == 0.0 { landed_at = car.s_track; }
+        }
+        assert!(crest_frames > 20, "the crest was crossed in {crest_frames} frames");
+        assert_eq!(airborne_on_crest, 0,
+            "the car left the ground {airborne_on_crest} times while still on the crest");
+        assert!((top - 11.4).abs() < 0.2, "the crest topped out at {top:.2}, not 11.4");
+        assert!(launched_at >= 659.0, "it launched at {launched_at:.0}, before the end of the crest");
+        assert!(landed_at > launched_at, "it never came down");
+        /* ...and the plain wedge is untouched by any of this: `arm_ramp` is
+           the same ramp it always was. */
+        car.reset(&t, 400.0, 0.0);
+        car.v_long = 70.0;
+        car.arm_ramp(500.0, 546.0, 4.2);
+        let r = car.ramp.expect("arm_ramp armed nothing");
+        assert_eq!((r.s1, r.s2, r.h, r.lip), (546.0, 546.0, 4.2, 4.2));
     }
 
     /// AN ARMED RAMP MUST NOT CHANGE A CAR THAT NEVER REACHES IT, and a car

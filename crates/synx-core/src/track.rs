@@ -63,6 +63,86 @@ pub const NEON_ZONES: [NeonZone; 9] = [
     NeonZone { from: 169_670.0, to: 173_210.0, amp: 1.0 / 380.0,  cycles: 2.0, phase: 1.20 },
 ];
 
+/* ------------------------------------------------------- the bore bypass ---
+ *
+ * THERE ARE NONE, AND THE MECHANISM IS KEPT ON PURPOSE.
+ *
+ * MIRAGE CIRCUIT's second bore is blocked, and the way past it used to be the
+ * ROAD: the carriageway climbed twenty-one units onto a deck that ran the
+ * length of the tunnel on piers. That is a mountain pass. What a blocked
+ * tunnel wants is a structure somebody threw up in front of it - see
+ * COURSE_RAMPS in js/game.js, where the bypass is now a ramp with a crest to
+ * drive along rather than a change of elevation.
+ *
+ * The table is left in place, empty. Everything downstream of it - the
+ * renderer honouring the centreline's own `y`, the fog knowing the difference
+ * between being inside a bore and on top of one - is correct code that
+ * Chapter 7's six height plateaus still use, and deleting the seam would mean
+ * rebuilding it the next time a route wants a genuine viaduct.
+ */
+pub struct Overpass {
+    pub from: f64,
+    pub deck0: f64,
+    pub deck1: f64,
+    pub to: f64,
+    pub h: f64,
+    pub bore0: f64,
+    pub bore1: f64,
+}
+
+pub const OVERPASSES: [Overpass; 0] = [];
+
+/// How many f64s `overpass_table` writes per entry.
+pub const OVERPASS_STRIDE: usize = 7;
+
+/// The table, flattened for the bridge.
+pub fn overpass_table(out: &mut Vec<f64>) {
+    out.clear();
+    for o in OVERPASSES.iter() {
+        out.extend_from_slice(&[o.from, o.deck0, o.deck1, o.to, o.h, o.bore0, o.bore1]);
+    }
+}
+
+/// The deck height at arc length `s`, or zero away from every bypass.
+pub fn overpass_height(s: f64) -> f64 {
+    let ease = |x: f64| {
+        let x = clamp(x, 0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    let mut y = 0.0;
+    for o in OVERPASSES.iter() {
+        if s <= o.from || s >= o.to {
+            continue;
+        }
+        y += if s < o.deck0 {
+            ease((s - o.from) / (o.deck0 - o.from)) * o.h
+        } else if s <= o.deck1 {
+            o.h
+        } else {
+            (1.0 - ease((s - o.deck1) / (o.to - o.deck1))) * o.h
+        };
+    }
+    y
+}
+
+/// True while the road is carried over a sealed bore rather than through it.
+pub fn on_overpass(s: f64) -> bool {
+    OVERPASSES.iter().any(|o| s > o.from && s < o.to)
+}
+
+fn apply_overpasses(c: &mut Centreline) {
+    if c.count == 0 || c.step <= 0.0 || OVERPASSES.is_empty() {
+        return;
+    }
+    for i in 0..c.count {
+        let s = i as f64 * c.step;
+        let h = overpass_height(s);
+        if h != 0.0 {
+            c.y[i] += h;
+        }
+    }
+}
+
 /// The centreline, stored as parallel arrays indexed by sample.
 #[derive(Clone, Default)]
 pub struct Centreline {
@@ -514,6 +594,16 @@ fn append_neon(c: &Centreline, want: f64) -> Centreline {
 /// from the exact last sample of the one before it, so no older sample ever
 /// moves and Routes 1-4 stay byte-for-byte the road they have always been.
 pub fn build_course(shipped: &Centreline, want: f64) -> Centreline {
+    let mut c = assemble(shipped, want);
+    /* LAST, AND ONLY THE ELEVATION. Every stage above continues from the exact
+       last sample of the one before it, so the bypass has to be laid over the
+       finished course rather than inside one of them - and it writes `y`
+       alone, which is why it cannot move a single metre of anybody's road. */
+    apply_overpasses(&mut c);
+    c
+}
+
+fn assemble(shipped: &Centreline, want: f64) -> Centreline {
     let shipped_len = shipped.count as f64 * shipped.step;
 
     if want > ASHFALL_COURSE_LENGTH && shipped_len < ASHFALL_COURSE_LENGTH - shipped.step * 2.0 {
@@ -687,6 +777,26 @@ mod tests {
         let t = Track::new(straight(4000, 6.0));
         let p = t.project(0.0, 12_000.0, 0.0);
         assert!((p.s - 12_000.0).abs() < 6.0, "s = {}", p.s);
+    }
+
+    /* THE BYPASS IS A STRUCTURE, NOT A ROAD, so there is nothing here to
+       assert about the course any more: the table is empty and the elevation
+       pass is a no-op. What the set piece is now - a ramp with a crest over a
+       blocked bore - is tested where it lives, against the solver that drives
+       it, in `a_crested_ramp_is_driven_along_before_it_launches`.
+       This is what is left: the seam must stay inert. */
+    #[test]
+    fn an_empty_bypass_table_moves_nothing() {
+        let plain = assemble(&straight(4494, 6.0), COURSE_LENGTH);
+        let built = build_course(&straight(4494, 6.0), COURSE_LENGTH);
+        assert_eq!(plain.count, built.count);
+        for i in 0..built.count {
+            assert_eq!(plain.y[i], built.y[i], "sample {i} was raised by an empty table");
+            assert_eq!(plain.x[i], built.x[i], "sample {i} moved in x");
+            assert_eq!(plain.z[i], built.z[i], "sample {i} moved in z");
+        }
+        assert_eq!(overpass_height(40_800.0), 0.0);
+        assert!(!on_overpass(40_800.0));
     }
 
     #[test]

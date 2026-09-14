@@ -39,6 +39,36 @@ use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/* A SUBPROCESS THAT DOES NOT FLASH A CONSOLE AT THE PLAYER.
+ *
+ * This executable is built as a Windows GUI application, so it has no console
+ * of its own - but a CHILD process still gets one unless it is told not to,
+ * and a child with a console is a black window that appears on top of
+ * everything, sits there for as long as the command takes, and vanishes.
+ *
+ * Which is the cmd window in the report. The launcher fills its diagnostics
+ * line the moment it has painted, that costs `cmd /c ver` and a PowerShell,
+ * and each of those is a console window over the top of a game that is still
+ * coming up. Nobody reads it and it looks exactly like something going wrong.
+ *
+ * CREATE_NO_WINDOW (0x0800_0000) is the documented way to say so. It only
+ * suppresses the window; the child still runs and stdout still comes back,
+ * which is the entire reason any of these are spawned.
+ *
+ * Every Command in this process goes through here. There is no second way to
+ * start one, because a second way is how one gets forgotten.
+ */
+#[allow(unused_mut)]
+pub fn quiet(mut cmd: std::process::Command) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// The in-memory trace. Bounded, because a run that fails after two hours
 /// should still produce a readable file rather than a hundred megabytes.
 static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -99,7 +129,7 @@ fn os_version() -> String {
     #[cfg(target_os = "windows")]
     {
         // `cmd /c ver` prints e.g. "Microsoft Windows [Version 10.0.26200.1234]"
-        if let Ok(out) = std::process::Command::new("cmd").args(["/c", "ver"]).output() {
+        if let Ok(out) = quiet(std::process::Command::new("cmd")).args(["/c", "ver"]).output() {
             let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if !s.is_empty() {
                 return s;
@@ -157,7 +187,7 @@ fn memory() -> String {
            carries is the processor count, and the memory needs an API call we
            would have to pull the `windows` crate in for. PowerShell knows, and
            this only ever runs while a report is being written. */
-        if let Ok(out) = std::process::Command::new("powershell")
+        if let Ok(out) = quiet(std::process::Command::new("powershell"))
             .args([
                 "-NoProfile",
                 "-NonInteractive",

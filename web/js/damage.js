@@ -83,6 +83,45 @@
 
     get any() { return this.count > 0 || this.wear > 0.002; }
 
+    /* ARRIVE WRECKED.
+     *
+     * Chapter 6 opens on the car Ryker put into the wall at the end of
+     * ASHFALL ZERO, and it opened on a showroom one: clean panels, full bar,
+     * no penalty. The chapter is about a rebuild and the thing being rebuilt
+     * was in perfect condition.
+     *
+     * Driven through `hit` rather than by setting the numbers, so the body
+     * that comes out of this is a body the dent shader already knows how to
+     * draw and the solver already knows how to slow down - there is no
+     * second way to be damaged. The placements are fixed rather than random
+     * because this is a scripted state: every player arrives at the Forge in
+     * the same wreck, and a replay of the chapter shows the same car.
+     *
+     * Front-left is the heaviest, because that is the corner that went into
+     * the wall; the rest is what happened on the way to the Forge.
+     */
+    wreck() {
+      this.reset();
+      const HITS = [
+        // x,          y,     z,      inward normal,        force
+        [-BODY.hx * 0.86, 0.10, BODY.front * 0.82, 0.72, -0.10, -0.68, 1.00],
+        [-BODY.hx * 0.94, -0.16, BODY.front * 0.30, 0.96, -0.06, -0.26, 0.86],
+        [BODY.hx * 0.90, 0.02, BODY.front * 0.58, -0.92, -0.08, -0.38, 0.74],
+        [BODY.hx * 0.82, -0.10, BODY.back * 0.62, -0.88, -0.04, 0.46, 0.68],
+        [-BODY.hx * 0.70, 0.24, BODY.back * 0.84, 0.54, -0.22, 0.80, 0.80],
+        [0.10, BODY.hy * 0.72, BODY.front * 0.10, -0.05, -0.98, -0.16, 0.62],
+      ];
+      for (const h of HITS) this.hit(h[0], h[1], h[2], h[3], h[4], h[5], h[6]);
+      /* ...and then it is simply AT the end of the scale. The hits above are
+         what it looks like; this is what it costs, and a wreck the player is
+         told to go and get rebuilt should read as fully spent rather than as
+         eighty-odd per cent of one. */
+      this.wear = 1;
+      this.total = 1;
+      this.dirty = true;
+      return this;
+    }
+
     /* Record a hit.
      *
      * `bx,by,bz` is where it landed in body space and `nx,ny,nz` is the

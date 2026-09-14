@@ -40,7 +40,7 @@
   /** The ABI this file was written against. The module refuses to load if the
       .wasm disagrees, which turns "a stale build" from a mystery into a line
       of text. */
-  const WANT_ABI = 10;
+  const WANT_ABI = 15;
 
   let wasm = null;      // the instance's exports
   let buffer = null;    // the ArrayBuffer the current views were made over
@@ -107,6 +107,8 @@
       }
       defineVehicleFields(names);
       readLevels();
+      readOverpasses();
+      readAirConstants();
       NR.coreReady = true;
       return NR;
     };
@@ -138,6 +140,78 @@
       NR.AI_LEVELS[LEVEL_NAMES[l]] = o;
     }
   }
+
+  /* THE BORE BYPASSES.
+   *
+   * Read from the core rather than declared here, because they are not
+   * constants about the road the way its width is - they are the road. The
+   * deck is the centreline's own elevation (see `OVERPASSES` in track.rs) and
+   * three separate consumers have to agree with it exactly: js/scene.js builds
+   * the structure under it and seals the bore, js/game.js keeps the tunnel's
+   * fog off a car that is on the roof rather than inside, and the physics
+   * simply drives it. Four arc lengths copied into JavaScript would be four
+   * arc lengths that drift the first time one of them moves.
+   *
+   * Each entry is { from, deck0, deck1, to, h, bore0, bore1 }.
+   */
+  function readOverpasses() {
+    const w = M();
+    NR.OVERPASSES = [];
+    if (!w.synx_overpass_count) return;
+    const n = w.synx_overpass_count() | 0;
+    if (!n) return;
+    const stride = w.synx_overpass_stride() | 0;
+    const p = w.synx_overpasses() >> 3;
+    for (let i = 0; i < n; i++) {
+      const o = p + i * stride;
+      NR.OVERPASSES.push({
+        from: F64[o], deck0: F64[o + 1], deck1: F64[o + 2], to: F64[o + 3],
+        h: F64[o + 4], bore0: F64[o + 5], bore1: F64[o + 6],
+      });
+    }
+  }
+
+  /* WHAT A CAR IN THE AIR DOES.
+     Read from the core for the same reason the bypasses are: the attract drive
+     behind the menus is kinematic - it never touches the solver - and it has
+     to put a car through the SAME arc the game does, or the title screen is
+     showing something that only looks like this game. */
+  function readAirConstants() {
+    const w = M();
+    NR.AIR = { g: 27, drag: 0.055, pitchAcc: 0.85, pitchMax: 0.85, landTol: 0.21 };
+    if (!w.synx_air_constants) return;
+    const p = w.synx_air_constants() >> 3;
+    NR.AIR = {
+      g: F64[p], drag: F64[p + 1], pitchAcc: F64[p + 2],
+      pitchMax: F64[p + 3], landTol: F64[p + 4],
+    };
+  }
+
+  /** The deck height at `s`, or 0 away from every bypass. Matches
+   *  `overpass_height` in track.rs, including its smoothstep ends. */
+  NR.overpassHeight = function (s) {
+    const list = NR.OVERPASSES;
+    if (!list || !list.length) return 0;
+    let y = 0;
+    for (let i = 0; i < list.length; i++) {
+      const o = list[i];
+      if (s <= o.from || s >= o.to) continue;
+      if (s < o.deck0) { const t = (s - o.from) / (o.deck0 - o.from); y += t * t * (3 - 2 * t) * o.h; }
+      else if (s <= o.deck1) y += o.h;
+      else { const t = (s - o.deck1) / (o.to - o.deck1); y += (1 - t * t * (3 - 2 * t)) * o.h; }
+    }
+    return y;
+  };
+
+  /** True while the road is carried OVER a sealed bore rather than through it. */
+  NR.onOverpass = function (s) {
+    const list = NR.OVERPASSES;
+    if (!list) return false;
+    for (let i = 0; i < list.length; i++) {
+      if (s > list[i].from && s < list[i].to) return true;
+    }
+    return false;
+  };
 
   /** Copy a block of f64 out of the module into an ordinary array. */
   function copyF64(ptr, n) {
@@ -305,8 +379,12 @@
       return this;
     }
 
+    /* Which engine is in the car: 'swap' is the Forge rebuild, 'broken' is
+       the wreck Chapter 6 opens on, anything else is the street block. The
+       numbers match the ENGINE_ constants in crates/synx-core/src/vehicle.rs. */
     fitEngine(kind) {
-      M().synx_veh_fit_engine(this._id, kind === 'swap' ? 1 : 0);
+      const k = kind === 'swap' ? 1 : (kind === 'broken' ? 2 : 0);
+      M().synx_veh_fit_engine(this._id, k);
       return this;
     }
 
@@ -318,6 +396,16 @@
        where it ends. */
     armRamp(s0, s1, h) {
       M().synx_veh_arm_ramp(this._id, s0 || 0, s1 || 0, h || 0);
+      return this;
+    }
+
+    /* ...and one with a CREST to drive along before it runs out.
+       `s1` is where the climb levels off, `s2` where the structure ends and
+       `lip` the height there. A wedge launches you; a thing you get OVER has a
+       top, and the bypass at MIRAGE CIRCUIT's blocked bore is the second kind.
+       See the note above `Ramp` in crates/synx-core/src/vehicle.rs. */
+    armRampDeck(s0, s1, s2, h, lip) {
+      M().synx_veh_arm_ramp_deck(this._id, s0 || 0, s1 || 0, s2 || 0, h || 0, lip || 0);
       return this;
     }
     clearRamp() { return this.armRamp(0, 0, 0); }
@@ -341,6 +429,35 @@
     get speedMs() { return this.speed * NR.UNIT_METRES; }
     get speedKmh() { return this.speedMs * 3.6; }
     get speedMph() { return this.speedMs * 2.23694; }
+
+    /* THE FASTEST THIS CAR CAN GO, in the same units, whatever is under the
+       bonnet right now.
+
+       `engineTop` is what the engine will pull to on its own and `speedCap` is
+       the hard ceiling the solver enforces above it - Infinity on the street
+       block, and the Forge rebuild's 122 once the swap is fitted, which is the
+       200 mph raceMode is allowed to reach. So the ceiling is the cap when
+       there is one and the engine's own top when there is not, and it changes
+       exactly when the car does.
+
+       This exists because the speedometer needs it. A dial scaled to a
+       constant is a dial that stops meaning anything the moment the car it is
+       bolted to is rebuilt - see the note in js/hud.js. */
+    get ceilingUnits() {
+      const cap = this.speedCap;
+      const top = this.engineTop || 0;
+      return (cap !== undefined && isFinite(cap) && cap > 0) ? Math.max(top, cap) : top;
+    }
+    get ceilingMph() { return this.ceilingUnits * NR.UNIT_METRES * 2.23694; }
+    get ceilingKmh() { return this.ceilingUnits * NR.UNIT_METRES * 3.6; }
+
+    /* ...and what the block will pull on its own, without the reserve. The
+       two are different numbers and the difference is the whole point of the
+       Forge: 144 on the engine, 200 with raceMode in. Chapter 6 puts both on
+       the card it hands the player, and it reads them from here so the card
+       cannot end up quoting a figure the solver stopped producing. */
+    get engineTopMph() { return (this.engineTop || 0) * NR.UNIT_METRES * 2.23694; }
+    get engineTopKmh() { return (this.engineTop || 0) * NR.UNIT_METRES * 3.6; }
   }
 
   /** One wheel's slice of the same block. */
@@ -589,8 +706,52 @@
    * in. Stamping it is twenty-four million inner iterations at the shipped
    * reach and was most of the landscape's cost; the core does it now and hands
    * back a view of the answer. */
+  /* ===================================== WHICH SAMPLE OF THE ROAD IS NEAREST
+   *
+   * The grid the core stamps, and the single most load-bearing number in the
+   * whole world build: every clearance test there is - no tower within two
+   * hundred units of the road, no prop within a hundred and ten, no rubble in
+   * the lane - is a lookup in here.
+   *
+   * IT MUST NOT BE CACHED, AND IT WAS.
+   *
+   * `near` was built once, at stamp time, as a view onto WebAssembly linear
+   * memory. Growing that memory REPLACES the buffer and DETACHES every view
+   * onto the old one - and the world build grows it constantly afterwards, as
+   * the dressing arena fills. From the first growth onward every read of this
+   * array returned `undefined`, silently, because a detached typed array
+   * throws nothing.
+   *
+   * What that does downstream is worse than a crash. `undefined` is not less
+   * than zero, so it is not caught as "off the grid"; it becomes a seed of
+   * NaN, an empty refine loop, and a distance of INFINITY. Scene.roadAt then
+   * reports every point in the world as infinitely far from any road, and
+   * every clearance test written against it - all of them - passes. That is
+   * how buildings ended up in the middle of the carriageway on the routes
+   * late enough in the build for the arena to have grown: the generators were
+   * asking the right question and being told the road was not there.
+   *
+   * So the view is revalidated on every read. The check is one identity
+   * comparison against the current buffer and the rebuild only happens on the
+   * handful of frames where memory actually grew. js/scene.js has the same
+   * rule for the geometry arena and says so in the same words - see the note
+   * on `push` in buildDressing - which is where this should have been learned
+   * the first time.
+   */
   const Land = {
-    near: null, gw: 0, gh: 0, x0: 0, z0: 0, cell: 120,
+    gw: 0, gh: 0, x0: 0, z0: 0, cell: 120,
+    _near: null, _buf: null, _ptr: 0, _len: 0,
+
+    /** The live grid, or null before it has been stamped. */
+    get near() {
+      if (!this._len || !wasm || !wasm.memory) return null;
+      const buf = wasm.memory.buffer;
+      if (this._buf !== buf || !this._near || this._near.length !== this._len) {
+        this._near = new Int32Array(buf, this._ptr, this._len);
+        this._buf = buf;
+      }
+      return this._near;
+    },
 
     stamp() {
       const w = M();
@@ -601,8 +762,11 @@
       this.x0 = F64[g + 2];
       this.z0 = F64[g + 3];
       this.cell = F64[g + 4];
-      // after the stamp, not before: it grows memory
-      this.near = new Int32Array(wasm.memory.buffer, w.synx_land_near(), n);
+      /* Recorded, not materialised. The view is built on demand by the getter
+         above, against whatever the buffer is at the time of the read. */
+      this._ptr = w.synx_land_near();
+      this._len = n;
+      this._buf = null;
       return n;
     },
   };
@@ -1002,7 +1166,11 @@
     return w.synx_drv_load();
   }
   /** Every part's world matrix for one figure, as a live view of n*16. */
-  function drvPose(model, spin, press) {
+  /* `spin` is the rim's angle and `hand` the hands' - the same number until
+     the rim is past about seventy degrees, after which the wheel slides
+     through the driver's grip instead of carrying their arms round with it.
+     See GRIP in crates/synx-core/src/driver.rs. */
+  function drvPose(model, spin, hand, press) {
     const w = M();
     if (!w || !w.synx_drv_pose) return null;
     /* The car transform has to be IN core memory to be read from there, so
@@ -1011,7 +1179,7 @@
     const at = w.synx_drv_mptr() >> 2;
     M();
     F32.set(model, at);
-    const out = w.synx_drv_pose(spin, press || 0) >> 2;
+    const out = w.synx_drv_pose(spin, hand, press || 0) >> 2;
     M();
     return F32.subarray(out, out + drvPose.n * 16);
   }

@@ -288,6 +288,242 @@
 
   const DIFFICULTIES = ['EASY', 'MEDIUM', 'HARD', 'IMPOSSIBLE'];
 
+  /* ====================================================================== *
+   *                           THE STUNT COURSE                             *
+   * ====================================================================== *
+   *
+   * EVERY LAUNCH RAMP ON THE ROAD, IN ONE TABLE.
+   *
+   * They used to live inside Chapter 7's closure, which made them three
+   * scripted props in a finale rather than a thing the road does. Three
+   * consequences followed from that and all of them were wrong:
+   *
+   *   only the PLAYER was ever launched. The solver's ramp is a window
+   *   installed on one car, and the chapter installed it on `g.car` and
+   *   nothing else - so a rival met a full-width concrete ramp and drove
+   *   through it, which is the single most obvious way to tell a player that
+   *   the car beside them is not in the same world they are;
+   *
+   *   only ONE ROUTE had any. Six of the seven never met one;
+   *
+   *   and the geometry, the arming and the scoring were three copies of the
+   *   same arc lengths in three places.
+   *
+   * The table is the single source now. `Game.updateRamps` arms whichever one
+   * is next for EVERY car that is being simulated - the player, the rival and
+   * Chapter 4's invitational grid - js/scene.js builds the structure from the
+   * same rows, and the core's driver reads the window off the car it is
+   * driving (see `RAMP_SET_UP` in ai.rs) so it sets up for the jump, holds its
+   * line up the incline and spends its air control on landing straight.
+   *
+   * WHERE THEY ARE is not a matter of taste. A ramp needs a straight to be
+   * taken on and a straight to come down on: the sites below were selected by
+   * sweeping the finished centreline for spans with no tunnel and no curvature
+   * tighter than a 1,800-unit radius for 300 units before the lip and 460
+   * after it, which is comfortably more than the ~100 units a launch at deck
+   * speed actually flies. AURORA FORGE is deliberately empty: it is an indoor
+   * production hall whose whole length is somebody else's set piece.
+   *
+   *   s      where the lip is, in arc length
+   *   len    how long the incline is. Longer is shallower and flatter; shorter
+   *          throws the car higher and gives it less time to be straightened.
+   *   h      the lip's height above the road
+   *
+   * They get gently harder across the campaign, and Chapter 7's three - which
+   * keep the exact arc lengths, lengths and heights they shipped with - are
+   * the top of that progression rather than a separate idea.
+   */
+  const COURSE_RAMPS = [
+    { id: 'l1_seawall', level: 1, s: 1120,   len: 54, h: 2.8, name: 'SEAWALL LAUNCH' },
+    { id: 'l2_spine',   level: 2, s: 23900,  len: 46, h: 3.4, name: 'SPINE LAUNCH' },
+    /* ---------------------------------------------------- THE BLOCKED BORE --
+     *
+     * MIRAGE CIRCUIT's second tunnel is shut - the mouth is full of collapsed
+     * shell and nobody has cleared it - and somebody has thrown a ramp up in
+     * front of it out of scaffold, barrier blocks and steel plate.
+     *
+     * This is the one ramp on the course with a CREST: `crest` units of
+     * shallow, drivable top that carry the car over the rubble before it runs
+     * out of structure at `s`. That is the difference between getting past
+     * something and jumping over it, and it is why the core's ramp grew an
+     * `s2` - see the note above `Ramp` in crates/synx-core/src/vehicle.rs.
+     *
+     * The bore itself is dead straight (a 9,199-unit radius through it), which
+     * is why this tunnel and not one of the other seventeen: the whole set
+     * piece is a climb, a run along the top and a drop, and none of it wants a
+     * corner underneath it. The landing is inside the bore on flat road,
+     * between about 40,806 at a crawl and 40,889 flat out - clear of the spill,
+     * which is scenery and ends at 40,798.
+     */
+    { id: 'l3_bore', level: 3, s: 40766, len: 106, h: 10.4,
+      crest: 40, lip: 12.0, name: 'THE BLOCKED BORE',
+      /* What it is built over, for js/scene.js: the bore mouth and how far the
+         spill of rubble reaches back down the road. */
+      bore: 40770, spill: 40798 },
+    { id: 'l4_skyline', level: 4, s: 73900,  len: 40, h: 3.9, name: 'SKYLINE LAUNCH' },
+    { id: 'l5_ashfall', level: 5, s: 94900,  len: 36, h: 4.2, name: 'ASHFALL LAUNCH' },
+    /* NEON HORIZON's three, in the quiet stretch between the tunnel that ends
+       at 162,294 and the first maze gate at 166,260.
+       THEY HAVE MOVED, and the reason is the same sweep that sited the five
+       above. A landing is scored on the heading error at touchdown, so what a
+       site costs is the angle the ROAD turns through while the car is in the
+       air - and measured over a 160-unit flight the three as they shipped came
+       out at 3.4, 0.4 and 7.8 degrees. The tolerance is twelve degrees and the
+       score is the square of what is left, so the best a perfect launch could
+       have scored off LONG LAUNCH was 0.12 against a 0.62 threshold: it was
+       not a hard clean landing, it was an unobtainable one, and the chapter
+       has a line of dialogue for going three for three that could essentially
+       never fire. The old site also put its landing zone 250 units short of
+       the first maze gate.
+       These three are 0.12, 0.32 and 0.12 degrees, they are 440 apart so the
+       section reads as one run rather than three errands, and the lengths,
+       heights, names and order are exactly what they were. */
+    { id: 'jump_a',     level: 7, s: 164620, len: 46, h: 3.4, name: 'FIRST LAUNCH' },
+    { id: 'jump_b',     level: 7, s: 165060, len: 38, h: 4.1, name: 'SECOND LAUNCH' },
+    { id: 'jump_c',     level: 7, s: 165500, len: 32, h: 4.8, name: 'LONG LAUNCH' },
+  ];
+  /* ---------------------------------------------------- THE ATTRACT REEL --
+   *
+   * WHAT PLAYS BEHIND THE MENUS.
+   *
+   * The drive behind the title screen used to start wherever the car happened
+   * to be and run forward for ever, wrapping at the end of the course. At
+   * fifty-five units a second a lap is fifty-three minutes, so what it
+   * actually showed was whichever kilometre of empty road the last race
+   * finished on - and the eight launch ramps, the sealed bore, the elevated
+   * city deck and every tunnel on the course went past about once an hour.
+   *
+   * This is a reel: stretches chosen because something happens on them, each
+   * long enough to breathe and short enough that the next one arrives before
+   * the eye gets bored, cut in order and looping. Every entry is measured to
+   * ARRIVE at its set piece a few seconds in rather than opening on it, so the
+   * cut lands on approach and the payoff lands while the player is reading the
+   * menu rather than while the screen is still settling.
+   */
+  const ATTRACT_SPEED = 55;
+  /* Published so the benchmark can drive the same stretches the title screen
+     does - see js/bench.js. It picks its scenes by `kind` rather than by
+     index, so re-cutting the reel moves the benchmark with it instead of
+     silently changing what is being measured. */
+  global.NR.ATTRACT_SPEED = ATTRACT_SPEED;
+
+  /* THE SHOTS THE REEL IS CUT IN.
+   *
+   * Every mark is expressed in the CAR's own frame - `f` forward along its
+   * nose, `s` to its right, `h` above it - with the look-at offset by `tf` and
+   * `th`. `dolly` is how far the mark travels over the life of the shot, so a
+   * held shot is a move rather than a still, and `hand` is how much of a
+   * hand-held wobble rides on it.
+   *
+   * The chase camera was doing all of this work before, which is the right
+   * camera for DRIVING and the wrong one for watching: it sits behind the car
+   * at a fixed distance and shows the player the same three-quarter rear view
+   * of their own boot lid for as long as the menu is open. A title screen is a
+   * trailer. */
+  const ATTRACT_SHOTS = {
+    /* A long lens down the road, the car coming toward it.
+
+       IT NEVER ARRIVED. A mark holds until the car passes the next one, and
+       the approach marks are 150 units apart - two and a half seconds - so a
+       dolly written to close 26 units over a full six-and-a-half-second hold
+       only ever ran a third of its travel. The car came from 62 units to 51
+       and the shot cut: a speck on a horizon, over half a frame of bare
+       asphalt, for the whole of it.
+
+       Shorter lens, closer start, and a dolly that closes in the time the
+       shot is actually given - so it ends with the car most of the way to
+       the lens, which is what an approach is. Lower, too: a camera at 2.3
+       looking at 1.05 is angled down, and everything below the car in that
+       frame is road. */
+    approach: { f: 46, s: 3.0, h: 1.62, tf: 0, th: 1.15, fov: 40, dolly: [-30, 0.4, 0.10], hand: 0.16 },
+    // low and ahead: what a launch is filmed from
+    launch:   { f: 21, s: 2.2, h: 0.58, tf: 0, th: 1.20, fov: 46, dolly: [-9.0, 0.5, 0.06], hand: 0.34 },
+    // riding the flank, drifting back
+    flank:    { f: -1.5, s: 8.2, h: 2.05, tf: 4, th: 1.15, fov: 50, dolly: [-4.2, -1.6, 0.10], hand: 0.28 },
+    // over the shoulder, pulling out
+    chase:    { f: -10.5, s: 1.4, h: 3.30, tf: 16, th: 1.30, fov: 60, dolly: [-4.0, -0.6, 0.55], hand: 0.14 },
+    /* Wide and high, descending - for the city and the deck.
+
+       IT USED TO LOOK 26 UNITS PAST THE CAR. From thirteen units up and
+       fourteen out that aims the lens down the road ahead and leaves the car
+       itself 39 degrees off the axis, under the bottom of a 52 degree frame:
+       a third of every crane in the reel was an establishing shot of a city
+       with nothing driving through it. Nine units ahead and a unit up keeps
+       the road running out of the top of the frame, which is what the mark is
+       for, and keeps the car in it, which is what the reel is for. */
+    crane:    { f: -13, s: 15, h: 17.0, tf: 9, th: 1.20, fov: 52, dolly: [7.0, -4.5, -5.2], hand: 0.10 },
+    // close on the body, as it goes past
+    detail:   { f: 3.4, s: 3.6, h: 1.32, tf: 0.4, th: 1.05, fov: 38, dolly: [-3.0, 0.5, 0.04], hand: 0.40 },
+  };
+
+  /* WHAT PLAYS BEHIND THE MENUS, AND HOW IT IS SHOT.
+   *
+   * `shots` is a running order keyed by arc length: the last mark whose
+   * position the car has passed is the one the camera is on. Every entry ends
+   * on a `launch` mark placed a few car lengths before its ramp, because the
+   * jump is the thing worth cutting to and a camera that arrives after the
+   * take-off has missed it. */
+  const ATTRACT_REEL = [
+    /* ------------------------------------ THE WHOLE GAME, IN ONE LOOP ----
+     *
+     * Six stretches in three flavours, alternating, so a player watching the
+     * menu for a minute has seen everything this car does:
+     *
+     *   DRIFT   a real corner, taken sideways. The two here are the tightest
+     *           on the course - ninety and ninety-four units of radius -
+     *           picked by measuring how far the road turns through every
+     *           620-unit window rather than by eye.
+     *   JUMP    a launch ramp, and the structure is SHOWN. The reel used to
+     *           be cut entirely around ramps and it was reported as ghost
+     *           ramps: the `launch` mark is low and ahead, a ramp seen that
+     *           way at two hundred units is a dark slab the eye does not
+     *           separate from the road, and what it looked like was a car
+     *           taking off from flat tarmac. Every jump here therefore opens
+     *           on a FLANK mark - side on, where a wedge is unmistakably a
+     *           wedge - before it cuts low for the take-off.
+     *   FLAT    a straight, on the reheat. Two of the three flattest
+     *           kilometres on the course, one through the city and one down
+     *           the canyon, because a game about speed should show some.
+     *
+     * Nothing here is accidental: the corners and the straights were both
+     * chosen by measurement, and tools/checkramps.js asserts that the only
+     * stretches containing a ramp are the ones that mean to.
+     */
+    // the seawall hairpin: ninety-five units of radius, taken sideways
+    { from: 5220, to: 6300, name: 'VECTOR RUN', kind: 'drift',
+      shots: [[5220, 'crane'], [5480, 'flank'], [5820, 'detail'], [6060, 'chase']] },
+    // ASHFALL's ramp, opened side-on so the ramp is a ramp before it is a jump
+    { from: 94540, to: 95360, name: 'ASHFALL ZERO', kind: 'jump',
+      shots: [[94540, 'approach'], [94700, 'flank'], [94850, 'launch'], [95010, 'chase']] },
+    // the city at midnight, flat out
+    { from: 76380, to: 77280, name: 'SUNSET ZERO', kind: 'flat',
+      shots: [[76380, 'crane'], [76630, 'approach'], [76900, 'chase'], [77140, 'detail']] },
+    // the canyon's right-hander, ninety-four units of radius between walls
+    { from: 14000, to: 15080, name: 'THE SPINE', kind: 'drift',
+      shots: [[14000, 'crane'], [14260, 'flank'], [14600, 'detail'], [14840, 'chase']] },
+    /* MIRAGE CIRCUIT's sealed bore: a crude ramp built out of the rubble, a
+       crest driven along, and a twelve-unit lip into the tunnel beyond. The
+       best thing the menu has to show, and the one structure nobody could
+       mistake for flat road - so it opens on the flank shot and holds it. */
+    { from: 40380, to: 40900, name: 'THE BLOCKED BORE', kind: 'jump',
+      shots: [[40380, 'approach'], [40540, 'flank'], [40680, 'launch'], [40800, 'chase']] },
+    // ...and the canyon straight, on the reheat
+    { from: 24600, to: 25500, name: 'THE SPINE', kind: 'flat',
+      shots: [[24600, 'crane'], [24850, 'approach'], [25120, 'chase'], [25360, 'detail']] },
+  ];
+
+  /* How far before the lip a ramp is armed and its approach is painted. It has
+     to be longer than the road a car covers while a player reads it, which at
+     deck speed is about two seconds. */
+  const RAMP_TELEGRAPH = 280;
+  /* What a landing has to score to count as clean. The solver's `landing` is 1
+     at dead straight and 0 at twelve degrees out, squared - so 0.62 is about
+     four and a half degrees, which is tight enough to be worth doing and wide
+     enough that a deliberate line through it lands it. */
+  const RAMP_CLEAN = 0.62;
+  /* A ramp a bumper behind the car is not the next one. */
+  const RAMP_PAST = -14;
+
   /* ---------------------------------------------------------- FREE ROAM ----
    *
    * The campaign hands the player one route at a time, cut to the length of a
@@ -503,6 +739,41 @@
      which is why these are two numbers and not one. */
   const FREE_ROAM_RIX_PACE = 1.10;
   const FREE_ROAM_RIX_GRIP = 1.12;
+  /* ------------------------------------------- THE OPEN ROAD'S SPEED DIAL --
+   *
+   * One ceiling per rung, in world units a second, written against what the
+   * player actually does out here. Both cars leave the workshop with the Forge
+   * engine, so a tour driven well averages about 86 on the throttle and the
+   * reserve - ordinary boost is worth well under a unit a second averaged,
+   * because the burn is too short to reach the higher ceiling - and about a
+   * hundred while synchronised.
+   *
+   * These are handed to `rival.speedCap`, which the solver's `ceiling()` and
+   * the driver's own planner both read. That matters: without a hard cap the
+   * rival's top speed was decided by its boost thrust against its drag, which
+   * is around 130, and every pace and grip number here was tuning something
+   * that was not the binding constraint. EASY is a car to follow, MEDIUM is a
+   * car to race, HARD is a car that is quicker than you, and the R-IX is the
+   * one that hunted you.
+   */
+  const FREE_ROAM_TOP = [80, 86, 92, 98];
+  /* ...and what a gap it is genuinely behind is worth. Squared on the way in,
+     so being alongside costs nothing at all. */
+  const FREE_ROAM_CHASE_TOP = [5, 9, 15, 22];
+  /* THE WINDOW, out here as well.
+   *
+   * raceMode is the Chapter 6 reward and it has to mean the same thing on an
+   * open road as it does in the finale: thirty seconds that buy you road. The
+   * first version of this did the opposite - it read `synced` as a reason for
+   * the rival to push HARDER, so spending the one ability the tour hands you
+   * summoned a faster car. While the player is synchronised the ceiling is
+   * held here and the chase term is switched off, and both come back the frame
+   * the window closes. */
+  const FREE_ROAM_MODE_TOP = [80, 86, 90, 94];
+  /* What the R-IX spends when it is passed. Eleven units a second over its
+     own ceiling, held for the length of the burst, which is a car arriving in
+     your mirror rather than a car that was always there. */
+  const FREE_ROAM_COUNTER_TOP = 109;
 
   /* States in which nobody is driving. The title screen, the options, the two
      front-of-house screens js/modeselect.js and js/freeroam.js own, and the
@@ -584,18 +855,190 @@
    * behind our back. Nothing in the game deletes one today; it is here so that
    * the day something does, this does not become a bug in an unrelated file.
    */
+  /* ================================ THE REDUNDANT STATE FILTER =========
+   *
+   * Setting a piece of GL state to the value it already has is not free. It
+   * is a call across the binding into the browser's GPU process, argument
+   * validation, and on some drivers a shadow-state update - for a call that
+   * changes nothing at all. A renderer that submits several hundred draws a
+   * frame makes tens of thousands of these, and they are pure loss: the
+   * picture is identical with them and without them, which is what makes
+   * this safe to do at all.
+   *
+   * This started as the VAO alone. What it filters now is every piece of
+   * GLOBAL state the renderer touches per draw - the program, the active
+   * texture unit, the texture bound to each unit, and the pipeline switches -
+   * because they are set the same way, by whoever needs them, without anyone
+   * knowing what the last caller left behind. Measured on a lap of the
+   * finale: see --probe glstate.
+   *
+   * WHAT IS DELIBERATELY NOT FILTERED, and why each one would be a bug:
+   *
+   *   bindBuffer. ELEMENT_ARRAY_BUFFER is not global state, it belongs to
+   *   the vertex array object - so a cache of it is wrong the instant a
+   *   different VAO is bound, and wrong in the worst way: the indices of
+   *   one mesh drawn with the vertices of another.
+   *
+   *   uniforms. Uniform state belongs to the PROGRAM, so a cache would have
+   *   to be keyed on program and location, and the values are mostly
+   *   matrices that change every frame anyway. The bookkeeping would cost
+   *   more than the calls.
+   *
+   *   anything with a side effect beyond the state itself - clears, draws,
+   *   uploads. Obviously.
+   *
+   * AND IT HAS TO FORGET. A context loss resets every one of these to its
+   * default, so a cache that survived one would suppress the calls that put
+   * the state back. The listener below is the whole of that.
+   */
   function memoiseVao(gl) {
-    const bind = gl.bindVertexArray.bind(gl);
-    const del = gl.deleteVertexArray.bind(gl);
-    let cur;                       // undefined, so the first bind always runs
+    const raw = {
+      bindVertexArray: gl.bindVertexArray.bind(gl),
+      deleteVertexArray: gl.deleteVertexArray.bind(gl),
+      useProgram: gl.useProgram.bind(gl),
+      deleteProgram: gl.deleteProgram.bind(gl),
+      activeTexture: gl.activeTexture.bind(gl),
+      bindTexture: gl.bindTexture.bind(gl),
+      deleteTexture: gl.deleteTexture.bind(gl),
+      enable: gl.enable.bind(gl),
+      disable: gl.disable.bind(gl),
+      depthMask: gl.depthMask.bind(gl),
+      depthFunc: gl.depthFunc.bind(gl),
+      cullFace: gl.cullFace.bind(gl),
+      frontFace: gl.frontFace.bind(gl),
+      blendFunc: gl.blendFunc.bind(gl),
+      viewport: gl.viewport.bind(gl),
+    };
+    /* What is currently set. Every one starts undefined rather than at its
+       documented default, so the first call of each always reaches the driver
+       - a cache that assumes the initial state is a cache that is wrong once
+       per context for no reason. */
+    let vao, prog, unit;
+    let caps = null, depthW, depthF, cull, front, blendS, blendD, vpx, vpy, vpw, vph;
+    let units = null;
+    /* How many calls this has and has not passed on, for --probe glstate.
+       Counted because "this is obviously faster" is how a renderer ends up
+       with an optimisation that costs more than it saves. */
+    const seen = { sent: 0, saved: 0 };
+    /* WHAT THE CACHE BELIEVES, so it can be held against what the driver
+       actually has. A redundant-call filter is exactly as correct as its
+       model of the state, and a model that has drifted does not produce an
+       error - it produces a draw with the wrong texture on it, once, on one
+       machine. So the model is readable, and --probe glstate reads it back
+       against getParameter every frame and says if the two ever disagree. */
+    seen.believed = () => ({
+      vao, prog, unit,
+      depthW, depthF, cull, front, blendS, blendD,
+      vp: [vpx, vpy, vpw, vph],
+      caps, units,
+    });
+    gl.__state = seen;
+
+    const forget = () => {
+      vao = prog = unit = undefined;
+      caps = new Map();
+      units = new Map();
+      depthW = depthF = cull = front = blendS = blendD = undefined;
+      vpx = vpy = vpw = vph = undefined;
+    };
+    forget();
+    if (gl.canvas && gl.canvas.addEventListener) {
+      gl.canvas.addEventListener('webglcontextlost', forget, false);
+      gl.canvas.addEventListener('webglcontextrestored', forget, false);
+    }
+
     gl.bindVertexArray = (v) => {
-      if (v === cur) return;
-      cur = v;
-      bind(v);
+      if (v === vao) { seen.saved++; return; }
+      vao = v; seen.sent++;
+      raw.bindVertexArray(v);
     };
     gl.deleteVertexArray = (v) => {
-      if (v === cur) cur = undefined;
-      del(v);
+      if (v === vao) vao = undefined;
+      raw.deleteVertexArray(v);
+    };
+
+    gl.useProgram = (p) => {
+      if (p === prog) { seen.saved++; return; }
+      prog = p; seen.sent++;
+      raw.useProgram(p);
+    };
+    gl.deleteProgram = (p) => {
+      if (p === prog) prog = undefined;
+      raw.deleteProgram(p);
+    };
+
+    /* THE TEXTURE UNITS. A binding belongs to a unit, so the cache is keyed
+       on the unit that was active when the bind was made - which is why the
+       active unit itself has to be tracked rather than read back. */
+    gl.activeTexture = (u) => {
+      if (u === unit) { seen.saved++; return; }
+      unit = u; seen.sent++;
+      raw.activeTexture(u);
+    };
+    gl.bindTexture = (target, t) => {
+      const key = (unit === undefined ? -1 : unit) + ':' + target;
+      if (units.get(key) === t) { seen.saved++; return; }
+      units.set(key, t); seen.sent++;
+      raw.bindTexture(target, t);
+    };
+    gl.deleteTexture = (t) => {
+      /* A deleted texture is unbound from every unit it was on, and the
+         cache has to agree or the next bind of something else to that unit
+         is skipped against a binding that is already gone. */
+      if (t) for (const [k, v] of units) if (v === t) units.set(k, undefined);
+      raw.deleteTexture(t);
+    };
+
+    gl.enable = (c) => {
+      if (caps.get(c) === true) { seen.saved++; return; }
+      caps.set(c, true); seen.sent++;
+      raw.enable(c);
+    };
+    gl.disable = (c) => {
+      if (caps.get(c) === false) { seen.saved++; return; }
+      caps.set(c, false); seen.sent++;
+      raw.disable(c);
+    };
+    gl.depthMask = (m) => {
+      m = !!m;
+      if (m === depthW) { seen.saved++; return; }
+      depthW = m; seen.sent++;
+      raw.depthMask(m);
+    };
+    gl.depthFunc = (f) => {
+      if (f === depthF) { seen.saved++; return; }
+      depthF = f; seen.sent++;
+      raw.depthFunc(f);
+    };
+    gl.cullFace = (f) => {
+      if (f === cull) { seen.saved++; return; }
+      cull = f; seen.sent++;
+      raw.cullFace(f);
+    };
+    gl.frontFace = (f) => {
+      if (f === front) { seen.saved++; return; }
+      front = f; seen.sent++;
+      raw.frontFace(f);
+    };
+    gl.blendFunc = (a, b) => {
+      if (a === blendS && b === blendD) { seen.saved++; return; }
+      blendS = a; blendD = b; seen.sent++;
+      raw.blendFunc(a, b);
+    };
+    gl.viewport = (x, y, w, h) => {
+      if (x === vpx && y === vpy && w === vpw && h === vph) { seen.saved++; return; }
+      vpx = x; vpy = y; vpw = w; vph = h; seen.sent++;
+      raw.viewport(x, y, w, h);
+    };
+
+    /* A framebuffer change resets nothing this tracks, but it DOES change what
+       a viewport means - and the renderer sets the viewport after every bind
+       anyway, so the only thing that has to happen here is that the cached
+       viewport is not trusted across one. */
+    const bindFb = gl.bindFramebuffer.bind(gl);
+    gl.bindFramebuffer = (target, fb) => {
+      vpx = vpy = vpw = vph = undefined;
+      bindFb(target, fb);
     };
   }
 
@@ -2721,6 +3164,7 @@
       this.controlsPointer = null;
       this.pausePointerIndex = -1;
       this.confirmPointerIndex = -1;
+      this.finishPointerIndex = -1;
       this.confirmBox = null;
       this.confirmIndex = 0;
       this.confirmFrom = null;
@@ -2742,6 +3186,9 @@
            gesture when the page cannot close itself. */
         { label: 'QUIT', typed: 0, act: () => this.askQuit() },
       ];
+    /* The rows are rebuilt when the card opens - see enterPause - because
+       whether there is a checkpoint to go back to depends on where the player
+       is when they press it. */
       this.pauseItems = ['RESUME', 'RESTART', 'MAIN MENU'];
       this.pauseIndex = 0;
       this.finishItems = ['RETRY', 'MAIN MENU'];
@@ -2936,6 +3383,11 @@
           this.confirmIndex = confirmIndex;
           this.audio.uiMove();
         }
+        const finishIndex = this.finishItemAt(e);
+        if (finishIndex >= 0 && finishIndex !== this.finishIndex) {
+          this.finishIndex = finishIndex;
+          this.audio.uiMove();
+        }
       });
       this.canvas.addEventListener('pointerdown', (e) => {
         if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -2958,6 +3410,13 @@
         const pauseIndex = this.pauseItemAt(e);
         if (pauseIndex >= 0) {
           this.pausePointerIndex = pauseIndex;
+          return;
+        }
+        /* ...and the card at the end, which takes a click on the row under
+           the pointer rather than "anywhere on the screen means RETRY". */
+        const finishIndex = this.finishItemAt(e);
+        if (finishIndex >= 0) {
+          this.finishPointerIndex = finishIndex;
           return;
         }
         /* Non-menu screens retain their tap/click-to-continue behaviour; a
@@ -3088,14 +3547,38 @@
     }
 
     /** Pause buttons share Hud.menuList's centre, height, and vertical gap. */
-    pauseItemAt(e) {
-      if (this.state !== 'paused') return -1;
+    /* ------------------------------ WHICH ROW IS UNDER THE POINTER --
+     *
+     * One answer for every card that has a list on it, taken from where the
+     * list was actually drawn rather than from a copy of its numbers.
+     *
+     * All three used to carry their own copy and all three had drifted. The
+     * pause card tested rows at -8 with a 62 gap against a list drawn at -12
+     * with a 64 gap, so every row was a few units out and the error grew down
+     * the card. The confirmation tested a half-width of 205 against a bar 470
+     * wide, so the outer thirty units of a row you could see highlighted did
+     * not answer the mouse. And the card at the end of a race had no test at
+     * all - RETRY and MAIN MENU were keyboard-only on the one screen a player
+     * is guaranteed to meet, which is what was reported.
+     *
+     * Hud.menuList publishes `listRows` when it draws. The states below are
+     * modal and only one list is ever up, so one record is enough - and each
+     * caller checks its own state first, so a stale record from another card
+     * can never be read by the wrong one. */
+    listItemAt(e, pad) {
+      const rows = this.hud && this.hud.listRows;
+      if (!rows || !rows.n) return -1;
       const p = this.canvasPoint(e);
-      if (!p || Math.abs(p.x) > 205) return -1;
-      for (let i = 0; i < this.pauseItems.length; i++) {
-        if (Math.abs(p.y - (-8 - i * 62)) <= 34) return i;
+      if (!p || Math.abs(p.x) > rows.width * 0.5 + (pad === undefined ? 18 : pad)) return -1;
+      for (let i = 0; i < rows.n; i++) {
+        if (Math.abs(p.y - (rows.baseY - i * rows.gap)) <= rows.half) return i;
       }
       return -1;
+    }
+
+    pauseItemAt(e) {
+      if (this.state !== 'paused') return -1;
+      return this.listItemAt(e);
     }
 
     /* ------------------------------------------------------ ARE YOU SURE --
@@ -3157,12 +3640,7 @@
     /** Hit-test the two rows on the confirmation card. */
     confirmItemAt(e) {
       if (this.state !== 'confirm' || !this.confirmBox) return -1;
-      const p = this.canvasPoint(e);
-      if (!p || Math.abs(p.x) > 205) return -1;
-      for (let i = 0; i < this.confirmBox.items.length; i++) {
-        if (Math.abs(p.y - (-40 - i * 62)) <= 34) return i;
-      }
-      return -1;
+      return this.listItemAt(e);
     }
 
     /* QUIT, with the question in front of it. What it says depends on what
@@ -3311,6 +3789,10 @@
       // both cars start on the chosen route's own line, not at the head of the
       // course - a level is a stretch of road, and it begins where it begins
       const s0 = this.startAt === undefined ? 30 : this.startAt;
+      /* A ramp is a window installed on a car, so a restart has to take it
+         off: one left armed would launch the car off a piece of road the
+         restart has just put a long way behind it. */
+      this.clearRamps();
       // side by side, the player on the inside
       this.car.reset(s0, -5.5);
       if (this.rival) {
@@ -3688,14 +4170,49 @@
       if (b) b.classList.toggle('synx-modal', modal);
     }
 
+    /* ------------------------------------------------- POINTER OWNERSHIP --
+     *
+     * WHO IS ASKING FOR CLICKS, BY NAME.
+     *
+     * `uiOverlayOpen` was one boolean, and exactly one screen ever set it: the
+     * multiplayer dialog. Everything else that puts a clickable panel over a
+     * running world was invisible to the cursor policy - most obviously the
+     * multiplayer RESULTS board, which arrives while `state` is still
+     * 'racing', so the podium, RACE AGAIN and LOBBY were drawn with the cursor
+     * hidden and could only be reached from the keyboard.
+     *
+     * One boolean also cannot nest. A dialog opened over the results board
+     * cleared the flag on the way out and took the board's pointer with it.
+     *
+     * So overlays are a SET, keyed by name. An overlay says what it is, says
+     * when it has gone, and any number of them can be up at once - the cursor
+     * is shown while the set is non-empty, and the last one to close is the
+     * one that gives it back.
+     */
+    setUiOverlay(name, on) {
+      const set = this.uiOverlays || (this.uiOverlays = new Set());
+      if (on) set.add(name); else set.delete(name);
+      // kept as a boolean for anything still reading the old flag
+      this.uiOverlayOpen = set.size > 0;
+      this.syncCursorVisibility();
+    }
+
+    /** Every overlay gone at once - a teardown, a return to the title. */
+    clearUiOverlays() {
+      if (this.uiOverlays) this.uiOverlays.clear();
+      this.uiOverlayOpen = false;
+      this.syncCursorVisibility();
+    }
+
     syncCursorVisibility() {
       const driving = this.state === 'countdown' || this.state === 'racing';
-      /* A DIALOG OVER A RACE STILL NEEDS A POINTER.
-         Multiplayer cannot pause, so its "leave the race?" question is asked
-         while the world is still driving underneath it - and `driving` alone
-         hid the cursor, leaving a dialog with two buttons that could only be
+      /* A PANEL OVER A RACE STILL NEEDS A POINTER.
+         Multiplayer cannot pause, so its questions and its results board are
+         both put up while the world is still driving underneath them - and
+         `driving` alone hid the cursor, leaving buttons that could only be
          reached from the keyboard. An overlay that wants clicks says so. */
-      const hidden = !this.uiOverlayOpen
+      const overlay = this.uiOverlayOpen || !!(this.uiOverlays && this.uiOverlays.size);
+      const hidden = !overlay
         && (driving || (this.cursorHiddenForRun && this.state !== 'paused'
           && this.state !== 'finished' && this.state !== 'confirm'));
       if (global.document && global.document.body) global.document.body.classList.toggle('race-active', hidden);
@@ -3893,7 +4410,7 @@
       this.raceModeActive = false;
       this.raceModeBlueFuel = false;
       if (this.car) { this.car.raceModeMultiplier = 1; if (this.car.fitEngine) this.car.fitEngine(null); }
-      if (this.rival) { this.rival.raceModeMultiplier = 1; this.rival.gripScale = 1; if (this.rival.fitEngine) this.rival.fitEngine(null); }
+      if (this.rival) { this.rival.raceModeMultiplier = 1; this.rival.gripScale = 1; this.rival.speedCap = Infinity; if (this.rival.fitEngine) this.rival.fitEngine(null); }
       if (this.driver) { this.driver.paceScale = 1; this.driver.gripScale = 1; }
       this.levelIndex = 0;
       /* applyLevel is the only thing that knows how to take Neon Horizon's
@@ -3922,6 +4439,9 @@
         if (this.rival.fitEngine) this.rival.fitEngine('swap');
         this.rival.raceModeMultiplier = 1;
         this.rival.gripScale = 1;
+        /* fitEngine('swap') installs the Forge cap of 122; updateFreeRoamRival
+           replaces it with this rung's own ceiling on the first frame. */
+        this.rival.speedCap = FREE_ROAM_TOP[M.clamp(this.diffIndex | 0, 0, FREE_ROAM_TOP.length - 1)];
       }
       if (this.driver) { this.driver.paceScale = 1; this.driver.gripScale = 1; }
       this.assertFreeRoamRun();
@@ -4065,12 +4585,25 @@
       const rix = this.diffIndex === 3;
       const base = rix ? FREE_ROAM_RIX_PACE : 1;
       const baseGrip = rix ? FREE_ROAM_RIX_GRIP : 1;
-      const want = base + (chase * chase * 0.34 + synced * 0.15) * k;
+      /* How hard it is TRYING - the planner's pace and its tyres. The ceiling
+         below is what it is allowed to reach; these two are what it does with
+         the road on the way there, so a rival that is quick in a straight line
+         is also committed through the corners rather than simply capped
+         higher. A synchronised player no longer feeds this. */
+      const want = base + chase * chase * 0.34 * k;
       this.driver.paceScale = M.damp(this.driver.paceScale || 1, want, 2.2, dt);
       this.driver.gripScale = M.damp(this.driver.gripScale || 1,
         baseGrip + chase * 0.15 * k, 2.0, dt);
-      // ...and a ceiling that lifts only while it is the one behind
-      this.rival.raceModeMultiplier = M.clamp(1 + (this.driver.paceScale - 1) * 0.7, 1, 1.22);
+      /* ...and the ceiling itself, which lifts only while it is the one
+         behind, and is HELD while the player is spending their thirty
+         seconds. See FREE_ROAM_TOP. */
+      const i = M.clamp(this.diffIndex | 0, 0, FREE_ROAM_TOP.length - 1);
+      const top = synced
+        ? FREE_ROAM_MODE_TOP[i]
+        : FREE_ROAM_TOP[i] + chase * chase * FREE_ROAM_CHASE_TOP[i];
+      this.rival.speedCap = M.damp(
+        this.rival.speedCap === Infinity ? top : this.rival.speedCap, top, 2.4, dt);
+      this.rival.raceModeMultiplier = 1;
       this.updateFreeRoamCounter(dt, gap);
       // The planner and the tyres must agree about the grip available.
       this.rival.gripScale = this.driver.gripScale;
@@ -4081,6 +4614,115 @@
           this.rival.engineTop * this.rival.raceModeMultiplier, this.rival.speedCap);
         if (this.rival.vLong < wantSpeed) this.rival.vLong = Math.min(wantSpeed, this.rival.vLong + 8 * dt);
       }
+    }
+
+    /* ------------------------------------------------- the stunt course --
+     *
+     * EVERY CAR ON THE ROAD MEETS THE SAME RAMP.
+     *
+     * The solver holds one armed window per car, on purpose: a ramp is an
+     * arc-length window with no lateral extent, so three live at once on a
+     * road a car can be driven backwards down would mean reversing into the
+     * third one and being launched by it. Arming only the nearest one ahead,
+     * and only while the car is approaching it, is the whole guard - and it is
+     * applied to each car separately because each car is somewhere different.
+     *
+     * This runs BEFORE anything is stepped, so the window is live on the frame
+     * a car first reaches the incline rather than one frame late.
+     */
+    rampCars() {
+      const out = [];
+      if (this.car) out.push(this.car);
+      if (this.rival && !this.soloRun) out.push(this.rival);
+      /* Chapter 4's invitational grid, which meets SKYLINE LAUNCH on its own
+         route. A remote player in multiplayer is in this list too and has no
+         driver: their car is a pose written by the interpolator rather than a
+         car this machine steps, so their flight belongs to the machine that
+         owns them and arming anything here would be writing into a simulation
+         that is not running. */
+      for (const e of (this.storyExtraRacers || [])) {
+        if (e && e.car && e.driver) out.push(e.car);
+      }
+      return out;
+    }
+
+    /** The nearest ramp still ahead of `s`, or null. */
+    nextRamp(s) {
+      let next = null;
+      for (const r of COURSE_RAMPS) {
+        if (r.s - s < RAMP_PAST) continue;
+        if (!next || r.s < next.s) next = r;
+      }
+      return next;
+    }
+
+    updateRamps() {
+      const J = this.__jumps || (this.__jumps = {
+        armed: null, live: null, taken: 0, clean: 0, landing: 0, landedId: null,
+      });
+      J.landedId = null;
+      for (const car of this.rampCars()) {
+        if (!car || !car.armRamp) continue;
+        const player = car === this.car;
+        /* THE LANDING IS READ FROM A FLAG THE SOLVER SETS FOR EXACTLY ONE
+           FRAME. Reading the height instead - "it was in the air and now it is
+           not" - misses a landing whenever a frame is long enough to span the
+           whole touchdown, which on a slow machine is most of them. */
+        if (car.landed) {
+          car.landed = 0;
+          const q = car.landing || 0;
+          /* Boost, and boost is the right currency: a ramp taken well is one
+             of the few places on this road anyone can make some. Paid to every
+             car that earns it, so a rival that lands straight gets the same
+             thing out of it the player does - which is what makes the AI's
+             set-up on the approach worth watching rather than decorative. */
+          if (q >= RAMP_CLEAN && car.boost !== undefined) {
+            car.boost = M.clamp((car.boost || 0) + 0.16 + q * 0.14, 0, 1);
+          }
+          if (player) {
+            J.taken++;
+            if (q >= RAMP_CLEAN) J.clean++;
+            J.landing = q;
+            J.landedId = car.__rampTook || null;
+          }
+        }
+        const s = car.sTrack || 0;
+        const next = this.nextRamp(s);
+        const span = next ? next.len + (next.crest || 0) : 0;
+        const arm = !!next && (next.s - s) < RAMP_TELEGRAPH + span && (next.s - s) > RAMP_PAST;
+        if (arm) {
+          if (car.__rampArmed !== next.id) {
+            car.__rampArmed = next.id;
+            car.__rampTook = next.id;
+            /* A crest is a top to drive along, and only the blocked bore has
+               one. Everything else is the plain wedge it always was, armed
+               through the same call it always used. */
+            if (next.crest && car.armRampDeck) {
+              car.armRampDeck(next.s - next.crest - next.len, next.s - next.crest,
+                next.s, next.h, next.lip || next.h);
+            } else {
+              car.armRamp(next.s - next.len, next.s, next.h);
+            }
+            if (player && this.onRampArmed) this.onRampArmed(next);
+          }
+        } else if (car.__rampArmed) {
+          car.__rampArmed = null;
+          car.clearRamp();
+        }
+        if (player) { J.armed = car.__rampArmed; J.live = arm ? next : null; }
+      }
+    }
+
+    /** Take every armed window off every car. A restart must not leave one
+     *  standing on a piece of road it has put a long way behind the car. */
+    clearRamps() {
+      for (const car of this.rampCars()) {
+        if (!car || !car.clearRamp) continue;
+        car.__rampArmed = null;
+        car.__rampTook = null;
+        car.clearRamp();
+      }
+      this.__jumps = { armed: null, live: null, taken: 0, clean: 0, landing: 0, landedId: null };
     }
 
     /* THE R-IX ANSWERS AN OVERTAKE. Free Roam's top opponent only.
@@ -4125,11 +4767,16 @@
         /* Pace, ceiling AND thrust. A ceiling on its own is decoration - a car
            already at its drag-limited terminal speed goes no faster for being
            allowed to - which is the trap the finale's hunt curve went through
-           twice. */
+           twice. The ceiling here is the same hard `speedCap` the rest of the
+           tour is written in, so a counter-attack is legible as a number of
+           units a second rather than as a multiplier on something else.
+           It answers being PASSED; it never answers raceMode, because the
+           window is the one thing on this road the player owns outright. */
+        const synced = !!(this.freeRoamMode && this.freeRoamMode.active);
         this.driver.paceScale = Math.max(this.driver.paceScale || 1, 1.24);
         this.driver.gripScale = Math.max(this.driver.gripScale || 1, 1.10);
         this.driver.boostHold = Math.max(this.driver.boostHold || 0, 0.8);
-        this.rival.raceModeMultiplier = 1.42;
+        if (!synced) this.rival.speedCap = Math.max(this.rival.speedCap, FREE_ROAM_COUNTER_TOP);
         this.rival.powerScale = 1.22;
         this.rival.boost = 1;
       } else if (this.rival.powerScale !== 1) {
@@ -4263,6 +4910,9 @@
     }
 
     beginRace() {
+      /* ...and the ramps get their approach paint back, which the title
+         screen takes off. See hideRaceMarkings. */
+      if (this.scene) this.scene.hideRaceMarkings = false;
       /* THE CONTROLS CARD IS A TUTORIAL, AND A TOUR IS NOT A FIRST RACE.
        *
        * It used to be unconditional, so the open route - the thing a player
@@ -4357,6 +5007,8 @@
          which is the correct rule everywhere else and exactly wrong here. */
       if (this.autosave) this.autosave.mark('pause');
       this.state = 'paused';
+      this.pauseItems = this.pauseRowsFor();
+      this.pauseDisabled = this.pauseDisabledFor(this.pauseItems);
       this.pauseIndex = 0;
       /* A hard, immediate lift. update(..., false) alone ramps the loops down
          over ~0.1 s, which is right for a lifted throttle and slightly too
@@ -4411,8 +5063,16 @@
       const chapter7 = d7 && d7.isChapter && d7.isChapter();
       let src = null;
       if (chapter7 && d7.started) {
+        /* `rest` is what the ring counts DOWN FROM, and Chapter 7's is not a
+           constant any more - it climbs 10, 20, 30, 40 with each spend. The
+           director reports the rung it charged; see modeRest there. */
+        /* The WINDOW comes from the director too. It was a hardcoded thirty
+           here, so shortening Chapter 7's window would have left the meter
+           emptying a third of the way and stopping - a bar that lies about
+           the one resource the finale is built around. */
         src = { active: d7.modeActive, timer: d7.modeTimer, cooldown: d7.modeCooldown,
-                window: 30, rest: 70, reserve: d7.reserveLoaded };
+                window: d7.modeWindow || 30, rest: d7.modeRest || 30,
+                reserve: d7.reserveLoaded };
       } else if (chapter6 && d6.started) {
         src = { active: d6.raceModeActive, timer: d6.raceModeTimer, cooldown: d6.raceModeCooldown,
                 window: 30, rest: 70, reserve: d6.reserveLoaded };
@@ -4435,11 +5095,117 @@
       return this.state === 'racing' || this.state === 'countdown';
     }
 
+    /* --------------------------------------- RESTART, OR GO BACK A BIT --
+     *
+     * RESTART throws away the whole run. On a thirty-kilometre finale that is
+     * a brutal thing to be the only option a pause menu offers: a player who
+     * has just been hit by the last slab of the tower run and wants another go
+     * at it has the choice of driving the entire chapter again or leaving.
+     *
+     * The chapters already keep a checkpoint - they have to, because their own
+     * hazards rewind to it - so the pause card offers it. Which director owns
+     * one depends on where the player is, and outside a chapter there is
+     * nothing to own one, so the row only appears when it can actually do
+     * something. A menu row that is present and inert teaches the player not
+     * to trust the menu.
+     */
+    checkpointOwner() {
+      const d7 = this.__level7Director;
+      if (d7 && d7.isChapter && d7.isChapter() && d7.started && d7.restoreCheckpoint) return d7;
+      const d6 = this.__level6Director;
+      if (d6 && d6.isChapter && d6.isChapter() && d6.started && d6.cp && d6.rewind) return d6;
+      return null;
+    }
+
+    /* HAS A CHECKPOINT ACTUALLY BEEN REACHED?
+     *
+     * Owning a checkpoint system and having something in it are two different
+     * questions, and the pause card was asking the first one. From the moment
+     * a chapter starts it offered RESTART FROM CHECKPOINT - and before the
+     * first gate there is nothing stored, so what the row did was put the
+     * player back at the beginning of the chapter under a name that promised
+     * something else. A row that lies once is a row nobody trusts again.
+     *
+     * Chapter 7 keeps a snapshot and its index is which gate it was taken at,
+     * so index zero is the start line and not a checkpoint anybody drove to.
+     * Chapter 6 keeps `cp`, which is null until the first trial marks one.
+     */
+    checkpointReady() {
+      const d = this.checkpointOwner();
+      if (!d) return false;
+      if (d.checkpointSnapshot) return (d.checkpointSnapshot.index | 0) > 0;
+      if (d.cp !== undefined) return !!d.cp;
+      return false;
+    }
+
+    /** The rows this pause card should have, for where the run is now. */
+    pauseRowsFor() {
+      return this.checkpointOwner()
+        ? ['RESUME', 'RESTART FROM CHECKPOINT', 'RESTART CHAPTER', 'MAIN MENU']
+        : ['RESUME', 'RESTART', 'MAIN MENU'];
+    }
+
+    /* ...and which of them are dead right now. The row STAYS on the card when
+       there is no checkpoint yet - dropping it would move every row under it
+       and make the menu change shape mid-chapter - and is drawn greyed with
+       the reason under it instead. See menuList in js/hud.js. */
+    pauseDisabledFor(rows) {
+      const ready = this.checkpointReady();
+      return rows.map((r) => r === 'RESTART FROM CHECKPOINT' && !ready);
+    }
+
     activatePause() {
-      if (this.pauseIndex === 0) { this.leavePause(); this.onMusic(); }
-      else if (this.pauseIndex === 1) { this.leavePause(); this.beginRace(); }
-      else { if (this.audio.setMusicDuck) this.audio.setMusicDuck(0, 0.2); this.toMenu(); }
+      const row = this.pauseItems[this.pauseIndex] || '';
+      /* A dead row does nothing and says nothing new: the card is already
+         showing why it is dead. What it must not do is fall through to the
+         restore below, which would put the player at the start line. */
+      if ((this.pauseDisabled || [])[this.pauseIndex]) {
+        if (this.audio.uiDeny) this.audio.uiDeny(); else this.audio.uiMove();
+        return;
+      }
       this.audio.uiMove();
+      if (row === 'RESUME') { this.leavePause(); this.onMusic(); return; }
+      if (row === 'RESTART FROM CHECKPOINT') {
+        const d = this.checkpointOwner();
+        /* Out of the menu FIRST: Chapter 6's rewind puts the game back into
+           `racing` itself and Chapter 7's expects to be called from a running
+           race, so leaving the pause before either of them runs is what keeps
+           the two paths the same. */
+        this.leavePause();
+        this.onMusic();
+        if (d) { if (d.restoreCheckpoint) d.restoreCheckpoint(); else d.rewind(); }
+        return;
+      }
+      if (row === 'RESTART' || row === 'RESTART CHAPTER') {
+        this.leavePause();
+        this.beginRace();
+        return;
+      }
+      if (this.audio.setMusicDuck) this.audio.setMusicDuck(0, 0.2);
+      this.toMenu();
+    }
+
+    /* ------------------------------------------- THE CARD AT THE END --
+     *
+     * RETRY and MAIN MENU had no pointer at all. Every other card in the game
+     * highlights under the mouse and takes a click - the title screen, the
+     * controls pages, the pause card, the confirmation - and the one card the
+     * player is guaranteed to meet, the one that comes up when they have just
+     * lost, was keyboard only. Moving the mouse down it did nothing and
+     * clicking MAIN MENU did whatever a blank click does.
+     *
+     * It could not be hit-tested the way the others are, either. Those
+     * hard-code the row geometry, which works because their lists sit at a
+     * fixed height on a fixed panel. This one does not: `baseY` is computed
+     * from how much went on the card above it, so it moves depending on
+     * whether the route was won, whether a time was beaten and whether the
+     * next chapter unlocked. The list publishes where it drew instead - see
+     * listRows in Hud.menuList - and this reads that, so the two cannot
+     * disagree whatever ends up on the card.
+     */
+    finishItemAt(e) {
+      if (this.state !== 'finished') return -1;
+      return this.listItemAt(e);
     }
 
     activateFinish() {
@@ -4471,11 +5237,13 @@
       const controlsPointer = this.controlsPointer;
       const pausePointerIndex = this.pausePointerIndex;
       const confirmPointerIndex = this.confirmPointerIndex;
+      const finishPointerIndex = this.finishPointerIndex;
       this.pointer = false;
       this.menuPointerIndex = -1;
       this.controlsPointer = null;
       this.pausePointerIndex = -1;
       this.confirmPointerIndex = -1;
+      this.finishPointerIndex = -1;
 
       /* THE PAD DRIVES THE MENUS TOO.
 
@@ -4517,6 +5285,16 @@
       const flyby = (dt2) => { if (this.state === entryState) this.idleFlyby(dt2); };
 
       if (this.state === 'menu') {
+        /* THE TITLE SCREEN IS NOT THERE DURING A BENCHMARK.
+
+           The HUD stops drawing it (see the menu case in js/hud.js) and the
+           panel consumes every key and click before this can see one, so in
+           practice nothing here could fire. It is skipped anyway, because
+           "the input cannot reach it" is a property of two other files and
+           this is the one that would act on it: a row that is invisible,
+           unreachable and still being typed in and hit-tested is a row
+           waiting for somebody to change one of those two files. */
+        if (this.benchActive) { this.audio.update(this.car, dt, false); return; }
         for (let i = 0; i < this.menuItems.length; i++) {
           const it = this.menuItems[i];
           const prev = i === 0 || this.menuItems[i - 1].typed >= this.menuItems[i - 1].label.length;
@@ -4531,7 +5309,21 @@
           this.audio.select();
           this.confirm();
         } else if (inp.hit('enter', ' ')) { this.audio.select(); this.confirm(); }
-        flyby(dt);
+        /* THE BENCHMARK DRIVES ITS OWN CAMERA, AT A FIXED STEP.
+
+           A benchmark has to put the same work in front of every machine or
+           the numbers it produces cannot be compared with anything - and a
+           flyby advanced by the real frame time does the opposite: a fast
+           machine covers a hundred and forty units of road in a scene and a
+           slow one covers eight hundred, so they are not rendering the same
+           place, let alone the same amount of it.
+
+           So while a run is on, this hands the camera over and js/bench.js
+           steps it at a fixed sixtieth of a second per frame. Every machine
+           then drives exactly the same road, frame for frame, and the only
+           thing that differs is how long each frame took - which is the one
+           thing being measured. */
+        if (!this.benchDriving) flyby(dt);
         /* Nothing is driving. Saying so every frame is what stops a throttle
            that was held when the race was left from carrying its engine note
            into the title screen and holding it there - the mixer only ever
@@ -4639,6 +5431,7 @@
            never hears about the car while it is up, so an engine note carried
            in from the previous run sits at whatever gain it was left at. */
         this.audio.update(this.car, dt, false);
+        this.settleFx(dt);
         return;
       }
 
@@ -4691,11 +5484,13 @@
         this.updateCamera(dt);
         this.updateAtmosphere(dt);
         this.audio.update(this.car, dt, false);
+        this.settleFx(dt);
         return;
       }
       if (this.state === 'paused') {
-        if (inp.hit('arrowup', 'w')) { this.pauseIndex = (this.pauseIndex + 2) % 3; this.audio.uiMove(); }
-        if (inp.hit('arrowdown', 's')) { this.pauseIndex = (this.pauseIndex + 1) % 3; this.audio.uiMove(); }
+        const nPause = this.pauseItems.length;
+        if (inp.hit('arrowup', 'w')) { this.pauseIndex = (this.pauseIndex + nPause - 1) % nPause; this.audio.uiMove(); }
+        if (inp.hit('arrowdown', 's')) { this.pauseIndex = (this.pauseIndex + 1) % nPause; this.audio.uiMove(); }
         if (pausePointerIndex >= 0) {
           this.pauseIndex = pausePointerIndex;
           this.audio.select();
@@ -4717,16 +5512,27 @@
          * rev counter and ramps every driving loop to zero over about a tenth
          * of a second, which is a lift rather than a cut. */
         this.audio.update(this.car, dt, false);
+        this.settleFx(dt);
         return;
       }
       if (this.state === 'finished') {
         if (inp.hit('arrowup', 'w', 'arrowdown', 's')) { this.finishIndex = (this.finishIndex + 1) % 2; this.audio.uiMove(); }
-        if (inp.hit('enter', ' ') || pointer) this.activateFinish();
+        /* A CLICK ON A ROW PICKS THAT ROW. `pointer` is the old
+           anywhere-on-the-screen tap, which on this card always meant RETRY
+           whatever the mouse happened to be over - so a player who moved down
+           to MAIN MENU and clicked got another lap of the race they had just
+           lost. The row under the pointer wins; a blank click still retries,
+           which is what the tap-to-continue behaviour is there for. */
+        if (finishPointerIndex >= 0) {
+          this.finishIndex = finishPointerIndex;
+          this.activateFinish();
+        } else if (inp.hit('enter', ' ') || pointer) this.activateFinish();
         if (inp.actHit('raceMode')) this.beginRace();
         this.car.update(dt, this.input.sample(), false);
         this.updateCamera(dt);
         this.updateAtmosphere(dt);
         this.audio.update(this.car, dt, false);
+        this.settleFx(dt);
         return;
       }
       if (inp.actHit('raceMode') && !this.blockQuickRestart) { this.beginRace(); return; }
@@ -4743,6 +5549,11 @@
 
       const active = this.state === 'racing';
       if (active) this.raceTime += dt;
+
+      /* Arm the stunt course before anything is stepped, so a car meeting an
+         incline is inside the window on the frame it arrives rather than one
+         frame after it. See updateRamps. */
+      this.updateRamps();
 
       /* The rival drives itself, through the same Vehicle the player is in.
          It gets no more grip, no more power and no more boost - only a driver
@@ -4882,6 +5693,32 @@
       this.audio.update(this.car, dt, true);
     }
 
+    /* THE WORLD GRINDING TO A HALT, RATHER THAN STOPPING DEAD.
+     *
+     * Every screen that holds over a race - pause, the confirmation, the
+     * finish card, a cutscene - returns early from update() without stepping
+     * the particle system. The particles are still DRAWN, so what was in the
+     * air at the moment the menu opened stays in the air: on MIRAGE CIRCUIT,
+     * which has the clearest air on the course and throws a pale blue grit
+     * stream past the camera at speed, that is a curtain of frozen specks
+     * hanging over the pause menu for as long as it is open. It was reported
+     * as rain, which is exactly what it looks like.
+     *
+     * The system already takes an `active` flag and it already means the
+     * right thing: emitters off, integration on. So a held screen steps it
+     * with emission off, everything in flight lives out its half second and
+     * dies, and the menu ends up over a still frame instead of over weather.
+     *
+     * Called from every branch that holds, rather than from one place, for
+     * the same reason the audio call is: there is no single point they all
+     * pass through, and a held screen that is missed is a screen where this
+     * comes back.
+     */
+    settleFx(dt) {
+      if (!this.fx) return;
+      this.fx.update(dt, this.rival && !this.soloRun ? [this.car, this.rival] : this.car, false);
+    }
+
     /* WHERE ON THE BODY A BARRIER HIT LANDED.
      *
      * The solver reports that a wall was hit and how hard, and that is all it
@@ -4998,7 +5835,14 @@
          each portal - but that fraction is exactly when a tunnel is most
          obvious, and it is the difference between the sky cutting out as the
          camera goes under and as the car does. */
-      const inBore = (p.tunnel ? 1 : 0) || (this.camTunnel || 0);
+      /* ...and a car on the ROOF of a bore is not inside it.
+         The tunnel flag stays set across a bypass, because the bore is still
+         there and is still drawn at grade underneath. Without this the deck
+         over MIRAGE CIRCUIT's sealed tunnel would cut the sky out and light
+         the car as though it were inside the thing it is driving over. See
+         OVERPASSES in crates/synx-core/src/track.rs. */
+      const over = global.NR.onOverpass && global.NR.onOverpass(this.distance);
+      const inBore = over ? 0 : ((p.tunnel ? 1 : 0) || (this.camTunnel || 0));
       this.tunnel = M.damp(this.tunnel, inBore, 3, dt);
       const mph = this.car.speedMph || 0;
       const ramp = (a, b) => {
@@ -5061,23 +5905,416 @@
      *
      * The road decides all of it now - height, arc length, grade - which is
      * the same contract the solver keeps at the end of every step. */
+    /* ------------------------------------------------- THE ATTRACT DRIVE --
+     *
+     * WHAT IS BEHIND EVERY MENU IN THE GAME, and it used to drive through the
+     * scenery.
+     *
+     * This is a kinematic slide, not a simulation: it advances an arc length
+     * at a constant speed and places the car on the centreline. That is the
+     * right shape for a backdrop - it costs nothing, it cannot crash, and it
+     * cannot leave the road - but it meant the car passed through every launch
+     * ramp on the course as though they were painted on, which is the one
+     * thing a title screen must not do with the game's own furniture.
+     *
+     * So it flies now. The climb is the ramp's own `h * u^2` profile and the
+     * flight is integrated under the solver's own gravity - see
+     * `synx_air_constants`, which is exported precisely so that this file and
+     * the solver cannot disagree about what a car in the air does. What the
+     * menu shows is the arc the player will actually drive.
+     *
+     * THE SHOWREEL. A lap of the whole course is fifty-three minutes at this
+     * speed, and there are eight ramps on it - so left to run from wherever it
+     * happened to be, the attract drive showed a jump about once every seven
+     * minutes and the rest of the time showed an empty road. It runs a reel
+     * instead: a handful of stretches, each cut to arrive at something worth
+     * looking at, cycled in order. See ATTRACT_REEL.
+     */
     idleFlyby(dt) {
-      this.distance = (this.distance + dt * 55) % this.track.length;
+      const reel = this.attractReel || (this.attractReel = {
+        i: Math.floor(Math.random() * ATTRACT_REEL.length), s: 0, air: null,
+      });
+      const shot = ATTRACT_REEL[reel.i % ATTRACT_REEL.length];
+      if (!reel.s || reel.s < shot.from) reel.s = shot.from;
+      reel.s += dt * ATTRACT_SPEED;
+      if (reel.s >= shot.to) {
+        reel.i = (reel.i + 1) % ATTRACT_REEL.length;
+        reel.s = ATTRACT_REEL[reel.i].from;
+        reel.air = null;
+        /* A cut, not a slide. The camera is re-marked from scratch at the new
+           stretch rather than swept across the map to it. */
+        /* A CUT, NOT A SWEEP. The mark is re-struck from scratch at the new
+           stretch rather than damped across the map to it - see attractCamera.
+           `camYaw` is snapped with it so that whichever screen takes the
+           camera back afterwards does not inherit a heading from two
+           kilometres away. */
+        this.attractCut = true;
+        this.camYaw = this.track.at(reel.s, {}).yaw;
+      }
+      /* Nobody is aiming anything on a title screen, so the ramps' approach
+         paint comes off - see hideRaceMarkings in js/scene.js. Set every
+         frame the flyby runs and cleared when a race starts, so it cannot be
+         left on over a run. */
+      if (this.scene) this.scene.hideRaceMarkings = true;
+      this.distance = M.clamp(reel.s, 0, this.track.length - 4);
+
       const p = this.track.at(this.distance, {});
       this.car.sTrack = this.distance;
-      this.car.lateral = 0;
-      this.car.x = p.x; this.car.z = p.z; this.car.yaw = p.yaw;
+
+      /* ------------------------------------- SOMEBODY IS DRIVING IT -----
+       *
+       * Everything above places the car. This is what it is DOING, and
+       * without it the backdrop is a car being towed down the middle of a
+       * road at a constant speed with the engine off:
+       *
+       *   IT SAT DEAD CENTRE. A car on a road is on a line, and the line is
+       *   not the centreline - it leans into the corner and drifts back out
+       *   of it. The lateral here is read off the road ahead rather than
+       *   wobbled on a timer: it moves toward the inside of whatever the car
+       *   is about to turn through, which is where a driver would put it, and
+       *   it goes straight when the road does.
+       *
+       *   IT DID NOT LEAN. A car that never rolls is a model on rails. The
+       *   roll comes off the same measurement as the line, so the two agree
+       *   by construction.
+       *
+       *   IT HELD ONE SPEED THROUGH EVERYTHING. Fifty-five units, corners and
+       *   straights alike, which makes the camera's own dollies look
+       *   unmotivated - nothing the lens does is answering anything. It
+       *   breathes with the road now: off in the corners, back on out of them.
+       *
+       *   AND IT NEVER LIT THE REHEAT. On the one road in the game where a
+       *   car should be showing off, on the screen every player sees first.
+       *   It boosts into every launch on the reel and holds it through the
+       *   flight, which is what the trail and the plume are for.
+       */
+      const ahead1 = this.track.at(Math.min(this.track.length - 2, this.distance + 45), {});
+      const ahead2 = this.track.at(Math.min(this.track.length - 2, this.distance + 130), {});
+      // how hard the road is about to turn, signed: + is a left-hander
+      const bend = M.angDiff(p.yaw, ahead2.yaw);
+      const A = this.attractLine
+        || (this.attractLine = { lat: 0, roll: 0, speed: ATTRACT_SPEED, boost: 0, slip: 0 });
+      /* Toward the inside of the bend, and never past the paint. The road is
+         forty units wide, so eleven either side of centre is a racing line
+         rather than a lane change. */
+      A.lat = M.damp(A.lat, M.clamp(bend * 34, -11, 11), 1.6, dt);
+      A.roll = M.damp(A.roll, M.clamp(-bend * 1.5, -0.11, 0.11), 2.2, dt);
+
+      /* ---------------------------------------------- AND IT DRIFTS -----
+       *
+       * The reel is cut around corners now, so the thing the menu is showing
+       * is a car going through one - and a car going through one at this
+       * speed is SIDEWAYS. Without this it tracked round the bend perfectly
+       * square to its own path, which is not a driver, it is a slot car.
+       *
+       * The slip angle is read off the road ahead, so it builds as the corner
+       * tightens and unwinds as it opens. Everything downstream of it is the
+       * same field the solver would have set - `driftAmount` is what the trail
+       * thickens on, what the tyre smoke fires on and what the marks are laid
+       * from (see fx.js) - so the effects do not have to be told about the
+       * menu at all. They just see a car that is sliding, because it is.
+       *
+       * COUNTER-STEER comes out of the same number for free: the hands are
+       * posed from `steer` and on the exit the slip is falling while the road
+       * is still turning, so the wheel comes back through centre exactly when
+       * a driver's would.
+       */
+      /* ...and a straight is not slid. `bend` is small there anyway, but a
+         flat stretch that happens to catch a kink should read as a car
+         tracking dead straight, not as one twitching. */
+      const slipGain = (shot.kind === 'flat') ? 0.10 : 0.34;
+      const slipWant = M.clamp(bend * slipGain, -0.46, 0.46);
+      A.slip = M.damp(A.slip === undefined ? 0 : A.slip, slipWant, 3.4, dt);
+      const drift = M.clamp(Math.abs(A.slip) / 0.34, 0, 1);
+
+      /* THE REHEAT, AND WHAT THIS STRETCH IS FOR.
+       *
+       * Each reel entry declares a flavour and the drive reads it, because
+       * the three of them want the throttle in three different places:
+       *
+       *   FLAT    it is a straight and the point of it is speed, so the
+       *           reheat is lit for the whole stretch.
+       *   JUMP    on from a couple of seconds out and held through the
+       *           flight, which is the shape a player's own run at a ramp
+       *           has.
+       *   DRIFT   on the EXIT - once the car has stopped turning in and the
+       *           road is opening up again, which is where a driver's goes.
+       */
+      const kind = shot.kind || 'drift';
+      let wantBoost;
+      if (kind === 'flat') {
+        wantBoost = true;
+      } else if (kind === 'jump') {
+        const nx = this.nextRamp(this.distance);
+        const toFoot = nx ? nx.s - (nx.crest || 0) - nx.len - this.distance : 1e9;
+        wantBoost = (reel.air && reel.air.flying) || (toFoot > -200 && toFoot < 130);
+      } else {
+        wantBoost = (Math.abs(slipWant) < Math.abs(A.slip) - 0.01) && drift > 0.25;
+      }
+      A.boost = M.damp(A.boost, wantBoost ? 1 : 0, wantBoost ? 5 : 1.8, dt);
+
+      /* A straight is driven faster than a corner is. The reel's own speed is
+         what a showcase cruises at; the flat stretches run a third quicker on
+         top of the reheat, which is the difference between a car going past
+         and a car going past FAST. */
+      const base = ATTRACT_SPEED * (kind === 'flat' ? 1.24 : 1);
+      A.speed = M.damp(A.speed,
+        base * (1 - Math.min(0.18, drift * 0.18)) + A.boost * 11, 1.1, dt);
+
+      this.car.lateral = A.lat;
+      const rx = Math.cos(p.yaw), rz = -Math.sin(p.yaw);
+      this.car.x = p.x + rx * A.lat; this.car.z = p.z + rz * A.lat;
+      this.car.yaw = p.yaw + M.angDiff(p.yaw, ahead1.yaw) * 0.22 + A.slip;
+      /* What the effects read. None of these are simulated here - the car is
+         being carried, not driven - so they are written by hand, once, in one
+         place, rather than being inferred separately by every system that
+         wants to know whether the car is sideways. */
+      this.car.driftAmount = drift;
+      this.car.driftAngle = A.slip;
+      this.car.driftDir = A.slip >= 0 ? 1 : -1;
+      this.car.drifting = drift > 0.28 ? 1 : 0;
+      this.car.slipRear = drift * 0.9;
+      this.car.slipFront = drift * 0.4;
+      this.car.wheelSlip = drift;
+      this.car.bodySlip = A.slip;
+      // the rears are the ones laying rubber; the fronts are still steering
+      this.car.w2slipRatio = drift * 0.82;
+      this.car.w3slipRatio = drift * 0.82;
+      this.car.w0slipRatio = drift * 0.16;
+      this.car.w1slipRatio = drift * 0.16;
+      // ...and the hands, which are posed from the steering angle
+      this.car.steer = M.clamp(-A.slip * 0.9 + bend * 0.5, -0.33, 0.33);
+      this.car.steerVisual = this.car.steer;
+      this.car.counterSteering = (A.slip * this.car.steer < 0) ? 1 : 0;
       this.car.roadY = p.y || 0;
-      this.car.y = (p.y || 0) + (this.car.lift || 0);
       // lying along the grade, not level to the world
       const back = this.track.at(Math.max(0, this.distance - 6), {});
       const ahead = this.track.at(Math.min(this.track.length - 2, this.distance + 6), {});
       this.car.roadPitch = -Math.atan2((ahead.y || 0) - (back.y || 0), 12);
-      this.car.pitch = 0; this.car.roll = 0;
-      this.car.speed = 55; this.car.rpm = 0.5; this.car.gear = 4;
-      this.car.boosting = false;
+      this.car.roll = A.roll;
+      const air = this.attractAir(dt, reel, p.y || 0);
+      this.car.y = (p.y || 0) + (this.car.lift || 0) + air.height;
+      this.car.pitch = air.pitch;
+      this.car.speed = A.speed;
+      this.car.rpm = M.clamp(0.34 + A.speed / 110 + A.boost * 0.2, 0, 1);
+      this.car.gear = A.boost > 0.5 ? 6 : 5;
+      this.car.boosting = A.boost > 0.45;
+      this.car.boost = 0.2 + A.boost * 0.8;
+      /* ...AND IT LEAVES SOMETHING BEHIND. The particle system is stepped with
+         emission ON here, which nothing else on a menu screen does - every
+         other held screen settles it instead, see settleFx. Without this the
+         title car has no reheat, no trail and no grit: it is the one shot in
+         the game where the car is the subject and it was the only one with
+         nothing coming off it. */
+      if (this.fx) this.fx.update(dt, this.car, true);
       this.updateAtmosphere(dt);
-      this.updateCamera(dt);
+      this.attractCamera(dt, shot, air.height > 0.05);
+    }
+
+    /* THE ATTRACT CAMERA.
+     *
+     * The menu used to run the chase camera, which is the right camera for
+     * driving and the wrong one for watching: it sits at a fixed distance
+     * behind the car and shows the same three-quarter view of its own boot lid
+     * for as long as the menu is open. This cuts.
+     *
+     * The marks are in ATTRACT_SHOTS and the running order is on each reel
+     * entry. Two rules on top of the running order, and both are what a person
+     * with a camera would do:
+     *
+     *   a CUT re-marks from scratch - no sweep from the last position, which
+     *   is the difference between an edit and a camera being carried;
+     *   between cuts the mark DAMPS and DOLLIES, so a held shot breathes
+     *   rather than freezing.
+     */
+    attractCamera(dt, shot, airborne) {
+      const car = this.car;
+      const s = this.distance;
+      let name = 'chase';
+      if (shot && shot.shots) {
+        for (const m of shot.shots) { if (s >= m[0]) name = m[1]; }
+      }
+      /* A car in the air is the shot, whatever the running order said. It only
+         ever overrides UP - a launch mark already in place stays. */
+      if (airborne && name !== 'launch' && name !== 'detail') name = 'flank';
+      const S = ATTRACT_SHOTS[name] || ATTRACT_SHOTS.chase;
+
+      const key = (shot ? shot.name : '') + '/' + name;
+      if (key !== this.attractShotKey) {
+        this.attractShotKey = key;
+        this.attractShotAge = 0;
+        this.attractCut = true;
+      }
+      this.attractShotAge = (this.attractShotAge || 0) + dt;
+      const k = M.clamp(this.attractShotAge / 6.5, 0, 1);
+
+      const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
+      const rx = Math.cos(car.yaw), rz = -Math.sin(car.yaw);
+      const f = S.f + S.dolly[0] * k, side = S.s + S.dolly[1] * k, h = S.h + S.dolly[2] * k;
+      const t = this.time;
+      const wob = S.hand;
+      const eye = [
+        car.x + fx * f + rx * side + Math.sin(t * 0.83) * 0.07 * wob,
+        car.y + h + Math.sin(t * 1.21 + 1.3) * 0.05 * wob,
+        car.z + fz * f + rz * side + Math.cos(t * 0.71) * 0.07 * wob,
+      ];
+      const target = [car.x + fx * S.tf, car.y + S.th, car.z + fz * S.tf];
+      const fov = S.fov - k * 2.0;
+
+      /* --------------------------------------------- HOLDING THE SHOT --
+       *
+       * WHAT A HELD SHOT IS DAMPING, AND WHAT IT IS NOT.
+       *
+       * Every mark above is written RELATIVE TO THE CAR - so many units
+       * ahead of it, so many to its side - and the car is doing 55 units a
+       * second. Damping the mark's WORLD position therefore spends the whole
+       * shot chasing a point that is running away from it, and settles at a
+       * fixed lag of speed over rate: five units, every frame, for as long as
+       * the shot is held.
+       *
+       * Five units of lag on the eye is a camera slightly further back than
+       * it was marked, which nobody would ever notice. Five units of lag on
+       * the TARGET is the camera pointing five units behind the car, and that
+       * is not a small error: on a wide mark it is three degrees, and on
+       * `detail` - four metres off the body through a 38 degree lens - it is
+       * fifty-nine, which is the whole car out of the frame. Two thirds of
+       * every detail shot in the reel was of empty road with a corner of a
+       * bumper in it.
+       *
+       * Matching the two rates does not fix it. They only lag by the same
+       * amount while both marks move at the same velocity, and they do not:
+       * the eye's mark carries the dolly and the handheld wobble as well as
+       * the car.
+       *
+       * So the OFFSET is what damps, not the position. What a held shot is
+       * supposed to smooth is the shot changing - the dolly creeping, the
+       * hand wandering, the mark swinging as the car turns under it - and all
+       * of that is in the offset. The car's own motion is not something to
+       * smooth; it is the thing being filmed. The framing is then exactly
+       * what the mark asked for, at every speed, and the breathing is still
+       * there because the breathing was never the lag.
+       */
+      const eo = [eye[0] - car.x, eye[1] - car.y, eye[2] - car.z];
+      const to = [target[0] - car.x, target[1] - car.y, target[2] - car.z];
+      if (this.attractCut || !this.attractEye) {
+        this.attractCut = false;
+        this.attractEye = eo.slice();
+        this.attractTarget = to.slice();
+        this.attractFov = fov;
+      } else {
+        for (let i = 0; i < 3; i++) {
+          this.attractEye[i] = M.damp(this.attractEye[i], eo[i], 9, dt);
+          this.attractTarget[i] = M.damp(this.attractTarget[i], to[i], 12, dt);
+        }
+        this.attractFov = M.damp(this.attractFov, fov, 5, dt);
+      }
+      V3.set(this.eye, car.x + this.attractEye[0], car.y + this.attractEye[1],
+        car.z + this.attractEye[2]);
+      V3.set(this.target, car.x + this.attractTarget[0], car.y + this.attractTarget[1],
+        car.z + this.attractTarget[2]);
+
+      /* NEVER FILM FROM UNDER THE ROAD, and the road under the LENS is not the
+         road under the car. The reel crosses a twenty-one unit bore bypass and
+         six of Chapter 7's plateaus, and the wide marks stand fifteen units off
+         the racing line and twenty-six behind it - so a floor taken from the
+         car's own arc length is the wrong floor by a whole plateau, which is
+         how the crane on the elevated deck ended up inside it.
+
+         The eye is projected onto the road and the floor comes from where it
+         actually is. One projection a frame, hinted off the car, so it is the
+         windowed search rather than a sweep.
+
+         AFTER the damp, not before it: a clamp applied to the mark is a clamp
+         the smoothing can then undo, and a lens that dips under a deck for a
+         quarter of a second is a lens that was never clamped at all. */
+      const pr = this.track.project(this.eye[0], this.eye[2], s);
+      const cp = this.track.at(pr.s, this._attractProbe || (this._attractProbe = {}));
+      const floor = (cp.y || 0) + 0.55;
+      if (this.eye[1] < floor) {
+        this.eye[1] = floor;
+        this.attractEye[1] = floor - car.y;
+      }
+
+      V3.set(this.up, 0, 1, 0);
+      this.fov = this.attractFov;
+      this.camS = s;
+      this.camTunnel = (cp.tunnel
+        && !(global.NR.onOverpass && global.NR.onOverpass(s))) ? 1 : 0;
+    }
+
+    /* The climb and the flight, for a car nothing is simulating.
+     *
+     * It mirrors `Vehicle::update_air` in the core exactly where it matters:
+     * the height over the incline is the driven profile, the launch speed is
+     * that profile's own derivative rather than a number picked to look right,
+     * and the flight is held in ABSOLUTE height so a car that leaves the lip of
+     * MIRAGE CIRCUIT's bore bypass falls the whole twenty-one units to the
+     * road below rather than following the road down. */
+    attractAir(dt, reel, roadY) {
+      const A = global.NR.AIR || { g: 27, pitchAcc: 0.85, pitchMax: 0.85 };
+      const s = this.distance;
+      let state = reel.air;
+
+      if (!state || !state.flying) {
+        /* ON THE STRUCTURE? The ramps are full width, so arc length decides -
+           and a ramp may have a CREST to drive along before it runs out, which
+           the menu has to show as a car driving along it rather than as a car
+           launching early. Same three-part profile the solver uses; see the
+           note above `Ramp` in crates/synx-core/src/vehicle.rs. */
+        for (const r of COURSE_RAMPS) {
+          const crest = r.crest || 0;
+          const foot = r.s - crest - r.len;
+          if (s < foot || s > r.s) continue;
+          const d = s - foot;
+          let height, pitch;
+          if (d <= r.len) {
+            const u = d / Math.max(1, r.len);
+            height = r.h * u * u;
+            pitch = Math.atan(2 * r.h * u / r.len);
+          } else {
+            const v = (d - r.len) / Math.max(1, crest);
+            const lip = r.lip === undefined ? r.h : r.lip;
+            height = r.h + (lip - r.h) * v;
+            pitch = Math.atan((lip - r.h) / Math.max(1, crest));
+          }
+          reel.air = { flying: false, ramp: r, height, pitch };
+          return reel.air;
+        }
+        /* Past the end of the structure it was on: launch, carrying whatever
+           vertical speed the profile was already producing - which off a crest
+           is the shallow rise along it rather than the incline. */
+        if (state && state.ramp && s > state.ramp.s && state.height > 0.02) {
+          const r = state.ramp;
+          const crest = r.crest || 0;
+          const lip = r.lip === undefined ? r.h : r.lip;
+          const rise = crest > 0
+            ? (lip - r.h) / crest            // the crest's own slope
+            : 2 * r.h / r.len;               // ...or the top of the incline
+          reel.air = {
+            flying: true, abs: roadY + state.height,
+            v: rise * ATTRACT_SPEED, pitchV: 0,
+            height: state.height, pitch: state.pitch,
+          };
+          state = reel.air;
+        } else if (state) {
+          reel.air = null;
+          return { height: 0, pitch: 0 };
+        } else {
+          return { height: 0, pitch: 0 };
+        }
+      }
+
+      state.v -= A.g * dt;
+      state.abs += state.v * dt;
+      state.height = state.abs - roadY;
+      // the nose drops, and the drop BUILDS - the same shape the solver uses
+      state.pitchV = Math.max(-A.pitchMax, state.pitchV - A.pitchAcc * dt);
+      state.pitch += state.pitchV * dt;
+      if (state.height <= 0) {
+        reel.air = null;
+        return { height: 0, pitch: 0 };
+      }
+      return state;
     }
 
     updateCamera(dt) {
@@ -5194,7 +6431,8 @@
       const camS = this.cameraArc(car, held);
       const cp = this.track.at(camS, this._camProbe || (this._camProbe = {}));
       this.camS = camS;
-      this.camTunnel = cp.tunnel ? 1 : 0;
+      this.camTunnel = (cp.tunnel &&
+        !(global.NR.onOverpass && global.NR.onOverpass(this.camS))) ? 1 : 0;
       const floor = (cp.y || 0) + 1.15;
       if (this.eye[1] < floor) this.eye[1] = floor;
 
@@ -5462,7 +6700,8 @@
 
       this.camS = this.cameraArc(car, 0);
       const cp = this.track.at(this.camS, this._camProbe || (this._camProbe = {}));
-      this.camTunnel = cp.tunnel ? 1 : 0;
+      this.camTunnel = (cp.tunnel &&
+        !(global.NR.onOverpass && global.NR.onOverpass(this.camS))) ? 1 : 0;
       /* A tighter lens than the chase view. From inside, a wide angle bends
          the pillars away at the edges and puts the horizon in the middle of
          a very empty frame. It still opens up with speed - that is the one
@@ -5544,7 +6783,8 @@
       /* NEVER IN A TUNNEL. Twenty-six units up inside a nineteen-unit bore is
          a camera in the rock, so the drone drops to a low chase inside one and
          the atmosphere is told it is not in the open. */
-      this.camTunnel = cp.tunnel ? 1 : 0;
+      this.camTunnel = (cp.tunnel &&
+        !(global.NR.onOverpass && global.NR.onOverpass(this.camS))) ? 1 : 0;
       if (cp.tunnel) {
         this.eye[1] = Math.min(this.eye[1], (cp.y || 0) + 9.0);
       }
@@ -6430,11 +7670,33 @@
           if (this.timeScale > 0.998) this.timeScale = 1;
         }
         this.slowFov = Math.max(0, (this.slowFov || 0) - dt * 1.4);
+        /* WHERE THE FRAME GOES, IN THREE PARTS.
+         *
+         * `update` is the simulation - physics, the drivers, the director,
+         * the audio mixer. `draw` is everything between deciding what the
+         * world looks like and handing the last command to the driver:
+         * culling, matrix building, uniform writes, draw calls. Whatever is
+         * left of the frame after both of them is the page waiting on the
+         * GPU, because nothing else is running.
+         *
+         * Those three are exactly the split a player needs to know which end
+         * of their machine is the problem - a game that is CPU-bound does not
+         * get faster with a smaller resolution and a GPU-bound one does - and
+         * the benchmark reports them. Two clock reads a frame, always on,
+         * because a timer that is only installed while measuring measures a
+         * loop that is not the one that runs. See js/bench.js.
+         */
+        const tSim = performance.now();
         try {
           this.update(dt * this.timeScale);
+          const tDraw = performance.now();
           // ...and the interface animates on the wall clock, because a menu
           // that eases in at quarter speed reads as the game having hung
           this.draw(dt);
+          const tEnd = performance.now();
+          const P = this.phase || (this.phase = { sim: 0, sub: 0 });
+          P.sim = tDraw - tSim;
+          P.sub = tEnd - tDraw;
         } catch (e) {
           console.error(e);
         }
@@ -6495,6 +7757,17 @@
      them. Read-only by convention: applyLevel caches each route's sun bearing
      back onto its entry, and nothing else writes here. */
   global.NR.LEVELS = LEVELS;
+  /* The stunt course, published for js/scene.js - which builds the structure
+     from these same rows - for Chapter 7, whose three ramps are in here, and
+     for the harnesses that assert a ramp stands on a straight. */
+  global.NR.COURSE_RAMPS = COURSE_RAMPS;
+  /* The title screen's running order, published so a tool can start the drive
+     somewhere in particular. Every menu defect reported so far has been at a
+     specific place on the course, and without this the only way to look at one
+     is to keep taking screenshots until the reel comes round to it. */
+  global.NR.ATTRACT_REEL = ATTRACT_REEL;
+  global.NR.RAMP_TELEGRAPH = RAMP_TELEGRAPH;
+  global.NR.RAMP_CLEAN = RAMP_CLEAN;
   global.NR.SETTING_ROWS = SETTING_ROWS;
   global.NR.CONTROLS_LAYOUT = CONTROLS_LAYOUT;
   global.NR.CONTROL_TABS = CONTROL_TABS;

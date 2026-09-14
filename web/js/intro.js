@@ -48,6 +48,7 @@
   ];
 
   let veil = null, line = null, writer = null, at = 0;
+  let rail = null, fill = null, stamp = null;
   let running = false, done = false, timer = 0;
 
   function build() {
@@ -64,11 +65,32 @@
     const mark = doc.createElement('div');
     mark.className = 'intro-mark';
     mark.textContent = 'SYNX';
+    // the two offset slices are ::before/::after, and they need the string
+    mark.setAttribute('data-text', 'SYNX');
     term.appendChild(mark);
     line = doc.createElement('p');
     line.className = 'intro-line';
     term.appendChild(line);
     veil.appendChild(term);
+
+    /* THE RAIL. Four boot lines with nothing under them is four sentences;
+       four boot lines over a bar that fills as each one lands is a machine
+       coming up, and it costs one element. It is honest, too - it is the
+       count of lines that have actually been printed, not a timer pretending
+       to be one. */
+    rail = doc.createElement('div');
+    rail.className = 'intro-rail';
+    fill = doc.createElement('i');
+    rail.appendChild(fill);
+    term.appendChild(rail);
+
+    /* ...and the stamp that lands on the last line. A sequence that simply
+       stops has no end; one that says the word and THEN wipes has a beat, and
+       the beat is what the camera move comes in on. */
+    stamp = doc.createElement('b');
+    stamp.className = 'intro-ready';
+    stamp.textContent = 'SYSTEMS NOMINAL';
+    term.appendChild(stamp);
 
     const hint = doc.createElement('p');
     hint.className = 'intro-skip';
@@ -80,9 +102,30 @@
 
   function nextLine() {
     if (done || !line) return;
-    if (at >= BOOT.length) { lift(); return; }
+    if (at >= BOOT.length) { arrive(); return; }
     const text = BOOT[at++];
-    writer = NR.UI.type(line, text, { cps: 78, done: () => { timer = setTimeout(nextLine, 220); } });
+    if (fill) fill.style.transform = 'scaleX(' + (at / BOOT.length) + ')';
+    /* FASTER THAN IT WAS, because it is no longer waiting for anything.
+
+       These lines used to be printed over a load: the pack, the core and the
+       course were all still arriving underneath them, and the sequence was
+       paced so that a slow machine had something to read. The loading has
+       moved in front of the photosensitivity notice now - see js/ignition.js
+       - so by the time this runs the game is BUILT, and four lines paced for
+       a wait are four lines the player is waiting for.
+
+       A hundred and thirty characters a second, and a shorter gap: the whole
+       terminal is about two seconds instead of four, which is a title
+       sequence rather than a progress report. */
+    writer = NR.UI.type(line, text, { cps: 132, done: () => { timer = setTimeout(nextLine, 130); } });
+  }
+
+  /* The beat between the last line and the wipe. */
+  function arrive() {
+    if (done) return;
+    if (stamp) stamp.classList.add('is-on');
+    if (veil) veil.classList.add('intro-armed');
+    timer = setTimeout(lift, 420);
   }
 
   /* The veil comes off and the camera move starts in the same frame, so the
@@ -103,6 +146,12 @@
      looking at while a game loads, and a partially dressed course is not.
      The cap is there because a veil that waits forever is a hang - past it
      the notice comes off regardless and the player gets whatever is ready. */
+  /* Still here, and still needed, but it should almost never be reached now:
+     the cold open in front of the photosensitivity notice does not end until
+     the game has loaded, so by the time the notice has been read and this has
+     typed, `startIntro` has been ready for several seconds. What is left is
+     the case where a player skips the cold open - the load is not skipped by
+     that and can still be in flight here. */
   const WAIT_MS = 12000;
   let waitedFrom = 0;
   function lift() {
@@ -127,13 +176,49 @@
     running = false;
     if (writer) writer.stop();
     global.clearTimeout(timer);
-    doc.removeEventListener('keydown', onAny, true);
-    doc.removeEventListener('pointerdown', onAny, true);
+    for (const type of EVENTS) doc.removeEventListener(type, onAny, true);
     if (veil && veil.parentNode) veil.parentNode.removeChild(veil);
     veil = null;
+    /* AND THE TITLE SCREEN DOES NOT GET THE PRESS THAT CLOSED THIS.
+
+       Spamming ENTER through the opening used to walk the player several
+       screens into the game. The reason was not the menu being too eager: it
+       was that this sequence listened for a key WITHOUT CONSUMING IT. One
+       press did two things - it skipped the intro, and the same event went
+       on to the input layer underneath, which was already sitting in the
+       title menu with START selected. A second press opened the mode
+       terminal, a third chose STORY, and a player who held the key down went
+       from the SYNX logo to a chapter list without seeing either screen.
+
+       Two halves to the fix, and both are needed. The listeners below now
+       CONSUME what they read - see EVENTS and the note on it - so nothing
+       behind this modal ever sees a press while it is up. And the gate is
+       shut behind it for longer than the wipe takes, so the release of
+       whatever dismissed it, and anything still arriving from a held key,
+       lands on a menu that is not listening yet. See NR.Gate in js/ui.js. */
+    if (NR.Gate) NR.Gate.lock(520);
   }
 
-  function onAny() { skip(); }
+  /* WHAT THIS MODAL TAKES, AND TAKES AWAY FROM EVERYTHING ELSE.
+
+     keydown is the one that skips. The other three are here because they are
+     the ones that would otherwise reach the screen underneath on their own:
+     a keyup from a press that arrived before this opened, and the click that
+     a pointerdown/pointerup pair turns into. Taken at the capture phase, so
+     they are stopped before any of the game's own window listeners see them,
+     and TAB is left alone because focus still has to be able to move. */
+  const EVENTS = ['keydown', 'keyup', 'pointerdown', 'pointerup'];
+
+  function onAny(e) {
+    if (e && e.type === 'keydown' && e.key === 'Tab') return;
+    if (e) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      // only a press starts the skip; the matching release is merely eaten
+      if (e.type === 'keyup' || e.type === 'pointerup') return;
+    }
+    skip();
+  }
 
   /** Take the whole sequence down and settle the title screen at once. */
   function skip() {
@@ -147,11 +232,16 @@
     if (running || done) return;
     /* A player who has reduced motion turned on has asked not to be taken on
        a camera move. They get the title screen, settled, immediately. */
-    if (!NR.UI || NR.UI.reduced()) { done = true; return; }
+    if (!NR.UI || NR.UI.reduced()) {
+      done = true;
+      // ...and the gate still shuts, or reduced motion becomes a fast path
+      // into the mode terminal for anybody holding ENTER. See finish().
+      if (NR.Gate) NR.Gate.lock(420);
+      return;
+    }
     running = true;
     build();
-    doc.addEventListener('keydown', onAny, true);
-    doc.addEventListener('pointerdown', onAny, true);
+    for (const type of EVENTS) doc.addEventListener(type, onAny, true);
     timer = setTimeout(nextLine, 260);
   }
 

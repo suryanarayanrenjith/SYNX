@@ -330,6 +330,63 @@ pub extern "C" fn synx_track_length() -> f64 {
     world().track.as_ref().map(|t| t.length).unwrap_or(0.0)
 }
 
+/* THE BORE BYPASSES, PUBLISHED RATHER THAN RESTATED.
+ *
+ * The deck is generated here - it is the road's own elevation, see
+ * `OVERPASSES` in track.rs - and the renderer has to build the structure that
+ * holds it up, seal the bore under it and keep the tunnel's fog off a car that
+ * is on the roof rather than inside. All three need the same four arc lengths,
+ * and a copy of them written down in JavaScript is a copy that drifts the
+ * first time one of them moves by six units. */
+#[no_mangle]
+pub extern "C" fn synx_overpass_count() -> usize {
+    crate::track::OVERPASSES.len()
+}
+
+/// `from, deck0, deck1, to, h, bore0, bore1` per entry, laid end to end.
+#[no_mangle]
+pub extern "C" fn synx_overpasses() -> *const f64 {
+    let w = world();
+    let mut t = Vec::new();
+    crate::track::overpass_table(&mut t);
+    let n = t.len().min(w.scratch.len());
+    w.scratch[..n].copy_from_slice(&t[..n]);
+    w.scratch.as_ptr()
+}
+
+/// Stride of the block above, so the bridge cannot guess it wrong.
+#[no_mangle]
+pub extern "C" fn synx_overpass_stride() -> usize {
+    crate::track::OVERPASS_STRIDE
+}
+
+/* WHAT A CAR IN THE AIR DOES, PUBLISHED.
+ *
+ * The solver owns the flight - gravity, the drag that acts on a car with no
+ * wheels down, how fast the nose drops and how far out a landing still scores
+ * - and the front end has one other place that has to put a car through the
+ * same arc: the attract drive behind the menus, which is kinematic and never
+ * touches the solver at all. It used to slide straight through the ramps.
+ *
+ * Handing it these numbers rather than letting it keep its own copy is the
+ * difference between a title screen that shows the game and a title screen
+ * that shows something that looks a bit like it. Order: gravity, air drag,
+ * nose-drop acceleration, its bound, and the landing tolerance.
+ */
+#[no_mangle]
+pub extern "C" fn synx_air_constants() -> *const f64 {
+    let w = world();
+    let v = [
+        crate::vehicle::AIR_G,
+        crate::vehicle::AIR_DRAG,
+        crate::vehicle::AIR_PITCH_ACC,
+        crate::vehicle::AIR_PITCH_MAX,
+        crate::vehicle::LAND_TOL,
+    ];
+    w.scratch[..v.len()].copy_from_slice(&v);
+    w.scratch.as_ptr()
+}
+
 /// Sample the centreline. Writes `x, y, z, yaw, curv, tunnel` to the scratch
 /// buffer and returns its address.
 #[no_mangle]
@@ -464,8 +521,9 @@ pub extern "C" fn synx_veh_reset(id: u32, s: f64, lateral: f64) {
 }
 
 #[no_mangle]
-pub extern "C" fn synx_veh_fit_engine(id: u32, swap: u32) {
-    with_car(id, |v, _| v.fit_engine(swap != 0));
+/// Fit an engine: 0 stock, 1 the Forge rebuild, 2 the wreck Chapter 6 opens on.
+pub extern "C" fn synx_veh_fit_engine(id: u32, kind: u32) {
+    with_car(id, |v, _| v.fit_engine(kind));
 }
 
 /// Arm the next launch ramp for a car, or clear it with `h <= 0`.
@@ -476,6 +534,17 @@ pub extern "C" fn synx_veh_fit_engine(id: u32, swap: u32) {
 #[no_mangle]
 pub extern "C" fn synx_veh_arm_ramp(id: u32, s0: f64, s1: f64, h: f64) {
     with_car(id, |v, _| v.arm_ramp(s0, s1, h));
+}
+
+/// Arm a ramp that has a CREST to drive along before it runs out.
+///
+/// `s1` is where the climb levels off, `s2` where the structure ends, and
+/// `lip` the height there. It is what the bypass over MIRAGE CIRCUIT's blocked
+/// bore is built from: a wedge launches you, and a thing you get OVER has a
+/// top. `s2 == s1` with `lip == h` is exactly `synx_veh_arm_ramp`.
+#[no_mangle]
+pub extern "C" fn synx_veh_arm_ramp_deck(id: u32, s0: f64, s1: f64, s2: f64, h: f64, lip: f64) {
+    with_car(id, |v, _| v.arm_ramp_deck(s0, s1, s2, h, lip));
 }
 
 /// Move a car to a lateral offset on the road WITHOUT resetting it.
@@ -823,7 +892,7 @@ mod tests {
         let mut v = Vehicle::default();
         v.lift = 1.0532;
         // the Forge rebuild, which a rewind must not undo
-        v.fit_engine(true);
+        v.fit_engine(crate::vehicle::Vehicle::ENGINE_SWAP);
         let mut block = vec![0.0; VEH_STRIDE];
         store_vehicle(&v, &mut block);
 
@@ -1560,12 +1629,15 @@ pub extern "C" fn synx_drv_mptr() -> *mut f32 {
 
 /// Every part's world matrix, for one figure, against whatever is in MODEL.
 #[no_mangle]
-pub extern "C" fn synx_drv_pose(spin: f32, press: f32) -> *mut f32 {
+pub extern "C" fn synx_drv_pose(spin: f32, hand: f32, press: f32) -> *mut f32 {
     let r = rig();
     if r.is_empty() {
         return r.out_ptr();
     }
     let m = unsafe { &*core::ptr::addr_of!(MODEL) };
-    r.pose(m, spin as f64, press as f64);
+    /* TWO ANGLES. `spin` is how far the rim has turned and `hand` how far the
+       hands have gone round with it - the same number until the rim is past
+       about seventy degrees, and then not. See GRIP in driver.rs. */
+    r.pose(m, spin as f64, hand as f64, press as f64);
     r.out_ptr()
 }

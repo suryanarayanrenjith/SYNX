@@ -1034,7 +1034,19 @@
 
       switch (g.state) {
         case 'loading': this.drawLoading(g); this.crt(g, 1); break;
-        case 'menu': this.drawMenu(g); this.crt(g, 1); break;
+        /* A benchmark run shows the WORLD, not the title screen over it.
+
+           The grade stays - it is part of what is being measured - but the
+           wordmark and the three rows come off for the WHOLE run, calibration
+           and report included. `benchDriving` was the wrong flag for this: it
+           is only true while the three scenes are being driven, so START,
+           OPTIONS and QUIT were still sitting there during the preset ladder
+           in front of them and under the result card behind them - three
+           controls that do nothing, on a screen that is busy. See js/bench.js. */
+        case 'menu':
+          if (!g.benchActive) this.drawMenu(g);
+          this.crt(g, 1);
+          break;
         case 'controls': this.drawControlsScreen(g); this.crt(g, 1); break;
         case 'startcard': this.drawHud(g); this.drawStartCard(g); break;
         /* THE LIGHTS ARE THE EVENT.
@@ -1240,7 +1252,13 @@
         this.digits(fmtTime(g.record), 30, by, 30, 'center');
       }
 
-      this.label('START  STORY MODE + FREE ROAM      ARROWS  SELECT      ENTER  CONFIRM',
+      /* ...and where the game lives, on the same line as the control hints.
+         On its own line under them it would sit at -348, which is three units
+         outside the bracket frame this screen is drawn inside - and above them
+         it has the BEST panel to argue with. The footer is the one band on
+         this screen that is already nothing but small print. */
+      this.label('START  STORY MODE + FREE ROAM      ARROWS  SELECT      ENTER  CONFIRM'
+        + '      SYNX-RACING.VERCEL.APP',
         0, -330, 13, INK.mute, 'center', 500);
 
       const frameW = Math.min(1230, this.vw - 30);
@@ -1282,17 +1300,44 @@
 
       // speedometer: the 'speed' dial, its fill clipped by road speed
       this.placeSprite('SpeedMeterBG', 0, 0.55);
-      /* The dial has to sweep against the top speed in the unit it is showing.
-         It used to divide MPH by 290 - the car's top speed in km/h - so the
-         needle only ever reached two thirds of the way round even flat out. */
-      const top = g.useMetric ? 215 : 134;
+      /* THE DIAL SWEEPS AGAINST THE CAR'S OWN CEILING.
+       *
+       * It has to be in the unit it is showing - it used to divide MPH by 290,
+       * the top speed in km/h, so the needle only ever reached two thirds of
+       * the way round even flat out - and it has to be THIS car's, which is
+       * the half that was still wrong.
+       *
+       * 134 mph is the street block's top speed and nothing else's. Chapter 6
+       * ends by fitting the Forge rebuild, and from the moment it does - for
+       * the whole of Chapter 7 and all of Free Roam, which fits the same
+       * engine - the car pulls 144 on its own and 200 on raceMode against a
+       * dial that stops at 134. The needle pegs at the end of its travel and
+       * stays there: the one instrument whose entire job is to tell you how
+       * much is left stops answering exactly when the answer starts to matter,
+       * and the rebuild the chapter is ABOUT does not show up on the
+       * instrument that would say so.
+       *
+       * `ceilingMph` is what the solver will actually enforce on this car as
+       * it is fitted right now - see Vehicle.ceilingUnits in js/wasm.js - so
+       * the dial re-scales when the engine is swapped and at no other time.
+       * On the street block it lands on 132, which is where it always was.
+       *
+       * The floor is there so a car with no engine record yet - one frame on a
+       * fresh load - does not divide by zero and peg the needle. */
+      const ceiling = g.useMetric ? car.ceilingKmh : car.ceilingMph;
+      const top = Math.max(g.useMetric ? 120 : 75, ceiling || (g.useMetric ? 215 : 134));
       const shown = g.useMetric ? car.speedKmh : car.speedMph;
       this.placeSprite('SpeedMeter', 0, 1, Math.max(0, Math.min(1, shown / top)));
       const spd = Math.round(g.useMetric ? car.speedKmh : car.speedMph);
       this.placeDigits('txt_speed_bg', '888', 0, 0.12);
       // the readout heats up as the car nears its limit, and flares on boost
       // the readout heats up over the last third of the range
-      const heat = Math.max(0, Math.min(1, (car.speedMph / 134 - 0.55) / 0.45));
+      /* ...and the readout heats over the last third of THAT range, not of a
+         constant one. On the rebuilt engine the old constant had the digits
+         running red from 74 mph onward - permanently, since the car cruises
+         well past it - so the one cue that says "this is near the limit" said
+         it all the time and therefore said nothing. */
+      const heat = Math.max(0, Math.min(1, (shown / top - 0.55) / 0.45));
       const tint = g.raceModeActive ? '#45d7ff' : car.boosting ? '#ff4bd8'
         : (heat > 0.02 ? mixHex('#ffb400', '#ff3b3b', heat) : null);
       this.placeDigits('txt_speed', String(spd), 0, undefined, tint);
@@ -1427,7 +1472,15 @@
        * used, so nothing else on the flank had to move. */
       const rm = g.raceMode;
       if (rm && rm.available && (g.state === 'racing' || g.state === 'countdown')) {
-        const rx = 570, ry = 176;
+        /* CLEAR OF THE COMBO ABOVE IT.
+           The score stack on this flank ends with the multiplier at y=216, and
+           26-point type on that baseline reaches down to 203. This group's
+           state word sits at ry+26, so at ry=176 the word CHARGING was drawn
+           one unit under the bottom of the x6 - they touched, and read as one
+           line saying "x6 CHARGING". Twenty-six units lower leaves a clear
+           band between the two instruments, which is what says they are two
+           instruments. */
+        const rx = 570, ry = 150;
         const ready = !rm.active && rm.cooldown <= 0;
         const col = rm.active ? '#45d7ff' : (ready ? '#5affc0' : INK.mute);
         const label = rm.active ? 'raceMode  //  ' + rm.timer.toFixed(1) + 's'
@@ -2460,21 +2513,45 @@
       if (this.selY === null || this.selY === undefined) this.selY = target;
       else this.selY += (target - this.selY) * Math.min(1, (dt || 0.016) * 22);
 
+      /* WHERE THE ROWS ACTUALLY WENT, published for the pointer.
+       *
+       * A hit-test has to agree with the drawing or the mouse highlights the
+       * wrong row - and on a card whose rows move, it cannot agree by having
+       * the numbers typed into it twice. The pause and confirm cards get away
+       * with it because their lists are at a fixed height; the FINISH card
+       * does not. Its `baseY` is computed from how much went on the card above
+       * it - the verdict, the split times, whether a route unlocked - so it
+       * lands somewhere different on a win, a loss and a personal best, and
+       * nothing outside this method can know where.
+       *
+       * So the list says. One record, because the screens that use it are
+       * modal and only ever one is up. See Game.finishItemAt. */
+      this.listRows = { baseY, gap, n: items.length, width, half: gap * 0.48 };
+
       // the bar, once, where it actually is
       const glow = 0.55 + 0.45 * Math.sin((this.time || 0) * 4);
       this.panel(0, this.selY, width, gap * 0.82, PINK, 0.34);
       this.brackets(0, this.selY, width + 30, gap * 0.97, AMBER, 15, 0.55 + 0.35 * glow);
 
+      /* A ROW THAT CANNOT DO ANYTHING SAYS SO.
+         `opts.disabled` is one flag per row. A disabled row is still drawn and
+         still takes its place in the list - taking it out would move every row
+         under it and make the card change shape depending on where the player
+         happens to be - but it is drawn at the muted ink and a third of the
+         weight, which is the difference between a choice and a label. */
+      const off = o.disabled || [];
       for (let i = 0; i < items.length; i++) {
         const sel = i === index;
+        const dead = !!off[i];
         const y = baseY - i * gap;
         /* Rows stagger in behind the panel, forty milliseconds apart. It is
            the difference between a menu appearing and a menu being dealt. */
         const k = ease(Math.min(1, Math.max(0, ((this.enter || 1) * 0.30 - i * 0.045) / 0.20)));
         if (k <= 0.002) continue;
         const dx = (1 - k) * 26;
-        this.neon(items[i], dx, y, size, sel ? AMBER : WHITE, 'center',
-          sel ? 900 : 700, (sel ? 1 : 0.68) * k);
+        const col = dead ? INK.mute : (sel ? AMBER : WHITE);
+        const a = dead ? (sel ? 0.55 : 0.34) : (sel ? 1 : 0.68);
+        this.neon(items[i], dx, y, size, col, 'center', dead ? 700 : (sel ? 900 : 700), a * k);
       }
     }
 
@@ -2517,7 +2594,26 @@
           : Math.round(secs / 60) + ' MINUTES AGO';
         this.label('PROGRESS SAVED  ' + when, 0, 26, T.micro, '#5affc0', 'center', 800, k * .8);
       }
-      this.menuList(g.pauseItems, g.pauseIndex, -12, 64, dt);
+      /* THE CARD TAKES THREE ROWS OR FOUR.
+         A chapter offers RESTART FROM CHECKPOINT and a plain race has no
+         checkpoint to offer - see Game.pauseRowsFor - so the list here is not
+         a fixed height. At the three-row spacing a fourth row lands at -204
+         against a footer at -210 and they are drawn through each other, so the
+         four-row case closes the gap and starts a little higher. The bar is
+         wider too: RESTART FROM CHECKPOINT is twenty-three characters, and
+         menuList would otherwise shrink the whole list to fit it into a bar
+         built for RESUME. */
+      const wide = g.pauseItems.length > 3;
+      const dis = g.pauseDisabled || [];
+      this.menuList(g.pauseItems, g.pauseIndex, wide ? -14 : -12, wide ? 54 : 64, dt,
+        wide ? { width: 440, disabled: dis } : { disabled: dis });
+      /* ...and WHY it is dead, because a greyed row with no reason beside it
+         is a row the player assumes is broken. It only appears while the row
+         that needs it is the one under the bar. */
+      if (dis[g.pauseIndex]) {
+        this.label('NO CHECKPOINT REACHED YET', 0, (wide ? -14 : -12) - g.pauseItems.length * (wide ? 54 : 64) + 22,
+          T.micro, '#ff9a6a', 'center', 800, 0.9 * k);
+      }
       this.footer('CLICK / ENTER  SELECT      ESC  RESUME', PY, PH);
       this.sweep(g, 0.5);
     }
@@ -2777,6 +2873,13 @@
   }
 
   global.NR.Hud = Hud;
+  /* WHERE THE GAP READOUT IS, for anything that has to keep off it.
+     The DOM panels are positioned in viewport units and this group is drawn on
+     the canvas in the 1280x720 virtual space, so nothing can tell whether one
+     covers the other without resolving both - which is what --probe cards
+     does. It asks here rather than restating the numbers, so moving the group
+     moves the test with it. Virtual units, +y up: see vx/vy on the Hud. */
+  global.NR.HUD_RIVAL = { x: RIVAL_X, w: RIVAL_W, top: 292, bottom: 219 };
   global.NR.MENU_LAYOUT = ML;
   global.NR.fmtTime = fmtTime;
 })(window);

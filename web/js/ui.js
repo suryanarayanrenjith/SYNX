@@ -236,5 +236,45 @@
   };
   NR.Gate = Gate;
 
+  /* ------------------------------------------------------ SCREEN CHANGES --
+   *
+   * Hiding a full-screen root is a one-liner - set aria-hidden, the
+   * stylesheet sets display:none - and that one line is a hard cut. The
+   * panel inside it has an entrance and no exit, so going INTO a screen was
+   * a move and coming OUT of it was a jump, which is what makes an interface
+   * feel like a set of pages rather than one thing.
+   *
+   * This is the exit, and it is deliberately small: mark the element, let the
+   * stylesheet fade it, THEN hide it. One place, so every screen leaves the
+   * same way and none of them can be forgotten.
+   *
+   * It is safe to call twice, and safe to call on a screen that is already
+   * hidden. Anything that re-opens the screen mid-fade cancels the exit,
+   * because a card that is fading out while it is being asked to come back
+   * is the worst possible answer.
+   */
+  const LEAVE_MS = 180;
+  NR.Screen = {
+    hide(el) {
+      if (!el) return;
+      if (el.getAttribute('aria-hidden') === 'true') return;
+      if (reduced()) { el.setAttribute('aria-hidden', 'true'); return; }
+      el.classList.add('is-leaving');
+      global.clearTimeout(el.__leave);
+      el.__leave = global.setTimeout(() => {
+        el.__leave = 0;
+        el.classList.remove('is-leaving');
+        el.setAttribute('aria-hidden', 'true');
+      }, LEAVE_MS);
+    },
+    show(el) {
+      if (!el) return;
+      global.clearTimeout(el.__leave);
+      el.__leave = 0;
+      el.classList.remove('is-leaving');
+      el.setAttribute('aria-hidden', 'false');
+    },
+  };
+
   NR.UI = { alert, close, busy, type, reduced };
 })(window);

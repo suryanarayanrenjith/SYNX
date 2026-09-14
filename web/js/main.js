@@ -294,8 +294,13 @@
     /* The one way in that is not a player: the harness drives the game with no
        input layer at all, and a modal it cannot see would make every automated
        run a screenshot of this screen. It skips the reveal as well, which is
-       why this reveals before it leaves. */
-    window.NR.dismissAdvisory = () => { revealAll(); go(); };
+       why this reveals before it leaves.
+
+       Published under its own name rather than as NR.dismissAdvisory, because
+       there is now a screen in FRONT of this one and the harness has to be
+       able to get past both with one call. See the wrapper at the bottom of
+       this file, which is what NR.dismissAdvisory actually is. */
+    NR.advisoryDismiss = () => { revealAll(); go(); };
   }
 
   function installPointerFx() {
@@ -364,11 +369,58 @@
       return;
     }
 
-    /* THE NOTICE COMES UP FIRST, and the load runs behind it. See `advisory`. */
-    /* Before the advisory, not after the load: the notice has a button on
-       it and the page hides the system pointer. See installPointerFx. */
+    /* Before anything else, because the notice has a button on it and the
+       page hides the system pointer. See installPointerFx. */
     installPointerFx();
-    advisory();
+
+    /* ------------------------------------------- THE ORDER OF THE OPENING
+     *
+     * IGNITION, then the NOTICE, then the INTRO, then the title. The middle
+     * one is the only one that was ever here, and the reason the other two
+     * exist either side of it is the same reason: this game takes a while to
+     * load and something has to be honest about that.
+     *
+     * WHAT CHANGED, AND WHY IT IS NOT JUST A NEW SCREEN.
+     *
+     * The load used to run underneath the photosensitivity notice. That is a
+     * perfectly reasonable thing to do with a wait - except that the notice
+     * types its own text, one character at a time, on the main thread; and
+     * the load is forty-five megabytes of pack being inflated, a WebAssembly
+     * core being compiled and a hundred and seventy-five kilometres of course
+     * being built, all of it on the same main thread. The typewriter stuttered
+     * because it was competing with the game for the only thread either of
+     * them has. It was reported as the warning screen lagging, and it was.
+     *
+     * So the wait moves one screen earlier, onto something that does not mind
+     * it: a rev counter being held against its limiter, which looks exactly
+     * like what it is - a machine working - and whose sound is on the audio
+     * thread where a busy main thread cannot touch it. The notice is not shown
+     * until that has finished, by which point there is nothing left to load
+     * and it types on an idle machine.
+     *
+     * NOTHING HERE BLOCKS. The load below starts in the same tick as the cold
+     * open and neither waits for the other; ignition simply refuses to end
+     * until `ready` has been called, and the notice is what its callback does.
+     * Every failure path in js/ignition.js calls that callback, so a machine
+     * with no canvas, no audio or no patience still gets the warning.
+     */
+    let advisoryUp = false;
+    const showAdvisory = () => {
+      if (advisoryUp) return;
+      advisoryUp = true;
+      advisory();
+    };
+    /* The harness, and js/bench.js, want one call that gets past everything
+       in front of the game. It is defined here rather than inside `advisory`
+       so it exists before the advisory does - it is now the second screen,
+       and something has to be able to skip the first. */
+    window.NR.dismissAdvisory = () => {
+      if (NR.Ignition) NR.Ignition.skip();
+      showAdvisory();
+      if (NR.advisoryDismiss) NR.advisoryDismiss();
+    };
+    if (NR.Ignition) NR.Ignition.begin(showAdvisory);
+    else showAdvisory();
 
     /* Two things have to exist before the game does.
 
@@ -407,6 +459,13 @@
            out of do not need to stay resident as well. */
         const freed = NR.Pak.compact();
         if (freed) console.info('SYNX: released ' + (freed / 1048576).toFixed(1) + ' MB of pack buffer');
+
+        /* THE ENGINE MAY STOP. Everything that was going to compete with the
+           notice for the main thread has finished competing: the pack is
+           decoded, the core is compiled, the course is built and the first
+           frame is on the canvas. Ignition holds its last note until this
+           line and then hands over - see the note on the opening above. */
+        if (NR.Ignition) NR.Ignition.ready();
         /* The window has been hidden since launch so the player never sees an
            unstyled page or a white flash. The first real frame has been drawn
            by the time load() resolves, so this is where it may be shown. */
@@ -425,6 +484,11 @@
         if (NR.Bench && NR.Bench.autorun && window.__nr) NR.Bench.autorun(window.__nr);
       })
       .catch(function (e) {
+        /* ...and a load that failed is still a load that finished. Without
+           this the cold open holds its limiter for its full twenty-six second
+           ceiling over a game that is never coming, and the error nobody can
+           see is behind it. */
+        if (NR.Ignition) NR.Ignition.ready();
         fatal((e && e.message) ? e.message : String(e));
       });
   });

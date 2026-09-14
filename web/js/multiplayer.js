@@ -419,8 +419,15 @@
     close() {
       this.shown = false;
       const u = this.ui;
-      for (const el of [u.root, u.nameRoot, u.hud, u.resultsRoot, u.dialogRoot]) {
-        if (el) el.setAttribute('aria-hidden', 'true');
+      /* The HUD goes at once and the screens fade - see NR.Screen in
+         js/ui.js. The distinction is the point: a panel a player is reading
+         should not be cut away, and an instrument strip that lingers over a
+         menu for a fifth of a second is a bug rather than a flourish. */
+      if (u.hud) u.hud.setAttribute('aria-hidden', 'true');
+      for (const el of [u.root, u.nameRoot, u.resultsRoot, u.dialogRoot]) {
+        if (!el) continue;
+        if (NR.Screen) NR.Screen.hide(el);
+        else el.setAttribute('aria-hidden', 'true');
       }
       doc.body.classList.remove('multiplayer-open');
     }
@@ -1298,9 +1305,8 @@
       if (u.dialogRoot) u.dialogRoot.classList.toggle('is-single', !canCancel);
 
       u.dialogRoot.setAttribute('aria-hidden', 'false');
-      // The world may still be running behind this one; see syncCursorVisibility.
-      this.g.uiOverlayOpen = true;
-      this.g.syncCursorVisibility();
+      // The world may still be running behind this one; see setUiOverlay.
+      this.g.setUiOverlay('mp-dialog', true);
       global.setTimeout(() => {
         const first = choices
           ? u.dialogChoices.querySelector('button')
@@ -1383,8 +1389,7 @@
       const d = this._dialog;
       this._dialog = null;
       if (this.ui.dialogRoot) this.ui.dialogRoot.setAttribute('aria-hidden', 'true');
-      this.g.uiOverlayOpen = false;
-      this.g.syncCursorVisibility();
+      this.g.setUiOverlay('mp-dialog', false);
       if (d) d.resolve(value === undefined ? null : value);
     }
 
@@ -1722,6 +1727,7 @@
       this.close();
       this.results = null;
       if (this.ui.resultsRoot) this.ui.resultsRoot.setAttribute('aria-hidden', 'true');
+      this.g.clearUiOverlays();
       this.pending = m;
       this.crossed = false;
 
@@ -2010,6 +2016,13 @@
       }
       u.resultsRoot.setAttribute('aria-hidden', 'false');
       doc.body.classList.add('multiplayer-open');
+      /* A RACE THAT HAS ENDED IS STILL A RACE as far as `state` is
+         concerned: multiplayer cannot pause, the world keeps rolling
+         through the run-off, and this board arrives on top of it. Without
+         this the cursor stayed hidden and the podium, RACE AGAIN and LOBBY
+         could only be reached from the keyboard - which is exactly the
+         screen a player is most likely to reach for the mouse on. */
+      g.setUiOverlay('mp-results', true);
       g.audio.playTrack('menu');
       global.setTimeout(() => { if (u.resultsAgain) u.resultsAgain.focus(); }, 60);
     }
@@ -2018,6 +2031,8 @@
       const g = this.g;
       this.results = null;
       if (this.ui.resultsRoot) this.ui.resultsRoot.setAttribute('aria-hidden', 'true');
+      // the board specifically: a dialog opened over it keeps its own pointer
+      g.setUiOverlay('mp-results', false);
       g.blockQuickRestart = false;
       if (stay && NR.Net.inRoom) {
         this.open(this.from);
@@ -2046,6 +2061,7 @@
       g.blockQuickRestart = false;
       if (this.ui.hud) this.ui.hud.setAttribute('aria-hidden', 'true');
       if (this.ui.resultsRoot) this.ui.resultsRoot.setAttribute('aria-hidden', 'true');
+      this.g.clearUiOverlays();
       if (why) this.notice(why);
       this.setView('browse');
       this.open(this.from);

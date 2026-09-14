@@ -80,9 +80,35 @@ pub unsafe extern "C" fn synx_free(ptr: *mut u8) {
 /// v10: `synx_driver_tune` dropped its `ram` argument along with the R-IX's
 ///      shoulder, and `wheelSpinFront` joined the vehicle block so the two
 ///      axles can be drawn turning at their own speeds.
+/// v11: the course gained authored bore bypasses (`synx_overpasses`,
+///      `synx_overpass_count`, `synx_overpass_stride`) and the flight model
+///      publishes its own constants (`synx_air_constants`). Both are read at
+///      load and both are load-bearing on the far side - the renderer builds
+///      the structure under a raised deck from the first, and the attract
+///      drive behind the menus puts a car through an arc with the second - so
+///      a stale wasm has to say so rather than quietly drawing a road the
+///      cars are not standing on.
+/// v12: a ramp gained a CREST - `Ramp` carries `s2` and `lip`, and
+///      `synx_veh_arm_ramp_deck` arms one. The bypass over MIRAGE CIRCUIT's
+///      blocked bore is a structure with a top to drive along rather than the
+///      road climbing over the tunnel, so the overpass table is now empty.
+/// v13: `synx_drv_pose` takes a HAND angle as well as a rim angle. With a
+///      sixteen-to-one rack the two stopped being the same number: the rim
+///      goes all the way to its lock and the hands go as far as a pair of
+///      arms can follow it.
+/// v14: the driver's part table gained ARM - a forearm solved between its
+///      shoulder and its own hand rather than carried round the steering
+///      hub - and with it a length in slot 11 of a BONE record. Slot 11 was
+///      a spare, and a stale wasm reads it as one: an upper arm solved at
+///      its rest length, which can straighten and never bend, and hands
+///      that give up four degrees into a corner.
+/// v15: `synx_veh_fit_engine` takes a KIND rather than a flag - 0 stock,
+///      1 the Forge rebuild, 2 the wreck Chapter 6 opens on. A stale wasm
+///      reads the 2 as a truthy swap and hands the player the rebuilt engine
+///      for the whole chapter that exists to earn it.
 #[no_mangle]
 pub extern "C" fn synx_abi_version() -> u32 {
-    10
+    15
 }
 
 // ------------------------------------------------------------------ world ---

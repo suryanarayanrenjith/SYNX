@@ -140,11 +140,35 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
 #forge6Strikes i.hit { background: var(--pink); box-shadow: 0 0 9px var(--pink); }
 
 /* Round card. A centred title beat, not a full-screen takeover. */
+/* THE TRIAL CARD, AND THE TWO THINGS IT WAS DRAWN THROUGH.
+
+   AT 16% IT LANDED ON THE GAP READOUT. The canvas HUD puts RIVAL / 2nd / -0 M
+   out on the left flank at virtual y 288..219, which is 10% to 20% of the
+   frame height whatever the window is - and a card whose top edge is at 16%
+   crosses the bottom half of it. The one number a player watches in a race
+   spent every trial announcement behind an opaque panel.
+
+   AND AT 84vw IT REACHED INTO THE LEFT GUTTER, where the chapter objective
+   card and the story's radio chip live. Those two are stacked in the gutter
+   on purpose; this one is centred, so the fix is not to move it down past
+   them - there is no room between the gap rail and the chip for a card this
+   tall - but to keep it out of their column entirely. The width below is
+   whatever is left of the middle once the gutter and the widest the chip can
+   get (25vw) are taken off both sides, capped at the 680 it was designed at.
+   It is then free to share their vertical band, because it can never share
+   their horizontal one.
+
+   Both numbers are measured rather than chosen: see --probe cards in
+   tools/smoke.js, which resolves every one of these clamps in a real document
+   and holds the panels against each other AND against the HUD group. */
 #forge6Round {
   position: absolute;
   left: 50%;
-  top: 16%;
-  width: min(680px, 84vw);
+  /* Eighteen of these is spent on the fade-in, which starts the card that far
+     above where it lands - so the clearance the gap readout needs is measured
+     from 18px higher than this. */
+  top: clamp(152px, 23%, 270px);
+  width: min(680px, calc(50vw - 2 * var(--story-gutter) - 28px));
   padding: 22px 34px 24px;
   text-align: center;
   transform: translate(-50%, -18px);
@@ -752,6 +776,54 @@ body.cine5-qte #hudCanvas { opacity: .12; filter: saturate(.58) brightness(.55);
 #cine5.fatality #cine5Prompt,
 #cine5.fatality #cine5Meter,
 #cine5.fatality #cine5Timer { opacity: 0 !important; visibility: hidden; }
+/* ...AND CHAPTER 7 SAYS IT THE SAME WAY.
+
+   A building comes down on the car in both chapters. In ASHFALL ZERO that is
+   the word FATALITY across the middle of the screen; in NEON HORIZON the same
+   event used to be a small orange status line in the corner reading ROUTE
+   FAILURE, which is the sort of inconsistency that makes one game feel like
+   two. Same word, same colour, same shake, same keyframes - deliberately
+   sharing the animation below rather than copying it, so the two cannot drift
+   apart when one of them is next tuned. */
+#pred7Fatality {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 140ms linear;
+}
+#pred7Fatality[aria-hidden="true"] { visibility: hidden; }
+body.pred7-fatality #pred7Fatality { opacity: 1; }
+#pred7Fatality small {
+  color: #ff8b55;
+  font: 800 10px/1 var(--font);
+  letter-spacing: .34em;
+}
+#pred7Fatality b {
+  display: block;
+  color: #ff2a0d;
+  font: 900 clamp(54px, 10vw, 164px)/1 var(--font);
+  letter-spacing: .035em;
+  text-shadow: 0 0 12px #ff5a18, 0 0 52px rgba(255, 20, 0, .92), 0 5px 3px #130000;
+  animation: cine5-fatality 180ms steps(2, end) 2;
+}
+#pred7Fatality span {
+  color: #fff1de;
+  font: 700 11px/1.5 var(--font);
+  letter-spacing: .22em;
+}
+/* A crush is a crush: the route furniture comes off the frame for it, the way
+   the chapter card does for a chapter 5 cutscene. */
+body.pred7-fatality #pred7Event,
+body.pred7-fatality #pred7Checkpoint,
+body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
+
 @keyframes cine5-fatality {
   0% { transform: scale(1.18) skewX(-5deg); filter: blur(2px); }
   100% { transform: scale(1) skewX(0); filter: blur(0); }
@@ -1180,8 +1252,27 @@ body.cine5-qte #hudCanvas { opacity: .12; filter: saturate(.58) brightness(.55);
    portrait is deliberately his, run through a bad link: a red/cyan separation,
    a rolling tear and a hold that never quite settles. */
 #storyPortrait.corrupt {
-  filter: saturate(.32) contrast(1.3) brightness(.86)
-          drop-shadow(5px 0 0 rgba(255,40,20,.62)) drop-shadow(-5px 0 0 rgba(60,190,255,.5));
+  /* A RED DUOTONE, NOT A DESATURATED PHOTOGRAPH.
+
+     This was a mild chromatic split over a slightly grey portrait, which
+     reads as a bad video call rather than as the thing the last chapter is
+     about. The R-IX is the boss of this game and it was wearing the same
+     face as the man it took the car from, at the same exposure.
+
+     grayscale then sepia then a rotation into red is the standard way to
+     duotone an image with nothing but a filter - no second asset, no
+     canvas, no SVG - and the saturate afterwards is what makes it a signal
+     rather than a tint. Blacks crushed, whites pushed, so what is left of
+     the face is bone and a hot rim.
+
+     The cyan half of the old split stays, at a fraction: two colours means
+     a broken signal and one means a filter. */
+  filter:
+    grayscale(1) sepia(1) hue-rotate(-32deg) saturate(5.2)
+    contrast(1.62) brightness(.74)
+    drop-shadow(0 0 22px rgba(255, 30, 12, .72))
+    drop-shadow(6px 0 0 rgba(255, 40, 20, .58))
+    drop-shadow(-4px 0 0 rgba(60, 190, 255, .30));
   animation: story-corrupt 2.6s steps(1) infinite;
 }
 /* Interlace on top of the separation, so the link reads as bad even in the
@@ -1191,6 +1282,83 @@ body.cine5-qte #hudCanvas { opacity: .12; filter: saturate(.58) brightness(.55);
     linear-gradient(90deg, transparent 92%, color-mix(in srgb, var(--voice) 62%, transparent) 100%),
     linear-gradient(0deg, rgba(5,2,16,.85), transparent 22%),
     repeating-linear-gradient(0deg, rgba(255,30,10,.13) 0 1px, transparent 1px 2px);
+}
+/* ======================================================= THE BOSS ========
+
+   CHAPTER 7 IS NOT ANOTHER RIVAL, AND THE ART SHOULD NOT SAY IT IS.
+
+   The R-IX broadcasts on Ryker's channel with Ryker's face on the relay -
+   that is the point of the character, and it is why it has no portraits of
+   its own. But every surface that showed it showed exactly the photograph
+   the first chapter used: the hub board was four pictures of the same man in
+   the same jacket, and the last of them was the boss.
+
+   One treatment, applied wherever that face appears AS the R-IX. A filter
+   rather than new art, because there is no new art to have - and because a
+   duotone of HIS photograph is the more unsettling answer than a different
+   picture would be: it is recognisably him, and it is wrong.
+
+   WHAT IT DOES NOT DO. It does not add a pseudo-element to the tile: both
+   are taken - ::before is the lit cut edge from .synx-cut and ::after is the
+   scrim over the face - so the red wash is folded into the scrim that is
+   already there, and the edge is turned red by moving --edge, which is what
+   that variable is for. And it does not pulse: an animated box-shadow is a
+   repaint of the whole tile every frame, on the one screen in this game that
+   is already drawing seven portraits. Static, and it does not need to move.
+
+   grayscale, then sepia, then a rotation into red is the standard way to
+   duotone an image with nothing but a filter - no second asset, no canvas,
+   no SVG - and the saturate afterwards is what makes it a signal rather than
+   a tint. Blacks crushed, whites pushed: what is left of the face is bone
+   and a hot rim. */
+
+.is-boss img,
+img.is-boss {
+  /* Bright enough to still be a FACE. A duotone loses the midtones a normal
+     portrait carries, so the same brightness that reads correctly on an
+     untreated photograph reads as a silhouette here - and the whole effect
+     depends on the player recognising whose face it is. */
+  filter:
+    grayscale(1) sepia(1) hue-rotate(-32deg) saturate(4.2)
+    contrast(1.44) brightness(.94);
+}
+/* ...and it stays red when the tile is pointed at. The hover rule further up
+   re-declares `filter` wholesale, so without this the boss becomes a normal
+   photograph the moment the cursor touches it. */
+.story-chapter.is-boss:not(.locked):hover img,
+.story-chapter.is-boss:not(.locked):focus-visible img,
+.story-chapter.is-boss.is-highlighted img {
+  filter:
+    grayscale(1) sepia(1) hue-rotate(-32deg) saturate(5.0)
+    contrast(1.50) brightness(1.10);
+}
+
+/* The tile: the only red one on the board, lit from inside. */
+.story-chapter.is-boss {
+  --edge: #ff2a0d;
+  box-shadow:
+    inset 0 0 54px rgba(255, 20, 0, .34),
+    0 0 26px rgba(255, 24, 6, .20);
+}
+/* The scrim, with the wash folded in - this REPLACES the one above rather
+   than sitting on top of it, so the copy stays as readable as every other
+   tile's and the red is added underneath the same three layers. */
+.story-chapter.is-boss::after {
+  background:
+    linear-gradient(0deg, rgba(14, 1, 2, .96) 4%, rgba(12, 1, 2, .74) 34%, rgba(10, 1, 2, .12) 68%),
+    linear-gradient(96deg, rgba(12, 1, 2, .64), transparent 62%),
+    radial-gradient(120% 82% at 50% 106%, rgba(255, 30, 10, .42), transparent 64%),
+    linear-gradient(180deg, rgba(255, 26, 8, .26), transparent 44%),
+    repeating-linear-gradient(0deg, rgba(255, 30, 10, .12) 0 1px, transparent 1px 3px);
+}
+.story-chapter.is-boss b { color: #ffd9cf; text-shadow: 0 0 16px rgba(255, 40, 16, .85), 0 2px 12px #000; }
+.story-chapter.is-boss span { color: #ff6a4a; }
+.story-chapter.is-boss small { color: #ff2a0d; }
+.story-chapter.is-boss i { color: #ff8b6a; }
+
+/* The battle card wears the same face and gets the same rim. */
+#battleRivalImage.is-boss {
+  box-shadow: 0 0 34px rgba(255, 26, 8, .55), inset 0 0 40px rgba(255, 20, 0, .28);
 }
 @keyframes story-corrupt {
   0%, 84% { clip-path: inset(0 0 0 0); transform: none; }
@@ -2907,10 +3075,14 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
   inset: 0;
   z-index: 0;
   overflow: hidden;
-  /* Night, with the road's glow bleeding up into it. */
+  /* NIGHT, BUT LIT. This sat beside a portrait and a sunset and read as an
+     empty black rectangle - the one card of the three with nothing on it. The
+     drawing underneath was always there; it was just being rendered at a
+     fifth of the brightness the other two covers carry. */
   background:
-    radial-gradient(120% 62% at 50% 96%, rgba(57,230,255,.16), transparent 62%),
-    linear-gradient(180deg, #06021a 0%, #0a0430 46%, #150a3e 66%, #060214 100%);
+    radial-gradient(120% 66% at 50% 96%, rgba(57,230,255,.34), transparent 64%),
+    radial-gradient(90% 40% at 50% 58%, rgba(255,46,136,.18), transparent 70%),
+    linear-gradient(180deg, #0a0430 0%, #150a48 44%, #23105c 64%, #0b0420 100%);
 }
 .mode-art-net u { position: absolute; display: block; }
 
@@ -2918,9 +3090,9 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
 .mode-art-net .net-sky {
   left: 0; right: 0; top: 0; height: 62%;
   background:
-    radial-gradient(80% 34% at 50% 100%, rgba(255,46,136,.42), transparent 70%),
-    radial-gradient(42% 22% at 22% 100%, rgba(139,92,246,.45), transparent 72%),
-    radial-gradient(38% 20% at 80% 100%, rgba(57,230,255,.34), transparent 74%);
+    radial-gradient(80% 38% at 50% 100%, rgba(255,46,136,.70), transparent 72%),
+    radial-gradient(42% 26% at 22% 100%, rgba(139,92,246,.72), transparent 74%),
+    radial-gradient(38% 24% at 80% 100%, rgba(57,230,255,.58), transparent 76%);
 }
 .mode-art-net .net-sky::after {
   content: "";
@@ -2937,8 +3109,8 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
   left: -20%; right: -20%; bottom: 0; height: 62%;
   clip-path: polygon(48.4% 0, 51.6% 0, 96% 100%, 4% 100%);
   background:
-    linear-gradient(180deg, rgba(140,190,235,.30) 0 1%, transparent 12%),
-    linear-gradient(180deg, #0b1020 0%, #10162b 40%, #0a0f1e 100%);
+    linear-gradient(180deg, rgba(160,210,255,.52) 0 1%, transparent 14%),
+    linear-gradient(180deg, #141c38 0%, #1b2446 40%, #10172e 100%);
 }
 /* Lane markings, converging with the road. Two of them, so the four cars read
    as being in lanes rather than merely at different heights. */
@@ -2946,11 +3118,11 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
   left: -20%; right: -20%; bottom: 0; height: 62%;
   clip-path: polygon(48.4% 0, 51.6% 0, 96% 100%, 4% 100%);
   background:
-    linear-gradient(92.6deg, transparent 49.6%, rgba(255,196,60,.5) 49.6% 50.4%, transparent 50.4%),
-    linear-gradient(87.4deg, transparent 49.6%, rgba(255,196,60,.5) 49.6% 50.4%, transparent 50.4%);
+    linear-gradient(92.6deg, transparent 49.6%, rgba(255,206,90,.85) 49.6% 50.4%, transparent 50.4%),
+    linear-gradient(87.4deg, transparent 49.6%, rgba(255,206,90,.85) 49.6% 50.4%, transparent 50.4%);
   -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 26%, #000 100%);
   mask-image: linear-gradient(180deg, transparent 0%, #000 26%, #000 100%);
-  opacity: .5;
+  opacity: .8;
 }
 
 /* THE CARS.
@@ -3012,6 +3184,8 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
   --cut: 16px;
   --edge: rgba(139,92,246,.5);
   transition: transform var(--t-fast) var(--ease), filter var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+  /* ...so `cqw` on the title below measures this card. */
+  container-type: inline-size;
 }
 .mode-card.primary { --edge: var(--pink); }
 .mode-card > * { position: relative; z-index: 1; }
@@ -3050,9 +3224,25 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
 }
 .mode-card b {
   display: block;
-  font: 900 clamp(22px, 2.6vw, 42px)/1 var(--font);
+  /* SIZED AGAINST THE CARD, NOT THE WINDOW.
+
+     2.6vw is a number about the viewport, and the thing the word has to fit
+     inside is a COLUMN of a wrapping three-up grid. Those two only agree at
+     the width somebody happened to be testing at: at 1920 the clamp lands on
+     its 42px ceiling and MULTIPLAYER - eleven characters, the longest of the
+     three titles - runs straight off the end of its card, which is what
+     shipped.
+
+     11cqw is eleven per cent of the card's own inline size, so the type grows
+     and shrinks with the column it is in and the longest title fits at every
+     width the grid can produce. The floor keeps it readable when the grid
+     wraps to one narrow column; the ceiling is the size it was drawn at. */
+  font: 900 clamp(18px, 11cqw, 42px)/1 var(--font);
   letter-spacing: -.035em;
   text-shadow: 0 3px 18px #000;
+  /* ...and a longer name added later wraps rather than overflows. */
+  max-width: 100%;
+  overflow-wrap: break-word;
 }
 .mode-card span {
   display: block;
@@ -3327,6 +3517,50 @@ body.modeselect-open #hudCanvas { opacity: 0; }
 #storyContinueYes:hover b, #storyContinueYes:focus b { color: var(--amber); text-shadow: 0 0 16px rgba(255,180,0,.6); }
 .story-continue-panel footer { margin-top: 22px; color: rgba(190,212,235,.42); font: 700 8px/1 var(--font); letter-spacing: .16em; }
 
+/* ------------------------------------------------------------ decision --- */
+/* The three forks in the campaign. Same panel language as the continue prompt
+   - a player already knows what a card that stops the road means - with three
+   differences that matter:
+     the STAKE is printed above the doors rather than the consequence below;
+     the two doors are the same weight, because neither is the safe one;
+     and the summary under each is what it will actually cost, in a sentence.
+   The magenta wash separates it from the cyan of a chapter ending: this is not
+   the game asking whether to carry on, it is the game asking what kind of
+   driver is carrying on. */
+#storyChoice {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 44%, rgba(190,30,120,.28), transparent 48%), rgba(3,1,9,.72);
+  backdrop-filter: blur(6px);
+}
+#storyChoice.show { pointer-events: auto; }
+.story-choice-panel { width: min(860px, 94vw); --edge: var(--magenta, #ff2e88); }
+.story-choice-panel > small { color: var(--magenta, #ff2e88); text-shadow: 0 0 12px rgba(255,46,136,.55); }
+.story-choice-panel h2 { margin: 14px 0 4px; font-size: clamp(26px, 3.4vw, 46px); letter-spacing: -.035em; }
+.story-choice-panel > p { max-width: 64ch; margin: 14px auto 26px; letter-spacing: .08em; line-height: 1.65; }
+#storyChoice .story-continue-actions button { min-height: 132px; text-align: left; }
+#storyChoice .story-continue-actions button b { display: block; margin-bottom: 8px; }
+#storyChoice .story-continue-actions button em {
+  display: block;
+  color: rgba(206,220,241,.62);
+  font: 600 clamp(9px, .82vw, 11px)/1.55 var(--font);
+  font-style: normal;
+  letter-spacing: .06em;
+}
+#storyChoiceEdge:hover, #storyChoiceEdge:focus { --edge: #ff2e88; }
+#storyChoiceEdge:hover b, #storyChoiceEdge:focus b { color: #ff2e88; text-shadow: 0 0 16px rgba(255,46,136,.6); }
+#storyChoiceOpen:hover, #storyChoiceOpen:focus { --edge: var(--cyan); }
+#storyChoiceOpen:hover b, #storyChoiceOpen:focus b { color: var(--cyan); text-shadow: 0 0 16px rgba(57,230,255,.6); }
+@media (max-width: 720px) {
+  #storyChoice .story-continue-actions { grid-template-columns: 1fr; }
+  #storyChoice .story-continue-actions button { min-height: 96px; }
+}
+
 /* ------------------------------------------------------------ tutorial --- */
 
 #storyTutorial {
@@ -3346,7 +3580,10 @@ body.modeselect-open #hudCanvas { opacity: 0; }
 #storyTutorial small { display: block; color: var(--cyan); font: 800 8px/1 var(--font); letter-spacing: .3em; text-shadow: 0 0 10px rgba(57,230,255,.6); }
 #storyTutorial b { display: block; margin-top: 10px; font: 900 clamp(15px, 1.7vw, 25px)/1.1 var(--font); letter-spacing: .1em; }
 #storyTutorial > i { display: block; width: 82%; height: 3px; margin: 15px auto 0; overflow: hidden; background: rgba(255,255,255,.12); }
-#storyTutorialFill { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--pink), var(--cyan)); box-shadow: 0 0 9px var(--cyan); transition: width var(--t-base) var(--ease); }
+/* SCALED, NOT WIDENED: a width transition is laid out and repainted on the
+   main thread for every frame it runs, and this one runs while a chapter is
+   being played. A transform rides the compositor and costs nothing. */
+#storyTutorialFill { display: block; height: 100%; width: 100%; transform: scaleX(0); transform-origin: 0 50%; background: linear-gradient(90deg, var(--pink), var(--cyan)); box-shadow: 0 0 9px var(--cyan); transition: transform var(--t-base) var(--ease); }
 
 /* -------------------------------------------------- route / objective ---- */
 
@@ -3388,6 +3625,48 @@ body.modeselect-open #hudCanvas { opacity: 0; }
   transform: translateX(-22px);
 }
 #storyRaceMeta.show { transform: translateX(0); }
+
+/* ...AND IT GOES AWAY FOR A CUTSCENE.
+
+   Chapter 5 plays three interactive cinematics - the collapse run, the
+   Q-smash and the lava dodge - and every one of them letterboxes the frame
+   and takes the camera. The race HUD does not belong on any of them, and
+   the chapter card was the worst of it: a panel reading CHAPTER 05 //
+   ASHFALL ZERO sitting in the top-left corner, on top of the black bar, for
+   the whole of a sequence whose entire job is to stop looking like a race.
+
+   `cine5-active` is set by the chapter's own cinematic controller, so this
+   covers all three and anything added later without either side knowing
+   about the other. Slid out rather than blanked, in the same direction the
+   card arrives from, so it leaves the way it came.
+
+   The rest of the story furniture goes with it for the same reason: a
+   waypoint arrow or a radio strip over a cutscene is the same mistake in a
+   different corner. */
+body.cine5-active #storyRaceMeta {
+  transform: translateX(-130%);
+  opacity: 0;
+  pointer-events: none;
+}
+body.cine5-active #storyCompact,
+body.cine5-active #storyRadio,
+body.cine5-active #storyWaypoint,
+body.cine5-active #storyTutorial {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+/* The card animates on transform and opacity only - both composited - so a
+   cutscene starting mid-race costs the frame nothing. */
+#storyRaceMeta {
+  transition: transform var(--t-base, .28s) var(--ease, ease),
+              opacity var(--t-base, .28s) var(--ease, ease);
+}
+body.cine5-active #storyCompact,
+body.cine5-active #storyRadio,
+body.cine5-active #storyWaypoint,
+body.cine5-active #storyTutorial {
+  transition: opacity var(--t-base, .28s) var(--ease, ease);
+}
 #storyRaceMeta > * { position: relative; z-index: 1; }
 #storyRaceMeta small { display: block; color: var(--cyan); font: 800 8px/1 var(--font); letter-spacing: .2em; text-shadow: 0 0 10px rgba(57,230,255,.55); }
 #storyRaceMeta b { display: block; margin-top: 7px; font: 900 clamp(13px, 1.2vw, 18px)/1.05 var(--font); letter-spacing: .01em; }
@@ -4122,6 +4401,163 @@ body.native-cursor [role="button"] { cursor: pointer !important; }
    screen giving up. Nothing here flashes; the game opens behind a
    photosensitivity notice and this is the screen straight after it. */
 
+/* ======================================================= STAGING ========
+
+   The cover over a mode change. See js/staging.js for why it exists; this is
+   the half of it that matters, so read the rule before changing anything:
+
+   EVERY ANIMATION BELOW IS `transform` OR `opacity`, AND NOTHING ELSE.
+
+   Those are the two properties a compositing browser can animate without the
+   main thread. That is the entire trick: while a chapter is being built the
+   main thread is blocked solid for hundreds of milliseconds, and anything
+   animating `width`, `left`, `background-position`, a filter or a box-shadow
+   needs that thread and stops dead. A needle on a `rotate` does not - the
+   compositor keeps turning it at sixty frames a second out of its own thread
+   while the page is not responding at all.
+
+   So: no width transitions on the rail (it is scaled), no colour cycling, no
+   animated glow. The static shadows and gradients below are fine; they are
+   painted once and never touched again. */
+
+.stage-cover {
+  position: fixed;
+  inset: 0;
+  z-index: 9200;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(120% 90% at 50% 45%, rgba(30, 10, 62, .86), transparent 70%),
+    rgba(3, 1, 12, .93);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+.stage-cover.is-on { opacity: 1; pointer-events: auto; }
+.stage-cover.is-out { opacity: 0; pointer-events: none; }
+
+.stage-inner {
+  display: grid;
+  justify-items: center;
+  gap: .9em;
+  width: min(420px, 76vw);
+  text-align: center;
+}
+
+/* The dial. A ring, and a needle sweeping inside it - the same idea as the
+   cold open in front of the photosensitivity notice, small enough to read as
+   an instrument rather than as a repeat of it. */
+.stage-dial {
+  position: relative;
+  width: 92px;
+  height: 92px;
+}
+.stage-arc,
+.stage-needle { position: absolute; inset: 0; display: block; }
+.stage-arc {
+  border-radius: 50%;
+  border: 2px solid rgba(120, 160, 220, .18);
+  border-top-color: var(--cyan, #39e6ff);
+  border-right-color: var(--magenta, #ff2e88);
+  animation: stageSpin 1.5s linear infinite;
+}
+.stage-needle::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  width: 2px;
+  height: 38px;
+  margin-left: -1px;
+  background: linear-gradient(180deg, var(--magenta, #ff2e88), rgba(255, 46, 136, 0));
+}
+.stage-needle {
+  transform-origin: 50% 50%;
+  /* A sweep rather than a spin: it winds up, holds, and falls back, which is
+     what a needle does and what a loading spinner never does. */
+  animation: stageSweep 1.9s cubic-bezier(.5, 0, .35, 1) infinite;
+}
+@keyframes stageSpin { to { transform: rotate(360deg); } }
+@keyframes stageSweep {
+  0%   { transform: rotate(-128deg); }
+  46%  { transform: rotate(120deg); }
+  58%  { transform: rotate(104deg); }
+  100% { transform: rotate(-128deg); }
+}
+
+.stage-label {
+  color: #eaf4ff;
+  font-size: clamp(15px, 2.1vw, 20px);
+  font-weight: 900;
+  letter-spacing: .34em;
+  text-shadow: 0 0 26px rgba(57, 230, 255, .40);
+}
+.stage-sub {
+  color: var(--ink-faint, #7f8ea8);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .28em;
+}
+
+/* The rail travels rather than fills: there is no number to fill it to, and a
+   bar that stops at a made-up fraction is the thing this whole card exists to
+   not be. Scaled and translated, so it rides the compositor with the needle. */
+.stage-rail {
+  position: relative;
+  width: 100%;
+  height: 2px;
+  margin-top: .4em;
+  background: rgba(120, 160, 220, .14);
+  overflow: hidden;
+}
+.stage-rail > i {
+  position: absolute;
+  inset: 0;
+  display: block;
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, transparent, var(--cyan, #39e6ff), transparent);
+  animation: stageRail 1.25s ease-in-out infinite;
+}
+@keyframes stageRail {
+  0%   { transform: translateX(-100%) scaleX(.45); }
+  100% { transform: translateX(220%) scaleX(.45); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-arc, .stage-needle, .stage-rail > i { animation: none !important; }
+}
+
+/* ====================================================== IGNITION ========
+
+   The cold open: a rev counter, drawn on a canvas, in front of everything.
+   See js/ignition.js for what it is and why the loading happens under it.
+
+   There is almost nothing to style. The screen is one canvas and the canvas
+   draws itself; what is here is where it sits, what it sits over, and how it
+   leaves. */
+
+.ign-veil {
+  position: fixed;
+  inset: 0;
+  /* Over the advisory, which is at 9000 and is on the page from the first
+     paint - this has to cover it rather than replace it, because the notice
+     must not be able to be lost by anything going wrong up here. */
+  z-index: 9600;
+  background: #03010a;
+  opacity: 1;
+  transition: opacity 520ms ease;
+}
+.ign-veil canvas { display: block; width: 100%; height: 100%; }
+/* The cut. The canvas has already flashed white by the time this runs, so
+   what the fade actually crosses is white to the notice underneath. */
+.ign-veil.ign-out { opacity: 0; pointer-events: none; }
+
+/* ...and the notice waits its turn. It is still in the document, still
+   painted, still readable by anything that does not run scripts - it is just
+   not visible while the engine is. Held back with visibility rather than
+   display so its own entry animation is not restarted when it is released. */
+body.ign-on #advisory { opacity: 0; visibility: hidden; }
+
 .intro-veil {
   position: fixed;
   inset: 0;
@@ -4186,6 +4622,85 @@ body.native-cursor [role="button"] { cursor: pointer !important; }
   text-shadow: 0 0 16px rgba(57, 230, 255, .45);
 }
 
+/* THE RAIL, under the boot lines: how many of them have landed. */
+.intro-rail {
+  position: relative;
+  margin-top: 1.6em;
+  height: 2px;
+  background: rgba(120, 160, 220, .16);
+  overflow: hidden;
+}
+.intro-rail > i {
+  position: absolute;
+  inset: 0;
+  display: block;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, var(--magenta, #ff2e88), var(--cyan, #39e6ff));
+  box-shadow: 0 0 18px rgba(57, 230, 255, .55);
+  transition: transform 260ms cubic-bezier(.3, .9, .3, 1);
+}
+
+/* ...and the stamp that lands on the last one. Nothing here loops: it
+   arrives, it sits, and the wipe takes it. */
+.intro-ready {
+  display: block;
+  margin-top: 1.1em;
+  color: var(--cyan, #39e6ff);
+  font-size: clamp(11px, 1.5vw, 15px);
+  font-weight: 900;
+  letter-spacing: .42em;
+  opacity: 0;
+  transform: translateY(6px);
+  text-shadow: 0 0 22px rgba(57, 230, 255, .6);
+}
+.intro-ready.is-on {
+  animation: introReady 320ms cubic-bezier(.2, .8, .3, 1) both;
+}
+@keyframes introReady {
+  0%   { opacity: 0; transform: translateY(6px); letter-spacing: .70em; }
+  60%  { opacity: 1; }
+  100% { opacity: 1; transform: translateY(0); letter-spacing: .42em; }
+}
+
+/* THE WORDMARK GLITCHES IN rather than simply fading up. Three slices of it
+   arrive out of register and snap together, which is the one visual idiom
+   this whole game is built out of and was the one thing its own title card
+   did not do. Finite, `both`, and over in a third of a second - a wordmark
+   that keeps glitching is a fault indicator. */
+.intro-mark::before,
+.intro-mark::after {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+.intro-mark { position: relative; }
+.intro-mark::before {
+  color: var(--magenta, #ff2e88);
+  clip-path: inset(0 0 58% 0);
+  animation: introSliceA 520ms steps(5, end) both;
+}
+.intro-mark::after {
+  color: var(--cyan, #39e6ff);
+  clip-path: inset(56% 0 0 0);
+  animation: introSliceB 520ms steps(5, end) both;
+}
+@keyframes introSliceA {
+  0%   { opacity: .9; transform: translate3d(-14px, -3px, 0); }
+  55%  { opacity: .7; transform: translate3d(7px, 2px, 0); }
+  100% { opacity: 0; transform: translate3d(0, 0, 0); }
+}
+@keyframes introSliceB {
+  0%   { opacity: .9; transform: translate3d(16px, 3px, 0); }
+  55%  { opacity: .7; transform: translate3d(-6px, -2px, 0); }
+  100% { opacity: 0; transform: translate3d(0, 0, 0); }
+}
+
+/* The frame a beat before the wipe: the shutter takes a breath in. */
+.intro-veil.intro-armed .intro-bars { opacity: 1; filter: brightness(1.5); }
+
 .intro-skip {
   position: absolute;
   right: clamp(16px, 4vw, 46px);
@@ -4201,7 +4716,10 @@ body.native-cursor [role="button"] { cursor: pointer !important; }
 @keyframes introSkip { 0%, 100% { opacity: .35; } 50% { opacity: .8; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .intro-veil, .intro-mark, .intro-skip { animation: none !important; transition: none !important; }
+  .intro-veil, .intro-mark, .intro-skip, .intro-ready,
+  .intro-mark::before, .intro-mark::after, .intro-rail > i,
+  .ign-veil { animation: none !important; transition: none !important; }
+  .intro-mark::before, .intro-mark::after { display: none; }
 }
 
 /* ====================================================== SCREEN POLISH ====
@@ -4298,128 +4816,416 @@ section[aria-hidden="false"] > .freeroam-panel::after {
   section[aria-hidden="false"] > .freeroam-panel::after { display: none; }
 }
 
-/* =========================================================== BENCHMARK ====
-   The panel the benchmark runs behind. See js/bench.js.
+/* ====================================================== SCREEN CHANGES ====
 
-   It sits in a corner rather than over the middle: the whole point is that the
-   game is visibly rendering underneath while the numbers move, because a
-   benchmark you cannot see running is indistinguishable from a game that has
-   frozen. Nothing here blocks a pixel of the road. */
+   EVERY FULL-SCREEN ROOT ARRIVES AND LEAVES THE SAME WAY.
+
+   They did not. Each of these is a `display: none` toggled by script, and the
+   panel INSIDE it has had an entrance animation for a long time - so what a
+   player actually saw on every screen change was two events: the backdrop
+   appearing instantly as a hard cut to near-black, and then, separately, a
+   card sliding into it. The cut is the part that reads as a jolt, and it was
+   the half nothing was animating.
+
+   So the root fades, the panel keeps its own move, and the two overlap into
+   one arrival. 220ms: long enough not to be a cut, short enough that nobody
+   waiting to press something notices it.
+
+   OPACITY ONLY, DELIBERATELY. A transform on one of these would make it the
+   containing block for every `position: fixed` descendant inside it, which
+   silently re-anchors anything that relies on the viewport. Opacity is
+   composited, costs nothing, and cannot move anything. */
+
+#storyRoot[aria-hidden="false"],
+#modeSelectRoot[aria-hidden="false"],
+#freeRoamRoot[aria-hidden="false"],
+#multiplayerRoot[aria-hidden="false"],
+#mpResultsRoot[aria-hidden="false"],
+#mpNameRoot[aria-hidden="false"],
+#mpDialogRoot[aria-hidden="false"] {
+  animation: screenIn 220ms var(--ease-out, ease) both;
+}
+@keyframes screenIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* ...AND LEAVING IS A MOVE TOO.
+
+   Going back used to be the same cut in reverse: the root vanished between
+   one frame and the next. `is-leaving` keeps it in the document for the
+   length of the fade and nothing else - see NR.Screen in js/ui.js, which is
+   what sets it and what takes the element away afterwards. */
+.is-leaving {
+  animation: screenOut 180ms var(--ease-out, ease) both !important;
+  pointer-events: none;
+}
+@keyframes screenOut { from { opacity: 1; } to { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  #storyRoot, #modeSelectRoot, #freeRoamRoot, #multiplayerRoot,
+  #mpResultsRoot, #mpNameRoot, #mpDialogRoot, .is-leaving {
+    animation: none !important;
+  }
+}
+
+/* =========================================================== BENCHMARK ====
+
+   Two shapes, one element. See js/bench.js.
+
+   WHILE IT RUNS it is a panel in the MIDDLE of the screen, standing exactly
+   where the title screen's rows were - because the title screen is not there.
+   START, OPTIONS and QUIT are not drawn for the length of a run (see the menu
+   case in js/hud.js), so this is not an overlay on top of a menu, it is what
+   the screen IS while the benchmark is measuring. Three dead controls behind
+   a live readout read as a screen that has half hung.
+
+   It is still narrow and still translucent, because the game rendering behind
+   it is the other half of the point - a benchmark you cannot see running is
+   indistinguishable from one that has frozen, and driving three scenes rather
+   than parking the car is only worth doing if the scenes can be seen.
+
+   WHEN IT ENDS the panel becomes the report, in place, without going anywhere. */
 
 .bench {
   position: fixed;
-  right: clamp(14px, 2.4vw, 36px);
-  top: clamp(14px, 2.4vh, 36px);
+  inset: 0;
   z-index: 8700;
+  display: grid;
   pointer-events: none;
-  animation: benchIn 300ms var(--ease-out, ease) both;
+  align-items: center;
+  justify-items: center;
 }
-@keyframes benchIn {
-  from { opacity: 0; transform: translateY(-8px); }
-  to   { opacity: 1; transform: none; }
-}
-
-.bench-card {
-  position: relative;
-  width: min(340px, 42vw);
-  padding: 16px 18px 14px;
-  border: 1px solid rgba(57, 230, 255, .28);
+.bench.is-done {
+  align-items: center;
+  /* ...and only now does it cover anything, because only now is there
+     something to read rather than something to watch. */
   background:
-    linear-gradient(180deg, rgba(57, 230, 255, .05), transparent 40%),
-    rgba(4, 0, 14, .86);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 18px 60px rgba(0, 0, 0, .6);
+    radial-gradient(120% 90% at 50% 46%, rgba(20, 6, 44, .90), transparent 72%),
+    rgba(3, 1, 12, .86);
+  pointer-events: auto;
+  animation: benchWash 420ms var(--ease-out, ease) both;
 }
-/* The corner brackets, which is the cheapest thing that turns a box of text
-   into a piece of measuring equipment. */
-.bench-card::before,
-.bench-card::after {
+@keyframes benchWash { from { opacity: 0; } to { opacity: 1; } }
+
+/* ------------------------------------------------------------- the strip -- */
+
+.bench-strip {
+  width: min(620px, 90vw);
+  padding: 20px 24px 18px;
+  background:
+    radial-gradient(120% 140% at 50% 0%, rgba(60, 20, 110, .55), transparent 70%),
+    linear-gradient(180deg, rgba(10, 4, 28, .84), rgba(6, 2, 18, .93));
+  border: 1px solid rgba(120, 160, 220, .22);
+  border-radius: 3px;
+  backdrop-filter: blur(7px);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, .55);
+  animation: benchIn 320ms var(--ease-out, ease) both;
+}
+/* The same clipped corners every other panel in this game has, so the thing
+   standing where the menu was is recognisably part of the same interface. */
+.bench-strip::before,
+.bench-strip::after {
   content: "";
   position: absolute;
-  width: 18px; height: 18px;
-  border: 2px solid var(--cyan);
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--cyan, #39e6ff);
+  opacity: .7;
 }
-.bench-card::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
-.bench-card::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
-.bench-card.is-done { border-color: rgba(90, 255, 192, .45); }
-.bench-card.is-done::before, .bench-card.is-done::after { border-color: #5affc0; }
+.bench-strip { position: relative; }
+.bench-strip::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.bench-strip::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+
+/* A heading, because this is a screen now rather than a ticker along an edge. */
+.bench-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  color: var(--cyan, #39e6ff);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .34em;
+}
+.bench-title i {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(57, 230, 255, .5), transparent);
+}
+.bench.is-done .bench-strip { display: none; }
+@keyframes benchIn {
+  from { opacity: 0; transform: translateY(14px) scale(.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.bench-strip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+.bench-scene {
+  color: #eaf4ff;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: .26em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bench-note {
+  color: var(--ink-faint, #7f8ea8);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .18em;
+  white-space: nowrap;
+}
+
+.bench-bar {
+  position: relative;
+  height: 2px;
+  margin: 10px 0 8px;
+  background: rgba(120, 160, 220, .16);
+  overflow: hidden;
+}
+/* SCALED, NOT WIDENED. A width transition is laid out and painted on the main
+   thread, which during a benchmark is the one thing that must not be given
+   extra work - a progress bar that costs frames corrupts the measurement it is
+   reporting. transform rides the compositor and costs nothing. */
+.bench-bar i {
+  position: absolute;
+  inset: 0;
+  display: block;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, var(--magenta, #ff2e88), var(--cyan, #39e6ff));
+  transition: transform 160ms linear;
+}
+
+.bench-strip-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+/* ...and the one line of small print a screen that has taken the menu away
+   owes the player: what it is doing, and how to stop it. */
+.bench-hint {
+  margin: 14px 0 0;
+  color: var(--ink-faint, #7f8ea8);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .20em;
+  line-height: 1.6;
+}
+.bench-live {
+  color: var(--cyan, #39e6ff);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .16em;
+  white-space: pre;
+}
+.bench-graph {
+  width: 290px;
+  max-width: 52%;
+  height: 29px;
+  opacity: .95;
+}
+
+/* -------------------------------------------------------------- the card -- */
+
+.bench-card {
+  display: none;
+  width: min(960px, 94vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  padding: clamp(16px, 2.4vw, 30px);
+  background: linear-gradient(180deg, rgba(12, 5, 32, .96), rgba(6, 2, 18, .98));
+  border: 1px solid rgba(90, 255, 192, .38);
+  border-radius: 3px;
+  animation: benchCard 420ms var(--ease-out, ease) both;
+}
+.bench.is-done .bench-card { display: block; }
+@keyframes benchCard {
+  from { opacity: 0; transform: translateY(18px) scale(.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 .bench-rule {
   display: flex;
   align-items: center;
-  gap: 10px;
-  color: var(--cyan);
-  font-size: 9px;
-  font-weight: 700;
+  gap: 12px;
+  margin-bottom: 16px;
+  color: var(--cyan, #39e6ff);
+  font-size: 10px;
+  font-weight: 800;
   letter-spacing: .34em;
-  text-indent: .34em;
 }
 .bench-rule i {
   flex: 1;
   height: 1px;
-  background: linear-gradient(90deg, transparent, currentColor, transparent);
-  opacity: .5;
+  background: linear-gradient(90deg, transparent, rgba(57, 230, 255, .5), transparent);
 }
 
-.bench-now {
-  margin-top: 10px;
-  color: #fff;
-  font-size: 15px;
+/* The four numbers, which are the answer. Everything else on the card is why. */
+.bench-head {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.bench-stat {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 9px 6px;
+  background: rgba(120, 160, 220, .06);
+  border-top: 1px solid rgba(90, 255, 192, .30);
+}
+.bench-stat small {
+  color: var(--ink-faint, #7f8ea8);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .22em;
+}
+.bench-stat b {
+  color: #eaf4ff;
+  font-size: clamp(24px, 3.6vw, 40px);
   font-weight: 900;
-  letter-spacing: .12em;
-  text-shadow: 0 0 18px rgba(57, 230, 255, .35);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.bench-stat i {
+  color: var(--ink-faint, #7f8ea8);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: .22em;
 }
 
-/* The progress bar. One bar for the whole sweep rather than one per preset:
-   what the player wants to know is how much longer, not which quarter. */
-.bench-bar {
-  position: relative;
-  height: 3px;
-  margin: 10px 0;
-  background: rgba(139, 92, 246, .18);
-  overflow: hidden;
-}
-.bench-bar i {
+.bench-plot {
   display: block;
-  height: 100%;
-  width: 0;
-  background: linear-gradient(90deg, var(--cyan), var(--pink));
-  transition: width 140ms linear;
+  width: 100%;
+  height: clamp(72px, 12vh, 126px);
+  margin-bottom: 14px;
+  background: rgba(0, 0, 0, .30);
+  border: 1px solid rgba(120, 160, 220, .14);
 }
 
-.bench-live {
-  color: var(--amber);
+.bench-grid { margin-bottom: 16px; }
+.bench-row {
+  display: grid;
+  grid-template-columns: 2fr repeat(4, 1fr);
+  gap: 8px;
+  padding: 7px 8px;
+  color: #cfe0f5;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: .08em;
-  /* Tabular figures, or the frame rate jitters sideways as the digits change
-     width and reads as instability that is not there. */
+  letter-spacing: .10em;
   font-variant-numeric: tabular-nums;
+  border-bottom: 1px solid rgba(120, 160, 220, .10);
+}
+.bench-row > span:not(:first-child) { text-align: right; }
+.bench-row.is-head {
+  color: var(--ink-faint, #7f8ea8);
+  font-size: 9px;
+  letter-spacing: .22em;
 }
 
-.bench-table {
-  margin-top: 10px;
-  min-height: 4.2em;
-  color: var(--ink-body);
+/* WHERE THE FRAME GOES: one bar, three parts, to scale. */
+.bench-split { margin-bottom: 16px; }
+.bench-split > small,
+.bench-cal > small {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--ink-faint, #7f8ea8);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .22em;
+}
+.bench-split-bar {
+  display: flex;
+  height: 26px;
+  overflow: hidden;
+  border-radius: 2px;
+}
+.bench-split-bar i {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  overflow: hidden;
+  color: #07021a;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: .12em;
+  white-space: nowrap;
+}
+.bench-split-bar .is-sim { background: #ff2e88; }
+.bench-split-bar .is-sub { background: #b07bff; }
+.bench-split-bar .is-gpu { background: #39e6ff; }
+.bench-verdict {
+  margin: 9px 0 0;
+  color: #cfe0f5;
   font-size: 11px;
-  line-height: 1.45;
-  letter-spacing: .04em;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.bench-cal { margin-top: 14px; }
+.bench-cal-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.bench-cal-row span {
+  padding: 5px 10px;
+  background: rgba(120, 160, 220, .08);
+  color: var(--ink-faint, #7f8ea8);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .14em;
   font-variant-numeric: tabular-nums;
-  /* The rows are written as plain text with real spaces, so they line up
-     without a table and cannot reflow halfway through a run. */
-  white-space: pre;
+}
+.bench-cal-row span.is-pick {
+  background: rgba(90, 255, 192, .14);
+  color: #5affc0;
+}
+
+.bench-sys { margin-bottom: 12px; }
+.bench-sys > div {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.bench-sys b {
+  color: var(--ink-faint, #7f8ea8);
+  font-weight: 700;
+  letter-spacing: .20em;
+}
+.bench-sys span {
+  color: #9fb6d8;
+  font-weight: 600;
+  word-break: break-word;
 }
 
 .bench-foot {
-  margin: 10px 0 0;
-  color: var(--ink-faint);
+  margin: 4px 0 0;
+  color: #5affc0;
   font-size: 9px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: .18em;
-  line-height: 1.5;
+  line-height: 1.6;
 }
-.is-done .bench-foot { color: #5affc0; }
+
+@media (max-width: 720px) {
+  .bench-head { grid-template-columns: repeat(2, 1fr); }
+  .bench-row { grid-template-columns: 1.6fr repeat(4, 1fr); font-size: 10px; }
+  .bench-sys > div { grid-template-columns: 1fr; gap: 0; }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .bench { animation: none; }
+  .bench, .bench-strip, .bench-card { animation: none !important; }
   .bench-bar i { transition: none; }
 }

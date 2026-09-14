@@ -108,7 +108,13 @@
 
     close() {
       this.shown = false;
-      if (this.ui.root) this.ui.root.setAttribute('aria-hidden', 'true');
+      /* Faded rather than cut - see NR.Screen in js/ui.js. The panel inside
+         has had an entrance for a long time and no exit, so going into this
+         screen was a move and leaving it was a jump. */
+      if (this.ui.root) {
+        if (NR.Screen) NR.Screen.hide(this.ui.root);
+        else this.ui.root.setAttribute('aria-hidden', 'true');
+      }
       doc.body.classList.remove('modeselect-open');
     }
 
@@ -120,12 +126,28 @@
       this.g.toMenu();
     }
 
+    /* ------------------------------- THE THREE DOORS, AND WHAT IS BEHIND
+     *
+     * None of these is a menu transition. Each one builds a world: a chapter
+     * with its dressing and its director, a lobby with a socket and a route,
+     * a free drive with the whole course resident. That is hundreds of
+     * milliseconds of synchronous work, and for all of it the last frame of
+     * this terminal sat on screen, frozen, looking exactly like a game that
+     * had stopped responding - because that is what it was.
+     *
+     * NR.Staging covers the gap with something that keeps moving while the
+     * thread does not. See js/staging.js: everything on that card animates on
+     * the compositor, so it runs at sixty through a block that would stop any
+     * spinner driven by script. The work goes inside the callback and runs two
+     * frames later, once the card has actually been painted.
+     */
     chooseStory() {
       const g = this.g;
       g.audio.select();
       this.close();
-      if (g.story) g.story.enterStory();
-      else g.toMenu();
+      const go = () => { if (g.story) g.story.enterStory(); else g.toMenu(); };
+      if (NR.Staging) NR.Staging.cover('STORY', 'BUILDING THE CHAPTER', go);
+      else go();
     }
 
     /* THE GRID, WOKEN EARLY.
@@ -148,8 +170,9 @@
       const g = this.g;
       g.audio.select();
       this.close();
-      if (g.multiplayer) g.multiplayer.open('modes');
-      else g.toMenu();
+      const go = () => { if (g.multiplayer) g.multiplayer.open('modes'); else g.toMenu(); };
+      if (NR.Staging) NR.Staging.cover('MULTIPLAYER', 'REACHING THE GRID', go);
+      else go();
     }
 
     chooseFreeRoam(card) {
@@ -166,7 +189,9 @@
       }
       g.audio.select();
       this.close();
-      if (g.freeRoamUi) g.freeRoamUi.open('modes');
+      const go = () => { if (g.freeRoamUi) g.freeRoamUi.open('modes'); };
+      if (NR.Staging) NR.Staging.cover('FREE ROAM', 'LOADING THE COURSE', go);
+      else go();
     }
 
 
@@ -219,7 +244,14 @@
         }
         for (let i = 0; i < cards.length; i++) {
           const c = cards[i];
-          c.classList.toggle('is-hover', c === over && !c.classList.contains('locked'));
+          const on = c === over && !c.classList.contains('locked');
+          c.classList.toggle('is-hover', on);
+          /* ...AND IT TAKES THE KEYBOARD WITH IT. ENTER commits the
+             FOCUSED card, so a pointer that only lights one up leaves two
+             different selections on screen and opens the wrong mode. */
+          if (on && doc.activeElement !== c) {
+            try { c.focus({ preventScroll: true }); } catch (err) { c.focus(); }
+          }
         }
       };
       root.__synxResync = resync;

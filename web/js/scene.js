@@ -52,6 +52,15 @@
      the geometry was generated at; ROAD_HALF is what it is squeezed to at load
      time, taking the road surface, the guidance rails, the tunnel shells and
      everything that hugs the road with it. */
+  /* THE CLEARANCE AUDIT lives at module scope because the two halves of it do
+     not share a closure: the batch writer that calls it is most of two
+     thousand lines above the road field that answers it, and they are inside
+     different builders. Null on every normal run, so what it costs when it is
+     off is one comparison per batch of dressing. See auditClear, further down,
+     for what it is for and why the question is asked of the finished geometry
+     rather than of the generators. */
+  let auditClear = null;
+
   const SOURCE_ROAD_HALF = 45.0;
   const ROAD_HALF = 20.0;
   const ROAD_SCALE = ROAD_HALF / SOURCE_ROAD_HALF;
@@ -1584,6 +1593,14 @@
       await this.loadSky();
       mark('buildDrawLists', () => this.buildDrawLists());
       mark('buildDressing', () => this.buildDressing());
+      /* AFTER the dressing, for two reasons. The road field and the audit
+         itself are both built by buildDressing, so nothing can be asked this
+         question before it has run; and by now the instances are where they
+         will actually be drawn - the corridor squeeze, the billboard poles
+         being stepped aside and the finish gantry relocation have all
+         happened. Auditing them as they come out of the file would report
+         things that are moved a moment later and miss anything moved IN. */
+      if (this.auditInstances) this.auditInstances(this.man);
       this.ready = true;
       step(1);
       return this;
@@ -2551,6 +2568,8 @@
       let vMark = 0;
       const end = (start, material, mode) => {
         if (Geo.iLen === start) return;
+        // see auditClear: every dressing vertex in the file passes here
+        if (auditClear) auditClear(material.name, vMark, Geo.vLen);
         /* The batch's own bounds, measured from the vertices it just emitted.
            Chunk culling works off arc length, which is right for anything that
            hugs the road and wrong for anything tall or wide - and it is also
@@ -2580,10 +2599,56 @@
         });
       };
 
+      /* THE ROAD HAS AN ELEVATION, AND THE THINGS BOLTED TO IT FOLLOW IT.
+       *
+       * `y` is new here, and it is zero for every sample of every route this
+       * generator has ever drawn - the legacy course, Ashfall and the Forge
+       * are all flat, and Chapter 7's plateaus are drawn by its own world
+       * builder with this whole dressing pass culled. So adding it changes
+       * nothing that exists.
+       *
+       * What it is FOR is the bore bypass on MIRAGE CIRCUIT (see `OVERPASSES`
+       * in crates/synx-core/src/track.rs): the carriageway climbs twenty-one
+       * units onto a deck over a sealed tunnel and drops off the far end of
+       * it. That deck is the centreline's own elevation, which is what lets
+       * the solver, the driver and every car on the road share it for free -
+       * but the surface, its barriers and its paint are drawn from here, and a
+       * road mesh pinned at zero would have left the cars driving through the
+       * air above it.
+       */
       const at = (i) => {
         const yaw = C.yaw[i];
-        return { x: C.x[i], z: C.z[i], rx: Math.cos(yaw), rz: -Math.sin(yaw),
+        return { x: C.x[i], y: (C.y && C.y[i]) || 0,
+                 z: C.z[i], rx: Math.cos(yaw), rz: -Math.sin(yaw),
                  fx: -Math.sin(yaw) * 0 + Math.sin(yaw), fz: Math.cos(yaw) };
+      };
+      /* Where the road is carried OVER a sealed bore rather than through it.
+         The tunnel flag stays set across a bypass - the bore is still there
+         and is still drawn, at grade, underneath - so everything that reads
+         that flag to mean "there is a shell here instead of a barrier" has to
+         be able to tell the two apart. */
+      const overpassAt = (s) =>
+        (global.NR.onOverpass ? global.NR.onOverpass(s) : false);
+      const overpassed = (i) => overpassAt(i * C.step);
+
+      /* A point on the carriageway at an arbitrary arc length, which `at()`
+         cannot give because it indexes whole samples. `grade` asks for the
+         point at ground level instead of on the road, which is what anything
+         standing UNDER a raised deck - a pier, a sealed bore - is measured
+         from. `roadY` comes back either way so a caller can have both. */
+      const lanePointAt = (s, lat, grade) => {
+        const f = M.clamp(s / C.step, 0, C.count - 1.001);
+        const i = f | 0, j = Math.min(C.count - 1, i + 1), t = f - i;
+        const yaw = C.yaw[i] + M.angDiff(C.yaw[i], C.yaw[j]) * t;
+        const rx = Math.cos(yaw), rz = -Math.sin(yaw);
+        const y0 = (C.y && C.y[i]) || 0, y1 = (C.y && C.y[j]) || 0;
+        const roadY = y0 + (y1 - y0) * t;
+        return {
+          x: C.x[i] + (C.x[j] - C.x[i]) * t + rx * (lat || 0),
+          y: grade ? 0 : roadY,
+          z: C.z[i] + (C.z[j] - C.z[i]) * t + rz * (lat || 0),
+          rx, rz, fx: Math.sin(yaw), fz: Math.cos(yaw), roadY,
+        };
       };
 
       /* The sample indices a decimated pass should visit between a and b.
@@ -2615,7 +2680,12 @@
       };
       /* Run one emitter over every chunk in turn, so each comes out as its own
          batch with its own stretch of road recorded on it. */
-      const sweep = (material, mode, fn, far) => {
+      /* `far` widens a batch's forward window to nine thousand; `fwd` NARROWS
+         it. Both exist for the same reason - the one window that suits a road
+         does not suit everything standing beside it - and the narrow case is
+         the one that fixes a real artefact. See the note on the tunnel strips
+         below, and `inRange` in drawWorld, which reads both. */
+      const sweep = (material, mode, fn, far, fwd) => {
         for (let ci = 0; ci < nChunks; ci++) {
           const [a, b] = chunkRange(ci);
           if (a >= b) continue;
@@ -2625,7 +2695,11 @@
           fn(a, b, zoneAt((a + b) * 0.5 * C.step), ci);
           const before = parts.length;
           end(s0, material, mode);
-          if (far && parts.length > before) parts[parts.length - 1].far = true;
+          if (parts.length > before) {
+            const p = parts[parts.length - 1];
+            if (far) p.far = true;
+            if (fwd) p.fwdLimit = fwd;
+          }
         }
         curChunk = null;
       };
@@ -2683,9 +2757,9 @@
           const A = at(i);
           const P = volcanicRoadProfile(i);
           const v = i * C.step / 90;
-          const l = push([A.x + A.rx * P.left, P.yLeft, A.z + A.rz * P.left], [0, 1, 0], [0, v]);
-          const c = push([A.x, 0, A.z], [0, 1, 0], [.5, v]);
-          const r = push([A.x + A.rx * P.right, P.yRight, A.z + A.rz * P.right], [0, 1, 0], [1, v]);
+          const l = push([A.x + A.rx * P.left, A.y + P.yLeft, A.z + A.rz * P.left], [0, 1, 0], [0, v]);
+          const c = push([A.x, A.y, A.z], [0, 1, 0], [.5, v]);
+          const r = push([A.x + A.rx * P.right, A.y + P.yRight, A.z + A.rz * P.right], [0, 1, 0], [1, v]);
           if (prev) {
             quad(prev[0], prev[1], c, l);
             quad(prev[1], prev[2], r, c);
@@ -2762,8 +2836,8 @@
             const ox = side < 0 ? P.left + .8 : P.right - .8;
             const ax = A.x + A.rx * ox, az = A.z + A.rz * ox;
             const n = [0, 1, 0];
-            const v0 = push([ax, 0.10, az], n, [0, 0]);
-            const v1 = push([ax, 1.00, az], n, [0, 1]);
+            const v0 = push([ax, A.y + 0.10, az], n, [0, 0]);
+            const v1 = push([ax, A.y + 1.00, az], n, [0, 1]);
             if (prev) quad(prev[0], prev[1], v1, v0);
             prev = [v0, v1];
           }
@@ -2799,15 +2873,18 @@
         for (const side of [-1, 1]) {
           let prev = null;
           for (const i of idx) {
-            if (C.tunnel[i] || volcanicRailBreak(i)) { prev = null; continue; }  // the shell is the wall in there
+            /* Inside a bore the shell IS the wall - but on the ROOF of one the
+               deck needs its barrier back, and it is the only thing between a
+               car at a hundred and thirty and a twenty-one unit drop. */
+            if ((C.tunnel[i] && !overpassed(i)) || volcanicRailBreak(i)) { prev = null; continue; }
             const A = at(i);
             const ox = side * (ROAD_HALF + 0.6);
             const ax = A.x + A.rx * ox, az = A.z + A.rz * ox;
             const n = [-A.rx * side, 0, -A.rz * side];
             // down to -2.4, not to zero: the verge falls away from the road
             // and a wall that starts at road level leaves daylight under it
-            const v0 = push([ax, -2.4, az], n, [i * C.step / 60, 0]);
-            const v1 = push([ax, WALL_H, az], n, [i * C.step / 60, 1]);
+            const v0 = push([ax, A.y - 2.4, az], n, [i * C.step / 60, 0]);
+            const v1 = push([ax, A.y + WALL_H, az], n, [i * C.step / 60, 1]);
             if (prev) quad(prev[0], prev[1], v1, v0);
             prev = [v0, v1];
           }
@@ -2824,13 +2901,13 @@
         for (const side of [-1, 1]) {
           let prev = null;
           for (const i of idx) {
-            if (C.tunnel[i] || volcanicRailBreak(i)) { prev = null; continue; }
+            if ((C.tunnel[i] && !overpassed(i)) || volcanicRailBreak(i)) { prev = null; continue; }
             const A = at(i);
             const ox = side * (ROAD_HALF + 0.6);
             const ax = A.x + A.rx * ox, az = A.z + A.rz * ox;
             const n = [-A.rx * side, 0, -A.rz * side];
-            const v0 = push([ax, WALL_H - 0.5, az], n, [0, 0]);
-            const v1 = push([ax, WALL_H + 0.35, az], n, [0, 1]);
+            const v0 = push([ax, A.y + WALL_H - 0.5, az], n, [0, 0]);
+            const v1 = push([ax, A.y + WALL_H + 0.35, az], n, [0, 1]);
             if (prev) quad(prev[0], prev[1], v1, v0);
             prev = [v0, v1];
           }
@@ -2947,6 +3024,37 @@
        * the whole effect - and it is the same three in every tunnel on the
        * course, which is what the shipped bores and the generated ones did not
        * have in common before. */
+      /* ------------------------- HOW FAR A BORE'S INSIDE IS DRAWN FROM --
+       *
+       * ELEVEN HUNDRED UNITS, and these two are the only batches on the course
+       * that ask for it.
+       *
+       * The strips and the rings are INSIDE the shell. The shell is opaque and
+       * fogs out normally, so by a kilometre and a half it has gone into the
+       * haze with the hillside it is bored through. These do not: the glow
+       * branch caps its fog at ninety per cent on purpose - a thin line that
+       * fogged out completely would flicker out of existence as it thinned -
+       * so at three kilometres a strip is still an eighth of its brightness
+       * against a background that has gone.
+       *
+       * What that looks like is a handful of neon lines and hoops hanging in
+       * mid air over the terrain, with no tunnel visible around them. It was
+       * reported as bits of tunnel protruding over the menu background, and
+       * the menu is where it shows worst: the attract reel's SUNSET ZERO
+       * stretch ends three hundred and fifty units short of a 1,584-unit bore,
+       * and ASHFALL's has one 2,860 past its end - both inside the 3,400 the
+       * generic window reaches.
+       *
+       * The PORTAL, the headwall, the cassettes and the mouth signage keep the
+       * full range: their whole job is to be read from half a kilometre back,
+       * and what they say at that range is "there is a tunnel there", which is
+       * true and is all the player needs. What is behind them is dark until
+       * you are close enough to look into it, which is what a tunnel does.
+       *
+       * It is also the cheapest thing on this course to stop drawing. Three
+       * strip runs a side over a kilometre and a half of bore, plus a hoop
+       * every seventy-two samples, submitted from two miles away. */
+      const BORE_INSIDE = 1100;
       const STRIP_RUNS = [[0.985, 2.6, 0.9], [0.975, 6.4, 1.0], [0.700, 13.9, 0.8]];
       sweep(STRIP, undefined, (a, b) => {
         for (const [ra, rb] of inRun(a, b)) {
@@ -2967,7 +3075,7 @@
             }
           }
         }
-      });
+      }, false, BORE_INSIDE);
 
       const RING = mat({
         name: 'TunnelRing', mode: 'glow', fadeV: 0,
@@ -3005,7 +3113,92 @@
             }
           }
         }
+      }, false, BORE_INSIDE);
+
+      /* --- the bore, from inside ------------------------------------------
+       *
+       * WHAT A TUNNEL WAS MISSING, and it was the same thing twice.
+       *
+       * The bore was a smooth arc with hoops of light across it. Everything
+       * in it was either the road or the ceiling, and the two met at the
+       * springline in a line that was not drawn - so from the seat, at speed,
+       * there was nothing at the edge of the carriageway to measure against.
+       * A tunnel with no kerb is a pipe, and a pipe gives a driver no width.
+       *
+       * Two pieces fix it, and both of them are things a real bore has:
+       *
+       *   THE WALKWAY. A raised service kerb down each wall, standing 0.55
+       *   off the deck and 1.6 wide, running the whole length. It is what
+       *   the wall STANDS ON, and at a hundred and fifty it is the only
+       *   thing telling the eye how fast the wall is going past.
+       *
+       *   THE NOSING. A thin lit line along the front edge of that kerb, in
+       *   the same cold white a tunnel edge line is painted in. Unlike the
+       *   hoops it is CONTINUOUS, so it draws the curve of the bore ahead
+       *   rather than sampling it every seventy-two units - which is what
+       *   makes a bend inside a tunnel readable before it arrives.
+       *
+       * Both are emitted into the existing bore sweep, so they are culled,
+       * chunked and drawn with the shell rather than as anything new.
+       */
+      const KERB = mat({
+        name: 'TunnelKerb', mode: 'lit', nrm: 'speed_bump_normal.png',
+        color: [0.22, 0.23, 0.27, 1], emis: [0.014, 0.017, 0.023], gain: 0,
+        tiling: [1, 26], _smooth: 0.22, _metal: 0.06,
       });
+      const KERB_W = 1.6, KERB_H = 0.55;
+      sweep(KERB, 'lit', (a, b) => {
+        for (const [ra, rb] of inRun(a, b)) {
+          const from = Math.max(a, ra), to = Math.min(b, rb - 1);
+          for (let i = from; i < to; i++) {
+            const A = at(i), B = at(i + 1);
+            const v0 = i * C.step / 60, v1 = (i + 1) * C.step / 60;
+            for (const side of [-1, 1]) {
+              const outer = side * ROAD_HALF * 0.985;
+              const inner = side * (ROAD_HALF * 0.985 - KERB_W);
+              const O = (F, lat, y) => [F.x + F.rx * lat, y, F.z + F.rz * lat];
+              // the top of the kerb
+              quad(
+                push(O(A, inner, KERB_H), [0, 1, 0], [0, v0]),
+                push(O(A, outer, KERB_H), [0, 1, 0], [1, v0]),
+                push(O(B, outer, KERB_H), [0, 1, 0], [1, v1]),
+                push(O(B, inner, KERB_H), [0, 1, 0], [0, v1]));
+              // ...and the face of it, towards the road
+              const n = [-A.rx * side, 0, -A.rz * side];
+              quad(
+                push(O(A, inner, -0.2), n, [0, v0]),
+                push(O(A, inner, KERB_H), n, [1, v0]),
+                push(O(B, inner, KERB_H), n, [1, v1]),
+                push(O(B, inner, -0.2), n, [0, v1]));
+            }
+          }
+        }
+      }, false, BORE_INSIDE);
+
+      /* The nosing: one continuous line along the lip of each kerb. Dim, and
+         deliberately so - it is a thing to steer by, not a thing to look at,
+         and the hoops above it are what the tunnel is lit with. */
+      const NOSING = mat({
+        name: 'TunnelNosing', mode: 'glow', fadeV: 0,
+        emis: [0.30, 0.36, 0.44], color: [1, 1, 1, 1], gain: 0.10,
+      });
+      sweep(NOSING, undefined, (a, b) => {
+        for (const [ra, rb] of inRun(a, b)) {
+          const from = Math.max(a, ra), to = Math.min(b, rb - 1);
+          for (let i = from; i < to; i++) {
+            const A = at(i), B = at(i + 1);
+            for (const side of [-1, 1]) {
+              const lat = side * (ROAD_HALF * 0.985 - KERB_W);
+              const O = (F, y) => [F.x + F.rx * lat, y, F.z + F.rz * lat];
+              quad(
+                push(O(A, KERB_H - 0.16), [0, 1, 0], [0, 0]),
+                push(O(B, KERB_H - 0.16), [0, 1, 0], [1, 0]),
+                push(O(B, KERB_H + 0.02), [0, 1, 0], [1, 1]),
+                push(O(A, KERB_H + 0.02), [0, 1, 0], [0, 1]));
+            }
+          }
+        }
+      }, false, BORE_INSIDE);
 
       /* --- tunnel portals --------------------------------------------------
 
@@ -3217,52 +3410,742 @@
         }
       });
 
-      /* --- the gantry at the end of a route ------------------------------
+      /* --- the stunt course ------------------------------------------------
+       *
+       * THE RAMP THAT IS DRAWN IS THE RAMP THAT IS DRIVEN.
+       *
+       * The physics does not collide with a mesh. It has an arc-length window
+       * and a height profile, `h * u^2` over `[s - len, s]` - see the note
+       * above `Ramp` in crates/synx-core/src/vehicle.rs - so this extrudes
+       * exactly that curve rather than a wedge of its own devising. A ramp
+       * that looked steeper or shallower than the one being driven would be
+       * the worst kind of bug in a stunt: everything the player reads would be
+       * a lie and nothing would look broken.
+       *
+       * FULL WIDTH, for the same reason. The window is arc length and knows
+       * nothing about lateral, so a narrow ramp would launch a car driving
+       * beside it. Spanning the carriageway keeps the picture and the
+       * simulation telling the same story, and it makes the jump a thing to be
+       * taken rather than a thing to be dodged.
+       *
+       * ALL EIGHT ARE BUILT HERE, INCLUDING NEON HORIZON'S THREE.
+       *
+       * They used to be filtered out on the grounds that Chapter 7 draws its
+       * own - which is true, and which is why building them here as well is
+       * not a double. The override installs a drawPart filter that drops every
+       * base dressing part with `s1 >= 131,960` (see tagGroundTiles in
+       * js/chapters.js), so inside the finale these are built and never drawn,
+       * and the chapter's own three are what you see.
+       *
+       * OUTSIDE the finale they are the only ones there is, and that is the
+       * bug this fixes. The title screen does not load Chapter 7's world - it
+       * costs three seconds to build and a menu cannot spend that - so over
+       * the last stretch of the attract reel the three launch ramps did not
+       * exist as geometry at all. The reel flies the car off them anyway,
+       * because the flight is armed from the ramp TABLE and the table does not
+       * know who drew what: a car climbing, launching and landing on flat,
+       * empty road, three times in a row, at the end of every loop of the
+       * menu. That is the ghost ramp that was reported, and no amount of
+       * checking the race path could find it, because on the race path the
+       * chapter's world is loaded and the ramps are there.
+       *
+       * The rule now has no exception in it: whatever the table says exists,
+       * this builds - and a world that replaces the road is responsible for
+       * hiding what it replaced, which the override already does.
+       */
+      /* WHOSE RAMP IS IT?
+       *
+       * A ramp on this course is drawn by exactly one builder, and two of them
+       * were not:
+       *
+       *   THE BLOCKED BORE HAS ITS OWN SET PIECE, further down - a stacked
+       *   structure of barrier blocks and rubble with a drivable CREST on top,
+       *   built from the same table entry and running 40,620 to 40,766, which
+       *   is exactly the window the solver arms. This generic builder made a
+       *   second ramp for it out of the plain `h*u^2` wedge every other ramp
+       *   uses: no crest, and forty units downstream, because the plain wedge
+       *   measures its foot back from the lip and the bore's foot is a crest
+       *   further back than that. So there were two ramps at the bore, and the
+       *   one the car was actually climbing was not the one it went through.
+       *   A crest is the mark of a ramp that owns its own geometry.
+       *
+       *   And a ramp near a chunk boundary was built TWICE. The window below
+       *   used to reach a telegraph-length back and 260 forward so that a
+       *   chunk could paint the approach markings of a ramp that starts in the
+       *   next one - which also meant both chunks emitted the whole ramp. Two
+       *   coincident running surfaces z-fight, and two coincident additive
+       *   markings are twice as bright as every other ramp on the course.
+       *   THE_SPINE and SKYLINE LAUNCH were both doubled.
+       *
+       *   A ramp belongs to the chunk its LIP is in, and to no other. Its body
+       *   and its approach paint reach outside that chunk's arc range by a few
+       *   hundred units, which the draw window already covers several times
+       *   over - see `lo` in the draw call, which reaches 950 units back.
+       */
+      const RAMPS = (global.NR.COURSE_RAMPS || []).filter(r => !r.crest);
+      const RAMP_TELEGRAPH = global.NR.RAMP_TELEGRAPH || 280;
+      const RAMP_SLICES = 24;
+      const rampsIn = (a, b) => RAMPS.filter(
+        r => r.s >= a * C.step && r.s < b * C.step);
+      /* A point on a ramp's running surface: `u` along the incline, `lat`
+         across the carriageway. The height is the driven profile plus the
+         road's own elevation, so a ramp on a raised deck rides the deck. */
+      const rampPoint = (r, u, lat, lift) => {
+        const s = r.s - r.len + r.len * u;
+        const p = { };
+        const f = M.clamp(s / C.step, 0, C.count - 1.001);
+        const i = f | 0, j = Math.min(C.count - 1, i + 1), t = f - i;
+        const yaw = C.yaw[i] + M.angDiff(C.yaw[i], C.yaw[j]) * t;
+        const rx = Math.cos(yaw), rz = -Math.sin(yaw);
+        p.x = C.x[i] + (C.x[j] - C.x[i]) * t + rx * lat;
+        p.z = C.z[i] + (C.z[j] - C.z[i]) * t + rz * lat;
+        const road = ((C.y && C.y[i]) || 0) + (((C.y && C.y[j]) || 0) - ((C.y && C.y[i]) || 0)) * t;
+        p.y = road + r.h * u * u + (lift || 0);
+        p.rx = rx; p.rz = rz;
+        return p;
+      };
+      const RAMP_HALF = ROAD_HALF - 0.4;
 
-         Every route finishes somewhere, and "somewhere" has to be visible from
-         a long way back or the last kilometre is driven blind. A lit arch over
-         the road with a bar across it, at each of the four boundaries - built
-         with everything else, so whichever route is chosen its end is already
-         standing there. */
+      /* The wedge itself: a running surface, two flanks and the face under the
+         lip. Lit rather than emissive - a ramp is concrete and steel, and the
+         markings on top of it are what glow. */
+      const RAMP_BODY = mat({
+        name: 'StuntRamp', mode: 'lit', nrm: 'speed_bump_normal.png',
+        color: [0.30, 0.31, 0.36, 1], emis: [0.020, 0.024, 0.034], gain: 0,
+        tiling: [3, 1], offset: [0, 0], _smooth: 0.26, _metal: 0.30,
+      });
+      sweep(RAMP_BODY, 'lit', (a, b) => {
+        for (const r of rampsIn(a, b)) {
+          let prev = null;
+          for (let k = 0; k <= RAMP_SLICES; k++) {
+            const u = k / RAMP_SLICES;
+            const l = rampPoint(r, u, -RAMP_HALF, 0);
+            const c = rampPoint(r, u, 0, 0);
+            const g = rampPoint(r, u, RAMP_HALF, 0);
+            const v = k / RAMP_SLICES;
+            const ring = [
+              push([l.x, l.y, l.z], [0, 1, 0], [0, v]),
+              push([c.x, c.y, c.z], [0, 1, 0], [0.5, v]),
+              push([g.x, g.y, g.z], [0, 1, 0], [1, v]),
+              // the flanks, dropped to the road under the ramp
+              push([l.x, l.y - r.h * u * u, l.z], [-l.rx, 0, -l.rz], [0, v]),
+              push([g.x, g.y - r.h * u * u, g.z], [g.rx, 0, g.rz], [1, v]),
+            ];
+            if (prev) {
+              quad(prev[0], prev[1], ring[1], ring[0]);
+              quad(prev[1], prev[2], ring[2], ring[1]);
+              quad(prev[3], prev[0], ring[0], ring[3]);
+              quad(prev[2], prev[4], ring[4], ring[2]);
+            }
+            prev = ring;
+          }
+          // the face under the lip, so the ramp is a solid object from in front
+          const l = rampPoint(r, 1, -RAMP_HALF, 0), g = rampPoint(r, 1, RAMP_HALF, 0);
+          const n = [-(g.z - l.z), 0, g.x - l.x];
+          quad(
+            push([l.x, l.y - r.h, l.z], n, [0, 0]),
+            push([l.x, l.y, l.z], n, [0, 1]),
+            push([g.x, g.y, g.z], n, [1, 1]),
+            push([g.x, g.y - r.h, g.z], n, [1, 0]));
+        }
+      });
+
+      /* THE HAZARD STRIPES, which are what make it read as a ramp at four
+         hundred units rather than as a bump. Two materials alternating slice
+         by slice, exactly the way Chapter 7's three are striped, so the eight
+         ramps on the course are recognisably one piece of road furniture. */
+      const rampStripe = (mtl, odd) => {
+        sweep(mtl, undefined, (a, b) => {
+          for (const r of rampsIn(a, b)) {
+            const bands = 9;
+            for (let k = 0; k < bands; k++) {
+              if ((k & 1) !== odd) continue;
+              const u0 = k / bands, u1 = (k + 0.72) / bands;
+              const l0 = rampPoint(r, u0, -RAMP_HALF + 1.1, 0.06);
+              const g0 = rampPoint(r, u0, RAMP_HALF - 1.1, 0.06);
+              const l1 = rampPoint(r, u1, -RAMP_HALF + 1.1, 0.06);
+              const g1 = rampPoint(r, u1, RAMP_HALF - 1.1, 0.06);
+              quad(
+                push([l0.x, l0.y, l0.z], [0, 1, 0], [0, 0]),
+                push([g0.x, g0.y, g0.z], [0, 1, 0], [1, 0]),
+                push([g1.x, g1.y, g1.z], [0, 1, 0], [1, 1]),
+                push([l1.x, l1.y, l1.z], [0, 1, 0], [0, 1]));
+            }
+          }
+        });
+      };
+      rampStripe(mat({ name: 'StuntRampWarnA', mode: 'glow', fadeV: 0,
+        emis: [0.62, 0.26, 0.02], color: [1, 1, 1, 1], gain: 0 }), 0);
+      rampStripe(mat({ name: 'StuntRampWarnB', mode: 'glow', fadeV: 0,
+        emis: [0.58, 0.50, 0.04], color: [1, 1, 1, 1], gain: 0 }), 1);
+
+      /* The lip, and the two posts that say where it ends. The whole trial is
+         arriving straight, so what is lit is the edge the car leaves from. */
+      /* The lip stays white - it is a launch edge and white is what it is -
+         but not sixteen times white: at that it bled into the chevrons behind
+         it and the one line the trial is about stopped having an edge. */
+      const RAMP_LIP = mat({
+        name: 'StuntRampLip', mode: 'glow', fadeV: 0,
+        emis: [0.34, 0.35, 0.38], color: [1, 1, 1, 1], gain: 0.10,
+      });
+      sweep(RAMP_LIP, undefined, (a, b) => {
+        for (const r of rampsIn(a, b)) {
+          const l = rampPoint(r, 1, -RAMP_HALF, 0.10), g = rampPoint(r, 1, RAMP_HALF, 0.10);
+          quad(
+            push([l.x, l.y, l.z], [0, 1, 0], [0, 0]),
+            push([g.x, g.y, g.z], [0, 1, 0], [1, 0]),
+            push([g.x, g.y + 0.34, g.z], [0, 1, 0], [1, 1]),
+            push([l.x, l.y + 0.34, l.z], [0, 1, 0], [0, 1]));
+          for (const side of [-1, 1]) {
+            const p = rampPoint(r, 1, side * (RAMP_HALF - 0.9), 0.10);
+            const q = rampPoint(r, 0.94, side * (RAMP_HALF - 0.9), 0.10);
+            quad(
+              push([p.x, p.y, p.z], [0, 1, 0], [0, 0]),
+              push([q.x, q.y, q.z], [0, 1, 0], [1, 0]),
+              push([q.x, q.y + 1.6, q.z], [0, 1, 0], [1, 1]),
+              push([p.x, p.y + 1.6, p.z], [0, 1, 0], [0, 1]));
+          }
+        }
+      });
+
+      /* THE EDGES OF THE RAMP, which is the one thing about it a driver
+       * cannot read from the seat.
+       *
+       * Everything lit on a ramp used to be either across it - nine hazard
+       * bands - or at the end of it - the lip and its two posts. Which is
+       * exactly the wrong way round for the view that matters: from behind
+       * the wheel, on the approach, the bands foreshorten into one another
+       * and the lip is the far edge of a shape whose SIDES are invisible,
+       * so how much room there is either side is a guess right up until the
+       * car is on it. A ramp taken off centre is a landing taken sideways.
+       *
+       * So each flank gets a rail: a continuous amber line running the whole
+       * incline, standing a little proud of the surface. Continuous on
+       * purpose - the bands are already the rhythm, and a second dashed thing
+       * beside them reads as more of the same. What this draws is the two
+       * lines that converge on the lip, which is the shape of the jump.
+       */
+      const RAMP_RAIL = mat({
+        name: 'StuntRampRail', mode: 'glow', fadeV: 0,
+        emis: [0.66, 0.30, 0.03], color: [1, 1, 1, 1], gain: 0.12,
+      });
+      sweep(RAMP_RAIL, undefined, (a, b) => {
+        for (const r of rampsIn(a, b)) {
+          for (const side of [-1, 1]) {
+            const lat = side * (RAMP_HALF - 0.35);
+            let prev = null;
+            for (let k = 0; k <= RAMP_SLICES; k++) {
+              const u = k / RAMP_SLICES;
+              const p = rampPoint(r, u, lat, 0.07);
+              const n = [side * p.rx, 0.4, side * p.rz];
+              const cur = [
+                push([p.x, p.y, p.z], n, [0, u]),
+                push([p.x, p.y + 0.30, p.z], n, [1, u]),
+              ];
+              if (prev) quad(prev[0], cur[0], cur[1], prev[1]);
+              prev = cur;
+            }
+          }
+        }
+      });
+
+      /* ...and the structure holding the thing up. A wedge with two smooth
+         flanks is a shape; the same wedge with ribs down it, every few
+         metres, catching the light along their edges, is something that was
+         BUILT and left on a road. Six of them a side, dropped from the
+         running surface to the deck under it, and they cost one strip each. */
+      const RAMP_RIB = mat({
+        name: 'StuntRampRib', mode: 'lit', nrm: 'speed_bump_normal.png',
+        color: [0.24, 0.25, 0.30, 1], emis: [0.016, 0.019, 0.026], gain: 0,
+        _smooth: 0.30, _metal: 0.42,
+      });
+      sweep(RAMP_RIB, 'lit', (a, b) => {
+        for (const r of rampsIn(a, b)) {
+          for (const side of [-1, 1]) {
+            const lat = side * (RAMP_HALF + 0.16);
+            for (let k = 1; k <= 6; k++) {
+              const u = k / 7;
+              const drop = r.h * u * u;
+              // ...and there is nothing to hold up where the ramp is flat
+              if (drop < 0.25) continue;
+              const p0 = rampPoint(r, u - 0.022, lat, 0);
+              const p1 = rampPoint(r, u + 0.022, lat, 0);
+              const n = [side * p0.rx, 0, side * p0.rz];
+              const d0 = r.h * (u - 0.022) * (u - 0.022);
+              const d1 = r.h * (u + 0.022) * (u + 0.022);
+              quad(
+                push([p0.x, p0.y - d0, p0.z], n, [0, 0]),
+                push([p1.x, p1.y - d1, p1.z], n, [1, 0]),
+                push([p1.x, p1.y - 0.04, p1.z], n, [1, 1]),
+                push([p0.x, p0.y - 0.04, p0.z], n, [0, 1]));
+            }
+          }
+        }
+      });
+
+      /* THE APPROACH, AND THE LINE TO TAKE IT ON.
+         A jump is aimed before it is taken, so the thing to paint is the line
+         rather than the ramp: chevrons down the middle with edge bars either
+         side, running back the full telegraph distance the arming uses. */
+      /* IT WAS TWELVE TIMES WHITE.
+
+         Glow multiplies the emissive by 7.5 and again by the gain, so this
+         came out of the shader at [1.3, 8.0, 11.1]. Everything over about two
+         tonemaps to the same place, so the chevrons, the edge bars and the
+         lip beyond them all clipped to one flat white shape - and the whole
+         point of painting a line to take a jump on is that the line can be
+         read. Seen broadside from a drone it is a solid slab across the
+         frame; seen from the seat it is a glare with no shape in it.
+
+         Down to where the blue survives the tonemap. It is still the
+         brightest thing on the road by a distance - a dark carriageway and
+         bloom see to that - but it is CYAN now, and it has chevrons in it. */
+      const RAMP_AIM = mat({
+        name: 'StuntRampAim', mode: 'glow', fadeV: 0,
+        emis: [0.035, 0.23, 0.33], color: [1, 1, 1, 1], gain: 0.05,
+      });
+      sweep(RAMP_AIM, undefined, (a, b) => {
+        for (const r of rampsIn(a, b)) {
+          for (let k = 0; k < 11; k++) {
+            const f = k / 11;
+            const s0 = r.s - r.len - RAMP_TELEGRAPH * (1 - f);
+            const wide = 1.6 + f * 1.8;
+            const bar = (lat, half, len) => {
+              const A0 = lanePointAt(s0 - len, lat - half), B0 = lanePointAt(s0 - len, lat + half);
+              const A1 = lanePointAt(s0 + len, lat - half), B1 = lanePointAt(s0 + len, lat + half);
+              quad(
+                push([A0.x, A0.y + 0.13, A0.z], [0, 1, 0], [0, 0]),
+                push([B0.x, B0.y + 0.13, B0.z], [0, 1, 0], [1, 0]),
+                push([B1.x, B1.y + 0.13, B1.z], [0, 1, 0], [1, 1]),
+                push([A1.x, A1.y + 0.13, A1.z], [0, 1, 0], [0, 1]));
+            };
+            bar(0, wide, 5.0);
+            for (const side of [-1, 1]) bar(side * (ROAD_HALF - 2.6), 1.1, 3.0);
+          }
+          /* ...and where it is expected to come down. Measured off the launch
+             rather than guessed: at racing speed a lip this high throws the car
+             about this far, and painting it anywhere else teaches the wrong
+             thing. */
+          const reach = r.s + 58 + r.h * 11;
+          for (let k = 0; k < 6; k++) {
+            const s0 = reach - 40 + k * 16;
+            const A0 = lanePointAt(s0 - 4.5, -0.8), B0 = lanePointAt(s0 - 4.5, 0.8);
+            const A1 = lanePointAt(s0 + 4.5, -0.8), B1 = lanePointAt(s0 + 4.5, 0.8);
+            quad(
+              push([A0.x, A0.y + 0.13, A0.z], [0, 1, 0], [0, 0]),
+              push([B0.x, B0.y + 0.13, B0.z], [0, 1, 0], [1, 0]),
+              push([B1.x, B1.y + 0.13, B1.z], [0, 1, 0], [1, 1]),
+              push([A1.x, A1.y + 0.13, A1.z], [0, 1, 0], [0, 1]));
+          }
+        }
+      });
+
+      /* --- the blocked bore, and the thing somebody built to get past it ----
+       *
+       * MIRAGE CIRCUIT's second tunnel is SHUT. Not sealed by anybody official:
+       * the near end of the shell has come down and nobody has cleared it, so
+       * the bore is a hole in a hillside with a pile of itself in the mouth.
+       *
+       * What gets you past it is NOT the road. An earlier attempt lifted the
+       * carriageway twenty-one units onto a viaduct that ran the length of the
+       * tunnel on piers, which is a mountain pass: engineered, permanent, and
+       * exactly the opposite of what this route is about. This is a RAMP, and
+       * it is deliberately crude - barrier blocks robbed off the shoulder,
+       * scaffold poles, checker plate, a scrap of timber where the plate ran
+       * out. It reads as something four drivers put up in an afternoon because
+       * the alternative was losing the route.
+       *
+       * IT HAS A TOP YOU DRIVE ALONG. That is the whole point of it and it is
+       * why the solver's ramp grew a crest (see `Ramp` in vehicle.rs): a wedge
+       * throws you, and a thing you get OVER has a surface. The geometry here
+       * is the driven profile exactly - `h * u^2` up the incline, then the
+       * shallow rise along the crest - because a ramp that looked different
+       * from the one being driven is the worst kind of lie in a set piece.
+       *
+       * Everything is read off COURSE_RAMPS, which is also what arms the
+       * solver, so the structure and the physics cannot disagree about where
+       * the top is.
+       */
+      const BORE = (global.NR.COURSE_RAMPS || []).filter(r => r.crest && r.bore);
+      /* A point on the ramp's running surface. `u` runs 0..1 from the foot of
+         the incline to the end of the crest, so one curve covers both. */
+      const rampTop = (r, u) => {
+        const climb = r.len, crest = r.crest, total = climb + crest;
+        const d = u * total;
+        const s = r.s - total + d;
+        let y;
+        if (d <= climb) { const k = d / climb; y = r.h * k * k; }
+        else { const k = (d - climb) / crest; y = r.h + ((r.lip || r.h) - r.h) * k; }
+        return { s, y };
+      };
+      const BORE_HALF = ROAD_HALF - 1.1;
+
+      /* The mass of it: barrier blocks and rubble packed under the running
+         surface. Lit, rough, and the same grey as the shell it is made of. */
+      const RAMP_FILL = mat({
+        name: 'BoreRampFill', mode: 'lit', nrm: 'speed_bump_normal.png',
+        color: [0.27, 0.27, 0.30, 1], emis: [0.012, 0.013, 0.016], gain: 0,
+        tiling: [6, 2], offset: [0, 0], _smooth: 0.16, _metal: 0.05,
+      });
+      sweep(RAMP_FILL, 'lit', (a, b) => {
+        for (const r of BORE) {
+          const total = r.len + r.crest;
+          if (r.s < a * C.step - total - 200 || r.s - total > b * C.step + 200) continue;
+          const N = 30;
+          let prev = null;
+          for (let i = 0; i <= N; i++) {
+            const T = rampTop(r, i / N);
+            /* STACKED, NOT SMOOTH. The flanks step in and out by a few tenths
+               every other slice: this was built out of whatever was on the
+               shoulder, and a perfectly straight edge would read as poured
+               concrete. */
+            const jag = ((i % 3) - 1) * 0.55 + ((i % 5) - 2) * 0.28;
+            const half = BORE_HALF + jag;
+            const l = lanePointAt(T.s, -half), g = lanePointAt(T.s, half);
+            const ring = [
+              push([l.x, T.y, l.z], [0, 1, 0], [0, i / 4]),
+              push([g.x, T.y, g.z], [0, 1, 0], [1, i / 4]),
+              push([l.x, -1.2, l.z], [-l.rx, 0, -l.rz], [0, i / 4]),
+              push([g.x, -1.2, g.z], [g.rx, 0, g.rz], [1, i / 4]),
+            ];
+            if (prev) {
+              quad(prev[0], prev[1], ring[1], ring[0]);   // the running surface
+              quad(prev[2], prev[0], ring[0], ring[2]);   // the two flanks
+              quad(prev[1], prev[3], ring[3], ring[1]);
+            }
+            prev = ring;
+          }
+          // the face under the far end, so it is solid from inside the bore
+          const e = rampTop(r, 1);
+          const l = lanePointAt(e.s, -BORE_HALF), g = lanePointAt(e.s, BORE_HALF);
+          const n = [l.fx, 0, l.fz];
+          quad(
+            push([l.x, -1.2, l.z], n, [0, 0]),
+            push([g.x, -1.2, g.z], n, [1, 0]),
+            push([g.x, e.y, g.z], n, [1, 1]),
+            push([l.x, e.y, l.z], n, [0, 1]));
+        }
+      });
+
+      /* THE DECK PLATES. Sheets of checker plate laid end to end up the ramp,
+         overlapping, none of them quite square to the road. This is the
+         surface the car is actually on, so it sits a few centimetres proud of
+         the fill and carries the wear. */
+      const RAMP_PLATE = mat({
+        name: 'BoreRampPlate', mode: 'lit', nrm: 'speed_bump_normal.png',
+        color: [0.44, 0.44, 0.47, 1], emis: [0.020, 0.022, 0.028], gain: 0,
+        tiling: [2, 2], offset: [0, 0], _smooth: 0.42, _metal: 0.72,
+      });
+      sweep(RAMP_PLATE, 'lit', (a, b) => {
+        for (const r of BORE) {
+          const total = r.len + r.crest;
+          if (r.s < a * C.step - total - 200 || r.s - total > b * C.step + 200) continue;
+          const PLATES = 11;
+          for (let i = 0; i < PLATES; i++) {
+            const u0 = i / PLATES, u1 = (i + 1.06) / PLATES;   // overlapped
+            const A = rampTop(r, Math.min(1, u0)), B = rampTop(r, Math.min(1, u1));
+            const skew = ((i % 4) - 1.5) * 0.9;
+            const half = BORE_HALF - 0.7;
+            const l0 = lanePointAt(A.s, -half + skew), g0 = lanePointAt(A.s, half + skew);
+            const l1 = lanePointAt(B.s, -half + skew), g1 = lanePointAt(B.s, half + skew);
+            quad(
+              push([l0.x, A.y + 0.07, l0.z], [0, 1, 0], [0, 0]),
+              push([g0.x, A.y + 0.07, g0.z], [0, 1, 0], [1, 0]),
+              push([g1.x, B.y + 0.07, g1.z], [0, 1, 0], [1, 1]),
+              push([l1.x, B.y + 0.07, l1.z], [0, 1, 0], [0, 1]));
+          }
+        }
+      });
+
+      /* THE SCAFFOLD. Poles under the crest where the fill runs out, cross
+         braced, standing on the road. It is the single clearest signal that
+         this is temporary. */
+      const RAMP_STEEL = mat({
+        name: 'BoreRampSteel', mode: 'lit',
+        color: [0.36, 0.33, 0.22, 1], emis: [0.016, 0.014, 0.008], gain: 0,
+        _smooth: 0.30, _metal: 0.66,
+      });
+      sweep(RAMP_STEEL, 'lit', (a, b) => {
+        for (const r of BORE) {
+          const total = r.len + r.crest;
+          if (r.s < a * C.step - total - 200 || r.s - total > b * C.step + 200) continue;
+          const pole = (s0, lat, y0, y1, w) => {
+            const P = lanePointAt(s0, lat);
+            const fx = -P.rz, fz = P.rx;
+            for (const [ax, az, nx, nz] of [[P.rx, P.rz, P.rx, P.rz], [fx, fz, fx, fz]]) {
+              quad(
+                push([P.x - ax * w, y0, P.z - az * w], [nz, 0, -nx], [0, 0]),
+                push([P.x + ax * w, y0, P.z + az * w], [nz, 0, -nx], [1, 0]),
+                push([P.x + ax * w, y1, P.z + az * w], [nz, 0, -nx], [1, 1]),
+                push([P.x - ax * w, y1, P.z - az * w], [nz, 0, -nx], [0, 1]));
+            }
+          };
+          // legs under the crest, every few units, in two rows
+          const climb = r.len, crest = r.crest;
+          for (let d = climb + 3; d < climb + crest; d += 7.5) {
+            const T = rampTop(r, d / (climb + crest));
+            for (const side of [-1, 1]) {
+              pole(T.s, side * (BORE_HALF - 1.6), -0.6, T.y - 0.2, 0.26);
+            }
+            // a cross tie between them
+            const P = lanePointAt(T.s, 0);
+            const l = lanePointAt(T.s, -(BORE_HALF - 1.6)), g = lanePointAt(T.s, BORE_HALF - 1.6);
+            const y = Math.max(0.6, T.y * 0.45);
+            quad(
+              push([l.x, y - 0.16, l.z], [0, 1, 0], [0, 0]),
+              push([g.x, y - 0.16, g.z], [0, 1, 0], [1, 0]),
+              push([g.x, y + 0.16, g.z], [0, 1, 0], [1, 1]),
+              push([l.x, y + 0.16, l.z], [0, 1, 0], [0, 1]));
+            void P;
+          }
+          // a kerb rail down each side of the crest, so the top reads as a deck
+          for (const side of [-1, 1]) {
+            let prev = null;
+            for (let d = climb * 0.55; d <= climb + crest; d += 4) {
+              const T = rampTop(r, Math.min(1, d / (climb + crest)));
+              const P = lanePointAt(T.s, side * (BORE_HALF - 0.5));
+              const n = [-P.rx * side, 0, -P.rz * side];
+              const v0 = push([P.x, T.y + 0.08, P.z], n, [0, 0]);
+              const v1 = push([P.x, T.y + 0.62, P.z], n, [0, 1]);
+              if (prev) quad(prev[0], prev[1], v1, v0);
+              prev = [v0, v1];
+            }
+          }
+        }
+      });
+
+      /* WHAT IS BEHIND IT, and the reason any of this exists: the bore, with
+         its near end full of its own shell. The spill slopes down into the
+         tunnel so a car that comes down short lands on the pile rather than
+         inside it. */
+      const BORE_RUBBLE = mat({
+        name: 'BoreRubble', mode: 'lit', nrm: 'speed_bump_normal.png',
+        color: [0.23, 0.22, 0.24, 1], emis: [0.010, 0.010, 0.013], gain: 0,
+        tiling: [8, 3], offset: [0, 0], _smooth: 0.12, _metal: 0.04,
+      });
+      sweep(BORE_RUBBLE, 'lit', (a, b) => {
+        for (const r of BORE) {
+          if (r.bore < a * C.step - 260 || r.bore > b * C.step + 320) continue;
+          const from = r.bore - 6, to = r.spill;
+          const N = 16;
+          let prev = null;
+          for (let i = 0; i <= N; i++) {
+            const k = i / N;
+            const s = from + (to - from) * k;
+            /* High and packed at the mouth, sloping away into the bore. The
+               lumps are a fixed pattern rather than noise so the silhouette is
+               the same every time it is drawn. */
+            const top = 9.6 * (1 - k) * (1 - k * 0.4) + Math.sin(k * 11.0) * 0.55 * (1 - k);
+            const half = (ROAD_HALF - 0.6) * (1 - k * 0.18);
+            const l = lanePointAt(s, -half), g = lanePointAt(s, half), c = lanePointAt(s, 0);
+            const ring = [
+              push([l.x, Math.max(0, top * 0.30), l.z], [0, 1, 0], [0, k * 3]),
+              push([c.x, Math.max(0, top), c.z], [0, 1, 0], [0.5, k * 3]),
+              push([g.x, Math.max(0, top * 0.30), g.z], [0, 1, 0], [1, k * 3]),
+            ];
+            if (prev) {
+              quad(prev[0], prev[1], ring[1], ring[0]);
+              quad(prev[1], prev[2], ring[2], ring[1]);
+            }
+            prev = ring;
+          }
+          // the face of the pile, where it meets the mouth
+          const f = r.bore - 6;
+          const l = lanePointAt(f, -(ROAD_HALF - 0.6)), g = lanePointAt(f, ROAD_HALF - 0.6);
+          const c = lanePointAt(f, 0);
+          const n = [-l.fx, 0, -l.fz];
+          quad(
+            push([l.x, 0, l.z], n, [0, 0]),
+            push([g.x, 0, g.z], n, [1, 0]),
+            push([g.x, 2.9, g.z], n, [1, 1]),
+            push([l.x, 2.9, l.z], n, [0, 1]));
+          tri(
+            push([l.x, 2.9, l.z], n, [0, 0]),
+            push([g.x, 2.9, g.z], n, [1, 0]),
+            push([c.x, 9.6, c.z], n, [0.5, 1]));
+        }
+      });
+
+      /* THE SIGN THAT SAYS WHY. Hazard bars across the mouth at road level and
+         a pair of work lamps on the ramp, which is the only light on the
+         structure and the thing that finds it from a long way back. */
+      const BORE_WARN = mat({
+        name: 'BoreWarn', mode: 'glow', fadeV: 0,
+        emis: [0.78, 0.22, 0.03], color: [1, 1, 1, 1], gain: 0.22,
+      });
+      sweep(BORE_WARN, undefined, (a, b) => {
+        for (const r of BORE) {
+          const total = r.len + r.crest;
+          if (r.s < a * C.step - total - 320 || r.s - total > b * C.step + 320) continue;
+          // chevrons up the approach, pointing at the ramp
+          for (let i = 0; i < 7; i++) {
+            const s = r.s - total - 150 + i * 21;
+            for (const side of [-1, 1]) {
+              const A = lanePointAt(s, side * (ROAD_HALF - 3.2) - 1.5);
+              const B = lanePointAt(s, side * (ROAD_HALF - 3.2) + 1.5);
+              const A2 = lanePointAt(s + 5.5, side * (ROAD_HALF - 3.2) - 1.5);
+              const B2 = lanePointAt(s + 5.5, side * (ROAD_HALF - 3.2) + 1.5);
+              quad(
+                push([A.x, 0.13, A.z], [0, 1, 0], [0, 0]),
+                push([B.x, 0.13, B.z], [0, 1, 0], [1, 0]),
+                push([B2.x, 0.13, B2.z], [0, 1, 0], [1, 1]),
+                push([A2.x, 0.13, A2.z], [0, 1, 0], [0, 1]));
+            }
+          }
+          // the lip itself, lit edge to edge
+          const e = rampTop(r, 1);
+          const el = lanePointAt(e.s - 1.2, -(BORE_HALF - 0.7));
+          const eg = lanePointAt(e.s - 1.2, BORE_HALF - 0.7);
+          quad(
+            push([el.x, e.y + 0.10, el.z], [0, 1, 0], [0, 0]),
+            push([eg.x, e.y + 0.10, eg.z], [0, 1, 0], [1, 0]),
+            push([eg.x, e.y + 0.46, eg.z], [0, 1, 0], [1, 1]),
+            push([el.x, e.y + 0.46, el.z], [0, 1, 0], [0, 1]));
+          // work lamps on poles beside the crest
+          for (const side of [-1, 1]) {
+            const T = rampTop(r, (r.len + r.crest * 0.45) / total);
+            const P = lanePointAt(T.s, side * (ROAD_HALF - 1.4));
+            const fx = -P.rz, fz = P.rx;
+            quad(
+              push([P.x - fx * 0.9, T.y + 2.6, P.z - fz * 0.9], [0, -1, 0], [0, 0]),
+              push([P.x + fx * 0.9, T.y + 2.6, P.z + fz * 0.9], [0, -1, 0], [1, 0]),
+              push([P.x + fx * 0.9, T.y + 3.0, P.z + fz * 0.9], [0, -1, 0], [1, 1]),
+              push([P.x - fx * 0.9, T.y + 3.0, P.z - fz * 0.9], [0, -1, 0], [0, 1]));
+          }
+        }
+      });
+
+      /* ONE BOX, IN THE ROAD'S OWN FRAME: `lat` across the carriageway, `al`
+         along it, `y` up. Every member of every structure beside this road is
+         built from this - the finish gantries here, and the lamp standards,
+         sign bridges and arches over in buildLandscape, which is handed it on
+         the arena below.
+
+         The ends are sorted, so a member can be written outside-in or
+         inside-out and its faces still point outwards. */
+      const roadBox = (i, lat0, lat1, y0, y1, al0, al1) => {
+        const yaw = C.yaw[i], rx = Math.cos(yaw), rz = -Math.sin(yaw);
+        const fx = -rz, fz = rx;
+        const x0 = Math.min(lat0, lat1), x1 = Math.max(lat0, lat1);
+        const b0 = Math.min(y0, y1), b1 = Math.max(y0, y1);
+        const z0 = Math.min(al0, al1), z1 = Math.max(al0, al1);
+        const Pt = (lt, y, al) => [C.x[i] + rx * lt + fx * al, y, C.z[i] + rz * lt + fz * al];
+        const c = [
+          [x0, b0, z0], [x1, b0, z0], [x1, b1, z0], [x0, b1, z0],
+          [x0, b0, z1], [x1, b0, z1], [x1, b1, z1], [x0, b1, z1],
+        ].map(v => Pt(v[0], v[1], v[2]));
+        const F = [[0, 1, 2, 3, [0, 0, -1]], [5, 4, 7, 6, [0, 0, 1]],
+                   [4, 0, 3, 7, [-1, 0, 0]], [1, 5, 6, 2, [1, 0, 0]],
+                   [3, 2, 6, 7, [0, 1, 0]], [4, 5, 1, 0, [0, -1, 0]]];
+        for (const f of F) {
+          const n = [f[4][0] * rx + f[4][2] * fx, f[4][1], f[4][0] * rz + f[4][2] * fz];
+          quad(push(c[f[0]], n, [0, 0]), push(c[f[1]], n, [1, 0]),
+               push(c[f[2]], n, [1, 1]), push(c[f[3]], n, [0, 1]));
+        }
+      };
+
+      /* --- the gantry at the end of a route ------------------------------
+       *
+       * Every route finishes somewhere, and "somewhere" has to be visible
+       * from a long way back or the last kilometre is driven blind. There is
+       * one at each of the four boundaries, built with everything else, so
+       * whichever route is chosen its end is already standing there.
+       *
+       * IT WAS THREE CARDS AT TWENTY TIMES WHITE.
+       *
+       * Two flat quads for the legs, one for the beam, one for the bar across
+       * the road, and an emissive of 1.0 with a gain of 0.4 - which the glow
+       * branch turns into nineteen and a half. Everything over about two
+       * tonemaps to the same place, so the gate had no legs, no beam and no
+       * bar: it was one solid white shape, and from any angle off the axis
+       * the cards it was made of thinned to nothing and it became a white
+       * slab hanging across the frame. On a drone pass it is most of the
+       * picture. There are only four of these in the world and this is the
+       * structure the whole route is driven towards, so it is worth building.
+       *
+       * It is a gantry now: founded legs, a box truss with a web in it, a
+       * kicker into each corner, and the light where light belongs - a run
+       * along the underside of the truss and a strip up the road side of each
+       * leg, at a brightness that keeps its colour instead of clipping.
+       */
+      const GATE_STEEL = mat({
+        name: 'FinishGateSteel', mode: 'lit',
+        nrm: 'speed_bump_normal.png',
+        color: [0.19, 0.20, 0.25, 1], emis: [0.018, 0.022, 0.030], gain: 0,
+        _smooth: 0.42, _metal: 0.86,
+      });
       const GATE = mat({
         name: 'FinishGate', mode: 'glow', fadeV: 0,
-        emis: [1.0, 0.95, 1.0], color: [1, 1, 1, 1], gain: 0.4,
+        emis: [0.16, 0.26, 0.34], color: [1, 1, 1, 1], gain: 0.10,
       });
       const gates = (this.gates || []).map(v => Math.round(v / C.step))
         .filter(i => i > 2 && i < C.count - 3);
-      sweep(GATE, undefined, (a, b) => {
+      const GATE_LEG = ROAD_HALF + 2.4, GATE_SPAN = ROAD_HALF + 4.2;
+      const GATE_LO = 19.2, GATE_HI = 23.4;
+      sweep(GATE_STEEL, 'lit', (a2, b2) => {
         for (const i of gates) {
-          if (i < a || i >= b) continue;
-          const yaw = C.yaw[i];
-          const rx = Math.cos(yaw), rz = -Math.sin(yaw);
-          const fx = -rz, fz = rx;
-          const t = 1.5;
-          // two uprights and a beam, plus a bar across the road at wheel height
+          if (i < a2 || i >= b2) continue;
           for (const side of [-1, 1]) {
-            const ox = side * (ROAD_HALF + 2.2);
-            const px = C.x[i] + rx * ox, pz = C.z[i] + rz * ox;
-            quad(
-              push([px - fx * t, 0, pz - fz * t], [0, 1, 0], [0, 0]),
-              push([px - fx * t, 22, pz - fz * t], [0, 1, 0], [0, 1]),
-              push([px + fx * t, 22, pz + fz * t], [0, 1, 0], [1, 1]),
-              push([px + fx * t, 0, pz + fz * t], [0, 1, 0], [1, 0]));
+            const L = side * GATE_LEG;
+            // footing, then the leg in two lifts so it tapers as it rises
+            roadBox(i, L - 3.4, L + 3.4, -1.4, 2.4, -3.4, 3.4);
+            roadBox(i, L - 1.55, L + 1.55, 1.8, 11.6, -1.55, 1.55);
+            roadBox(i, L - 1.20, L + 1.20, 11.4, GATE_HI, -1.20, 1.20);
+            // and the kicker into the corner of the truss
+            roadBox(i, L - side * 4.6, L, GATE_LO - 3.2, GATE_LO - 1.6, -0.9, 0.9);
           }
-          for (const [y0, y1] of [[19, 22], [0.06, 0.7]]) {
-            const lx = C.x[i] + rx * -(ROAD_HALF + 2.2), lz = C.z[i] + rz * -(ROAD_HALF + 2.2);
-            const gx = C.x[i] + rx * (ROAD_HALF + 2.2), gz = C.z[i] + rz * (ROAD_HALF + 2.2);
-            quad(
-              push([lx, y0, lz], [0, 1, 0], [0, 0]),
-              push([lx, y1, lz], [0, 1, 0], [0, 1]),
-              push([gx, y1, gz], [0, 1, 0], [1, 1]),
-              push([gx, y0, gz], [0, 1, 0], [1, 0]));
+          // the truss: two chords the width of the span, with a web between
+          for (const y of [GATE_LO, GATE_HI]) {
+            roadBox(i, -GATE_SPAN, GATE_SPAN, y - 0.85, y + 0.85, -1.5, 1.5);
           }
+          for (let x = -GATE_SPAN + 1.4; x < GATE_SPAN - 2; x += 6.4) {
+            roadBox(i, x, x + 1.2, GATE_LO + 0.7, GATE_HI - 0.7, -0.75, 0.75);
+          }
+          // the walkway along the back of it, which is what says it is real
+          roadBox(i, -GATE_SPAN, GATE_SPAN, GATE_HI + 0.7, GATE_HI + 1.3, 1.5, 3.8);
+        }
+      });
+      sweep(GATE, undefined, (a2, b2) => {
+        for (const i of gates) {
+          if (i < a2 || i >= b2) continue;
+          const yaw = C.yaw[i], rx = Math.cos(yaw), rz = -Math.sin(yaw);
+          const fx = -rz, fz = rx;
+          const W = (lt, y, al) => [C.x[i] + rx * lt + fx * al, y, C.z[i] + rz * lt + fz * al];
+          // the light run under the truss, facing the road it is over
+          const nd = [0, -1, 0];
+          quad(push(W(-GATE_SPAN, GATE_LO - 0.95, -1.25), nd, [0, 0]),
+               push(W(GATE_SPAN, GATE_LO - 0.95, -1.25), nd, [1, 0]),
+               push(W(GATE_SPAN, GATE_LO - 0.95, 1.25), nd, [1, 1]),
+               push(W(-GATE_SPAN, GATE_LO - 0.95, 1.25), nd, [0, 1]));
+          // ...and the face of it, so the gate reads from in front as well
+          const nf = [-fx, 0, -fz];
+          quad(push(W(-GATE_SPAN, GATE_LO - 0.7, -1.6), nf, [0, 0]),
+               push(W(GATE_SPAN, GATE_LO - 0.7, -1.6), nf, [1, 0]),
+               push(W(GATE_SPAN, GATE_LO + 0.7, -1.6), nf, [1, 1]),
+               push(W(-GATE_SPAN, GATE_LO + 0.7, -1.6), nf, [0, 1]));
+          for (const side of [-1, 1]) {
+            // a strip up the road side of each leg
+            const L = side * (GATE_LEG - 1.28);
+            const n2 = [-rx * side, 0, -rz * side];
+            quad(push(W(L, 2.4, -0.42), n2, [0, 0]), push(W(L, GATE_LO, -0.42), n2, [0, 1]),
+                 push(W(L, GATE_LO, 0.42), n2, [1, 1]), push(W(L, 2.4, 0.42), n2, [1, 0]));
+          }
+          /* The line on the road itself: this is the thing that is actually
+             crossed, so it stays, low and the full width of the carriageway,
+             rather than being a bar in the air at wheel height that a car
+             appears to drive through. */
+          const nu = [0, 1, 0];
+          quad(push(W(-GATE_LEG, 0.09, -1.5), nu, [0, 0]),
+               push(W(GATE_LEG, 0.09, -1.5), nu, [1, 0]),
+               push(W(GATE_LEG, 0.09, 1.5), nu, [1, 1]),
+               push(W(-GATE_LEG, 0.09, 1.5), nu, [0, 1]));
         }
       });
 
       /* The landscape is handed the ARENA rather than a snapshot of its
          views, for the reason in the note on the emitters above. */
       this.buildLandscape({ Geo, parts, push, quad, tri, begin, end, sweep, walk, at,
-                            nearTunnel, C, shipped, shippedLen });
+                            nearTunnel, overpassAt, C, shipped, shippedLen, roadBox });
 
 
       /* The palms.
@@ -3300,6 +4183,22 @@
          strategy. */
       if (this.keepGeometry) { this.geomV = Geo.verts(); this.geomI = Geo.indices(); }
       this.dressing = parts;
+      /* THE TWO DRAW LISTS. Every generated thing in the world is in one of
+         them - the road, the barriers and their caps, the lamp standards, the
+         gantries, the ramps, the tunnels, the terrain - so a build that
+         reaches here without splitting `parts` into them draws none of it.
+         The passes are guarded on `.length`, so the failure is silent: the
+         frame presents, the car is there, and the entire world is missing.
+
+         NOT SORTED BY MATERIAL, AND THAT WAS MEASURED. Neither pass has an
+         early exit, so the order is free, and grouping by material to spare
+         Scene.drawPart's upload cache is the obvious thing to try - it is what
+         Chapter 7's drawItems does. It was tried and it moved nothing: 155
+         uploads of 289 draws on Route 1 and 334 of 476 on the Forge, identical
+         either way. The uploads on these routes are not the generated
+         dressing; they are the shipped meshes, the cars, and the shadow and
+         probe passes, which run a different program and re-state everything
+         regardless. Left in road order, which is what the emitters produce. */
       this.dressingOpaque = parts.filter(p => p.mode === 0);
       this.dressingGlow = parts.filter(p => p.mode !== 0);
       this.dressingVerts = Geo.vLen / 8;
@@ -3396,23 +4295,71 @@
       const REACH = 2000;
       const GW = Land.gw, GH = Land.gh;
       const x0 = Land.x0, z0 = Land.z0;
-      const near = Land.near;
       /** Exact distance to the road, and which arc length it was nearest. */
       const roadAt = (x, z) => {
+        /* READ THROUGH THE BRIDGE, NOT FROM A LOCAL.
+
+           This used to be hoisted into a `const near` outside the function,
+           which is a view onto WebAssembly memory captured once - and the
+           world build grows that memory continuously afterwards, detaching
+           it. Every read then came back `undefined`: not less than zero, so
+           not caught by the test below, so a NaN seed, an empty refine loop,
+           and a reported distance of Infinity. Every clearance test in the
+           world is a comparison against this distance, and every one of them
+           passes when it is Infinity - which is what put buildings in the
+           carriageway. See the note on Land in js/wasm.js. */
+        const near = Land.near;
+        if (!near) return { d: REACH, s: 0, i: 0, off: true };
         const gx = M.clamp(Math.round((x - x0) / GCELL), 0, GW - 1);
         const gz = M.clamp(Math.round((z - z0) / GCELL), 0, GH - 1);
-        let seed = near[gz * GW + gx];
-        if (seed < 0) {
+
+        /* NINE CELLS, NOT ONE.
+
+           The grid records, per cell, which centreline sample is nearest to
+           THAT CELL - and the cells are a hundred and twenty units across, so
+           a query can be most of a cell away from the point the answer was
+           computed for. Refining around one seed then searches the wrong part
+           of the road whenever the true nearest sample is on a different pass
+           of it: measured against a full scan of the centreline, the single
+           cell answered up to seventy units too far.
+
+           Seventy units matters. Every clearance test in the world is a
+           comparison against this number with a threshold between a hundred
+           and two hundred, so an overestimate of seventy lets a building stand
+           seventy units closer to the road than the rule that placed it
+           intended - which is most of the way from "set back behind the
+           barrier" to "at the edge of the paint".
+
+           Taking the seeds from the surrounding nine cells and refining around
+           each of them costs a few hundred distance tests on a call that is
+           made at build time, and it covers every branch of the road that
+           comes anywhere near the query. */
+        let best = -1, bd = Infinity;
+        for (let cz = -1; cz <= 1; cz++) {
+          const gz2 = gz + cz;
+          if (gz2 < 0 || gz2 >= GH) continue;
+          for (let cx = -1; cx <= 1; cx++) {
+            const gx2 = gx + cx;
+            if (gx2 < 0 || gx2 >= GW) continue;
+            const seed = near[gz2 * GW + gx2];
+            /* An index outside the centreline is not a seed. It cannot happen
+               with a live grid, and with a detached one it is what every read
+               looks like - so it is checked rather than trusted, because the
+               cost of being wrong here is silent and the check is free. */
+            if (!(seed >= 0 && seed < C.count)) continue;
+            const lo = Math.max(0, seed - 48);
+            const hi = Math.min(C.count - 1, seed + 48);
+            for (let i = lo; i <= hi; i++) {
+              const dx = C.x[i] - x, dz = C.z[i] - z;
+              const d = dx * dx + dz * dz;
+              if (d < bd) { bd = d; best = i; }
+            }
+          }
+        }
+        if (best < 0) {
           // outside the stamped band. Nothing is built out here, and anything
           // that asks is told it is at the rim rather than in the mountains.
           return { d: REACH, s: 0, i: 0, off: true };
-        }
-        let best = seed, bd = Infinity;
-        const lo = Math.max(0, seed - 48), hi = Math.min(C.count - 1, seed + 48);
-        for (let i = lo; i <= hi; i++) {
-          const dx = C.x[i] - x, dz = C.z[i] - z;
-          const d = dx * dx + dz * dz;
-          if (d < bd) { bd = d; best = i; }
         }
         /* Past either end the road is treated as carrying straight on.
            Without it the field measures to the last SAMPLE rather than to the
@@ -3433,6 +4380,204 @@
         return { d: Math.sqrt(bd), s: best * C.step, i: best };
       };
       this.roadAt = roadAt;
+
+      /* =============================== IS ANYTHING STANDING IN THE ROAD? ==
+       *
+       * There were buildings in the middle of the carriageway. Not many, and
+       * not everywhere - a slab across ASHFALL ZERO, another on a city
+       * approach - but the interesting part is that every generator that puts
+       * something beside the road ALREADY has a clearance test, and they all
+       * passed. Reading them one at a time and reasoning about which is wrong
+       * is how the third one gets missed, and the request was for the whole
+       * course to be swept rather than for the two that were noticed.
+       *
+       * So this asks the question of the finished geometry instead, through
+       * three doors that between them cover everything in the world:
+       *
+       *   `verts`     every batch of dressing this file generates, hooked at
+       *               `end`, which every one of them passes through;
+       *   `box`       a shipped instance, as a mesh box through a matrix;
+       *   `auditVerts` published for js/chapters.js, whose chapter worlds
+       *               build their own meshes and never come through `end`.
+       *
+       * WHAT COUNTS AS IN THE ROAD: inside the painted carriageway, and
+       * reaching higher than the paint. There is deliberately no ceiling.
+       *
+       * THE FIRST VERSION HAD ONE AND SAW NOTHING. It asked for a point
+       * between 2.5 and 26 units up - the envelope a car occupies - and came
+       * back clean while there was a building across the road. A building is a
+       * BOX: an extruded rectangle two hundred units tall has vertices at its
+       * base and at its roof and nothing in between, so a test that samples
+       * the band a car drives through passes straight between them. The taller
+       * and more obstructive the thing, the more certainly it was missed.
+       *
+       * So everything standing in the carriageway is reported, with how high
+       * it reaches, and the triage - a gantry legitimately spans the road, a
+       * building does not - is done by reading the report. That is a job for a
+       * person, not for a threshold that silently drops the entire class of
+       * thing being looked for.
+       *
+       * OFF BY DEFAULT: it is a few hundred thousand nearest-road queries and
+       * it runs while the world is being built. Switched on by --probe clear
+       * and by nothing else.
+       */
+      const AUDIT = !!global.NR.CLEAR_AUDIT;
+      /* Half the painted road, less a margin: a barrier post or a kerb sits
+         right on the line and is not an obstacle. */
+      const CLEAR_HALF = ROAD_HALF - 1.5;
+      // just clear of the paint, the rumble strips and the ramp surfaces
+      const CLEAR_LOW = 0.8;
+      const clearHits = AUDIT ? new Map() : null;
+
+      /** One reported point: which thing, where on the road, how far in, how high. */
+      const hit = (name, p, rel) => {
+        let rec = clearHits.get(name);
+        if (!rec) {
+          rec = { name, n: 0, s0: Infinity, s1: -Infinity, worst: 0, at: 0, minD: 1e9,
+                  lowMid: 1e9, lowAt: 0, lowN: 0, lo: 1e9, hi: -1e9 };
+          clearHits.set(name, rec);
+        }
+        rec.n++;
+        if (p.s < rec.s0) rec.s0 = p.s;
+        if (p.s > rec.s1) rec.s1 = p.s;
+        if (rel < rec.lo) rec.lo = rel;
+        if (rel > rec.hi) rec.hi = rel;
+        /* The closest this thing ever gets to the centre line, and where. For
+           anything outside the carriageway that is the only number worth
+           having - "how far into the lane" is zero for all of them. */
+        if (p.d < rec.minD) { rec.minD = p.d; rec.at = p.s; }
+        const into = CLEAR_HALF - p.d;
+        if (into > rec.worst) rec.worst = into;
+        /* STANDING IN THE ROAD, OR SPANNING OVER IT?
+
+           Most of what this sweep reports is meant to be there. An arch
+           straddles the carriageway: its legs are at the edge and its crown
+           is twenty-five units up over the middle. A sign gantry is fifty
+           units up. A palm frond hangs over the verge. None of those is an
+           obstacle and all of them have geometry inside the corridor.
+
+           Aggregating per material cannot tell them apart, because the lowest
+           point and the deepest point are different points: the arch reports
+           a minimum height of 0.9 from its legs and a maximum depth of 18.5
+           from its crown, and read together those describe a wall.
+
+           So the one number that separates them is recorded directly - how
+           LOW this material gets over the MIDDLE of the road. A thing that
+           spans is high there by definition; a thing that stands is not. */
+        if (p.d <= 10) {
+          if (rel < rec.lowMid) { rec.lowMid = rel; rec.lowAt = p.s; }
+          /* HOW MUCH of it is down there, which is what tells a wall from a
+             foot. A slab across the lane puts hundreds of points low over the
+             middle of the road; a gantry leg that happens to stand near where
+             the course passes itself puts one or two. */
+          if (rel < 6) rec.lowN = (rec.lowN || 0) + 1;
+        }
+      };
+
+      /* HOW CLOSE IS TOO CLOSE, which is a second question and needs asking.
+
+         The first sweep of the whole course found one overhanging lamp arm and
+         nothing else standing on the carriageway - and there was still a slab
+         filling half the frame on two routes. Something does not have to be ON
+         the road to be a building in the middle of it: a two-hundred-unit
+         tower twenty-five units off the centre line is five units outside the
+         paint, passes every clearance test ever written, and from the driving
+         seat is a wall across the view.
+
+         So there are two bands. IN is the carriageway, where nothing tall
+         belongs at all. NEAR is out to a hundred and twenty units, where road
+         furniture belongs and a building does not - forty units is taller than
+         any gantry, sign, barrier or portal on the course, so anything in that
+         band reaching past it is a structure that should be further away. */
+      const NEAR_HALF = 120, NEAR_TALL = 40;
+      const check = (name, x, y, z) => {
+        const p = roadAt(x, z);
+        if (p.off || p.d > NEAR_HALF) return;
+        const rel = y - ((C.y && C.y[p.i]) || 0);
+        if (p.d <= CLEAR_HALF) {
+          if (rel >= CLEAR_LOW) hit(name, p, rel);
+          return;
+        }
+        if (rel >= NEAR_TALL) hit("NEAR // " + name, p, rel);
+      };
+
+      /** A run of interleaved vertices, eight floats each. */
+      const auditRange = (name, arr, from2, to2) => {
+        for (let v = from2; v < to2; v += 8) check(name, arr[v], arr[v + 1], arr[v + 2]);
+      };
+
+      auditClear = !AUDIT ? null : (name, from2, to2) => auditRange(name, Geo.vf, from2, to2);
+      /* Published for the chapter worlds in js/chapters.js, which build their
+         own meshes and never pass through `end`. */
+      this.auditVerts = !AUDIT ? null : (name, verts) => auditRange(name, verts, 0, verts.length);
+
+      /* A SHIPPED INSTANCE is a mesh box through a matrix, and the two
+         questions are asked separately: does its FOOTPRINT cross the road, and
+         does the box reach the height of a car. Sampling a lattice and testing
+         each point has the same hole the first vertex test had - for anything
+         tall, no sample height lands where it matters. */
+      this.auditInstances = !AUDIT ? null : (man) => {
+        const lattice = [];
+        for (let a = 0; a <= 4; a++) {
+          for (let b = 0; b <= 4; b++) lattice.push([a * 0.25, b * 0.25]);
+        }
+        this.clearSeen = { instances: 0, boxed: 0 };
+        for (const list of [man.world || [], man.road || []]) {
+          for (const inst of list) {
+            const mesh = man.meshes && man.meshes[inst.mesh];
+            const bb = mesh && mesh.aabb;
+            this.clearSeen.instances++;
+            if (!bb || !inst.m) continue;
+            this.clearSeen.boxed++;
+            const m = inst.m;
+            const name = String(inst.name || mesh.name || "?");
+            // the top of the box, wherever its own vertices sit
+            let top = -Infinity;
+            for (let k = 0; k < 8; k++) {
+              const lx = (k & 1) ? bb[3] : bb[0];
+              const ly = (k & 2) ? bb[4] : bb[1];
+              const lz = (k & 4) ? bb[5] : bb[2];
+              const wy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
+              if (wy > top) top = wy;
+            }
+            // ...and the ground it covers, at the box's own base height
+            const ly = bb[1];
+            for (const [u, w] of lattice) {
+              const lx = bb[0] + (bb[3] - bb[0]) * u;
+              const lz = bb[2] + (bb[5] - bb[2]) * w;
+              const x = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
+              const z = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
+              const p = roadAt(x, z);
+              if (p.off || p.d > NEAR_HALF) continue;
+              const rel = top - ((C.y && C.y[p.i]) || 0);
+              if (p.d <= CLEAR_HALF) { if (rel >= CLEAR_LOW) hit(name, p, rel); continue; }
+              if (rel >= NEAR_TALL) hit("NEAR // " + name, p, rel);
+            }
+          }
+        }
+      };
+      this.clearHits = clearHits;
+
+      /* ...AND THE SHIPPED INSTANCES, WHICH ARE WHERE THE BUILDINGS WERE.
+       *
+       * Everything above audits geometry this file GENERATES. The level also
+       * ships a few thousand authored instances - the skyline, the billboards,
+       * the gantries, the palms - and those never go anywhere near `push`, so
+       * the first sweep came back with one overhanging lamp arm and a clean
+       * bill of health while there was demonstrably a slab across the road on
+       * two routes. The generators were never the problem. The level file is.
+       *
+       * There is already evidence of this in `fixupInstances` above: three of
+       * the six shipped billboard clusters were authored with their pole
+       * planted in the carriageway and are sidestepped by name. That fix knew
+       * about billboards. Nothing knew about the rest.
+       *
+       * An instance is a mesh and a matrix, so what is tested is the mesh's
+       * own box put through that matrix - twenty-seven points on it, a three
+       * by three lattice, rather than the eight corners. A long wall crossing
+       * a road at an angle can have every corner outside the carriageway and
+       * its middle straight down the centre line, and a corner test says that
+       * is fine. */
 
       /* The profile.
        *
@@ -3560,7 +4705,19 @@
       const GROUND = mat({
         name: 'ZoneGround', mode: 'lit',
         nrm: 'sunset_road_NRM.png',
-        emisTex: 'sunset_grid.png', emisTile: [1, 1],
+        /* THREE CELLS OF GRID PER CELL OF TERRAIN.
+           The mesh is tessellated at GRID_SCALE - a hundred and five units,
+           two and a half road-widths - and the grid texture used to be laid
+           one tile to a cell, so the squares on the ground were a hundred and
+           five units across. At that size it stops reading as ground with a
+           grid burned into it and starts reading as a wireframe plane the car
+           is standing on, which is what the title screen was showing.
+           Tiling the TEXTURE finer costs nothing: the mesh, the carve and the
+           corner sharing are all untouched, and thirty-five-unit squares are
+           about a road-width, which is the scale the rest of the neon on this
+           road is drawn at. They also mip away with distance instead of
+           shimmering, because there are now enough of them to mip. */
+        emisTex: 'sunset_grid.png', emisTile: [3, 3],
         tiling: [1, 1], offset: [0, 0],
         color: [0.30, 0.26, 0.42, 1],
         emis: [0.34, 0.05, 0.62], gain: 1.35,
@@ -3707,6 +4864,12 @@
       const ARCH_EVERY = 5;                     // gantries, in lamps
       const TUNNEL_MARGIN = Math.ceil(150 / C.step);
       const clearOfTunnel = (i) => {
+        /* ...and clear of a bore BYPASS, which is a tunnel the road goes over
+           rather than through. A lamp standard planted on the grade beside a
+           deck twenty-one units above it is a lamp lighting nothing, and an
+           arch springing from the grade would be a gantry the car flies over
+           the top of. */
+        if (ctx.overpassAt(i * C.step)) return false;
         const lo = Math.max(0, i - TUNNEL_MARGIN);
         const hi = Math.min(C.count - 1, i + TUNNEL_MARGIN);
         for (let k = lo; k <= hi; k++) if (C.tunnel[k]) return false;
@@ -3714,99 +4877,261 @@
       };
       const isArch = (i) => (i / POST_STEP) % ARCH_EVERY === 0;
 
+      // one box in the road's frame, built with the gantries - see buildDressing
+      const roadBox = ctx.roadBox;
+
+      /* ------------------------------------------- THE LAMP STANDARDS ----
+       *
+       * THEY WERE FOUR FLAT QUADS.
+       *
+       * One card nineteen units tall for the column, one for the arm over the
+       * road, two for the lamp - all in the same plane, all facing across the
+       * carriageway. Head-on that is a perfectly good lamp post and it is why
+       * it survived this long. Seen along the road, which is how a car
+       * actually passes one, a card has no thickness: it thins to a line and
+       * then to nothing, and what is left in the frame is a dark rectangle
+       * apparently hanging in the sky with no post under it and no lamp on
+       * it. Two of them are in the corners of every screenshot of Route 2.
+       *
+       * They are built now the way the sign bridges next door already are:
+       * out of boxes, in the road's frame. A footing, a column that TAPERS -
+       * which is most of what tells you a thing is standing up rather than
+       * drawn on - the arm out over the carriageway, a kicker under it, and a
+       * housing on the end.
+       *
+       * And the steel is STEEL. A standard whose whole body was an unlit
+       * emissive read as a magenta silhouette from every angle, so the shape
+       * underneath it could not be seen even when there was one. The lit
+       * metal takes the road's own light and the neon is where neon belongs:
+       * a strip up the column and the lamp face itself.
+       */
+      const POST_STEEL = mat({
+        name: 'ZonePostSteel', mode: 'lit',
+        nrm: 'speed_bump_normal.png',
+        color: [0.15, 0.14, 0.19, 1], emis: [0.012, 0.010, 0.020], gain: 0,
+        _smooth: 0.46, _metal: 0.80,
+      });
       const POST = mat({
         name: 'ZonePost', mode: 'glow', fadeV: 0,
         emis: [0.42, 0.12, 0.55], color: [1, 1, 1, 1], gain: 0.05,
       });
       this.postMat = POST;
-      ctx.sweep(POST, undefined, (a, b, zone) => {
-        if (zone && zone.style === 'volcanic') return;
-        const first = a + ((POST_STEP - (a % POST_STEP)) % POST_STEP);
-        for (let i = first; i < b; i += POST_STEP) {
+      /* Where one stands, so the steel and the neon cannot disagree about it.
+         They are two sweeps over the same stations and the only thing worse
+         than a lamp with no post is a lamp beside one.
+
+         MEMOISED, because finding the ground under a post is a projection
+         onto the road and a height lookup, and the two sweeps ask for the
+         same chunk one after the other. Working it out twice for every one of
+         the sixteen hundred standards on the course is most of a second of
+         load, spent on an answer that was already known. */
+      const postMemo = new Map();
+      const postsIn = (a2, b2) => {
+        const key = a2 + ':' + b2;
+        const had = postMemo.get(key);
+        if (had) return had;
+        const out = [];
+        const first = a2 + ((POST_STEP - (a2 % POST_STEP)) % POST_STEP);
+        for (let i = first; i < b2; i += POST_STEP) {
           if (zoneAt(i * C.step).style === 'volcanic') continue;
           if (isArch(i) || !clearOfTunnel(i)) continue;
-          const yaw = C.yaw[i];
-          const rx = Math.cos(yaw), rz = -Math.sin(yaw);
           const side = ((i / POST_STEP) | 0) % 2 ? 1 : -1;
-          const ox = side * (ROAD_HALF + 3.4);
-          const px = C.x[i] + rx * ox, pz = C.z[i] + rz * ox;
-          const fx = -rz, fz = rx;             // along the road
-          // planted on the ground rather than floating over the ditch
+          const px = C.x[i] + Math.cos(C.yaw[i]) * side * (ROAD_HALF + 3.4);
+          const pz = C.z[i] + -Math.sin(C.yaw[i]) * side * (ROAD_HALF + 3.4);
           const p = roadAt(px, pz);
-          const y0 = Math.min(0, heightAt(px, pz, p.d, p.s));
-          const w = 1.15, y1 = 19.0;
-          const n = [-rx * side, 0, -rz * side];
-          quad(
-            push([px - fx * w, y0, pz - fz * w], n, [0, 0]),
-            push([px - fx * w, y1, pz - fz * w], n, [0, 1]),
-            push([px + fx * w, y1, pz + fz * w], n, [1, 1]),
-            push([px + fx * w, y0, pz + fz * w], n, [1, 0]));
-          // the head, cantilevered out over the road
-          const hx = px - rx * side * 8.5, hz = pz - rz * side * 8.5;
-          quad(
-            push([px, y1 - 2.0, pz], n, [0, 1]),
-            push([px, y1, pz], n, [0, 1]),
-            push([hx, y1, hz], n, [1, 1]),
-            push([hx, y1 - 2.0, hz], n, [1, 1]));
-          // the lamp itself: a bright bar facing down, which the bloom bleeds
-          // into the pool of light a real one throws
-          for (const [ny, yy] of [[-1, y1 - 3.2], [0, y1 - 2.0]]) {
-            quad(
-              push([hx - fx * 2.4, yy, hz - fz * 2.4], [0, ny, 0], [0, 1]),
-              push([hx - fx * 2.4, yy + 1.2, hz - fz * 2.4], [0, ny, 0], [0, 1]),
-              push([hx + fx * 2.4, yy + 1.2, hz + fz * 2.4], [0, ny, 0], [1, 1]),
-              push([hx + fx * 2.4, yy, hz + fz * 2.4], [0, ny, 0], [1, 1]));
+          out.push({ i, side, y0: Math.min(0, heightAt(px, pz, p.d, p.s)) });
+        }
+        postMemo.set(key, out);
+        return out;
+      };
+      // the column's lateral centreline, and the lamp's, out over the road
+      const POST_LAT = ROAD_HALF + 3.4, HEAD_LAT = ROAD_HALF - 5.1;
+      ctx.sweep(POST_STEEL, 'lit', (a2, b2, zone) => {
+        if (zone && zone.style === 'volcanic') return;
+        for (const q of postsIn(a2, b2)) {
+          const i = q.i, sd = q.side, L = sd * POST_LAT, H = sd * HEAD_LAT, y0 = q.y0;
+          // the footing, which is the difference between planted and floating
+          roadBox(i, L - 2.3, L + 2.3, y0 - 1.2, y0 + 1.9, -2.3, 2.3);
+          // ...and a column in three tapering lifts
+          roadBox(i, L - 1.32, L + 1.32, y0 + 1.4, 9.8, -1.32, 1.32);
+          roadBox(i, L - 0.86, L + 0.86, 9.6, 18.6, -0.86, 0.86);
+          /* The arm, in four steps that drop as they reach out. A real one is
+             a curve and four boxes at this distance read as one - the same
+             trick the sign bridges use for their cantilever stays, and for
+             the same reason: a member that is square to the road stays square
+             to it through a corner, and a true diagonal does not. */
+          const N = 3;
+          for (let k = 0; k < N; k++) {
+            const t0 = k / N, t1 = (k + 1) / N;
+            const x0 = L + (H - L) * t0, x1 = L + (H - L) * t1;
+            const yy = 18.35 - 1.5 * Math.pow((t0 + t1) * 0.5, 1.6);
+            roadBox(i, x0, x1, yy - 0.42, yy + 0.42, -0.62, 0.62);
           }
+          // the kicker under it, which is what stops the arm reading as a pin
+          roadBox(i, L, L + (H - L) * 0.34, 14.6, 17.6, -0.46, 0.46);
+          // and the housing the lamp is in
+          roadBox(i, H - 2.7, H + 2.7, 16.2, 17.5, -1.5, 1.5);
+        }
+      });
+      ctx.sweep(POST, undefined, (a2, b2, zone) => {
+        if (zone && zone.style === 'volcanic') return;
+        for (const q of postsIn(a2, b2)) {
+          const i = q.i, sd = q.side, L = sd * POST_LAT, H = sd * HEAD_LAT;
+          const yaw = C.yaw[i], rx = Math.cos(yaw), rz = -Math.sin(yaw);
+          const fx = -rz, fz = rx;
+          const P = (lt, y, al) => [C.x[i] + rx * lt + fx * al, y, C.z[i] + rz * lt + fz * al];
+          /* THE LAMP, facing down. Two faces a hair apart rather than one, so
+             the bloom has something to bite on from below and from the side -
+             which is what turns a bright rectangle into the pool of light a
+             lamp actually throws. */
+          for (const [ny, yy] of [[-1, 16.05], [0, 16.18]]) {
+            const n = [0, ny, 0];
+            quad(push(P(H - 2.3, yy, -1.15), n, [0, 0]), push(P(H + 2.3, yy, -1.15), n, [1, 0]),
+                 push(P(H + 2.3, yy, 1.15), n, [1, 1]), push(P(H - 2.3, yy, 1.15), n, [0, 1]));
+          }
+          /* ...and a strip up the road side of the column. It is what the
+             magenta used to be spent on, spent on a line instead of a
+             silhouette: at speed a row of these converging down the verge is
+             the thing that reads, and a row of solid posts is not. */
+          const e = sd * 0.86, w = 0.30;
+          const n2 = [-rx * sd, 0, -rz * sd];
+          quad(push(P(L - e, q.y0 + 2.2, -w), n2, [0, 0]), push(P(L - e, 18.2, -w), n2, [0, 1]),
+               push(P(L - e, 18.2, w), n2, [1, 1]), push(P(L - e, q.y0 + 2.2, w), n2, [1, 0]));
         }
       });
 
+      /* ------------------------------------------------- THE GANTRIES ----
+       *
+       * The arch was a RIBBON: a strip of quads following the span with
+       * thickness along the road and none across it, so from the seat - which
+       * is the one place it is ever seen from, head on, as you go through it
+       * - it was a band with no depth, and its uprights were the same band
+       * stood on end. It is a box section now, swept the same way, and its
+       * uprights land on footings.
+       */
+      const ARCH_STEEL = mat({
+        name: 'ZoneArchSteel', mode: 'lit',
+        nrm: 'speed_bump_normal.png',
+        color: [0.17, 0.18, 0.23, 1], emis: [0.014, 0.018, 0.026], gain: 0,
+        _smooth: 0.44, _metal: 0.84,
+      });
       const ARCH = mat({
         name: 'ZoneArch', mode: 'glow', fadeV: 0,
         emis: [0.20, 0.70, 0.85], color: [1, 1, 1, 1], gain: 0.30,
       });
       this.archMat = ARCH;
       const ARCH_PTS = 13;
-      ctx.sweep(ARCH, undefined, (a, b, zone) => {
-        if (zone && zone.style === 'volcanic') return;
+      /* THE SPAN, AND THE SECTION THAT IS SWEPT ALONG IT.
+       *
+       * A box per segment does not work, and it is worth saying why, because
+       * it is the obvious thing to reach for and it looks wrong in a specific
+       * way. An axis-aligned box from one point on an arc to the next touches
+       * the next box only at a CORNER - so a gantry built that way is a chain
+       * of separate blocks with daylight between them, which is what the first
+       * version of this was and what a screenshot of it shows.
+       *
+       * A member has a section and the section follows the member. Each
+       * station carries the curve's own normal, the four corners of a
+       * rectangle in that frame, and the next station's four joined to it -
+       * so the arch is continuous by construction, thicker at the springing
+       * than at the crown, and square to the road at every point of it,
+       * because `al` is still the road's own along-axis.
+       */
+      const ARCH_CURVE = (() => {
+        const pts = [];
+        for (let k = 0; k < ARCH_PTS; k++) {
+          const u = k / (ARCH_PTS - 1), ang = u * Math.PI;
+          pts.push({
+            u,
+            lat: -Math.cos(ang) * (ROAD_HALF + 3.6),
+            y: Math.max(-1, Math.pow(Math.sin(ang), 0.55) * 26.0),
+          });
+        }
+        for (let k = 0; k < pts.length; k++) {
+          const p0 = pts[Math.max(0, k - 1)], p1 = pts[Math.min(pts.length - 1, k + 1)];
+          const dx = p1.lat - p0.lat, dy = p1.y - p0.y;
+          const l = Math.hypot(dx, dy) || 1;
+          // across the member, in the lat/y plane: -n is the road side of it
+          pts[k].nl = -dy / l; pts[k].ny = dx / l;
+          pts[k].t = 1.65 - 0.55 * Math.sin(pts[k].u * Math.PI);
+        }
+        return pts;
+      })();
+      const archesIn = (a2, b2) => {
+        const out = [];
         const step = POST_STEP * ARCH_EVERY;
-        const first = a + ((step - (a % step)) % step);
-        for (let i = first; i < b; i += step) {
+        const first = a2 + ((step - (a2 % step)) % step);
+        for (let i = first; i < b2; i += step) {
           if (zoneAt(i * C.step).style === 'volcanic') continue;
           if (!clearOfTunnel(i)) continue;
-          const yaw = C.yaw[i];
-          const rx = Math.cos(yaw), rz = -Math.sin(yaw);
+          out.push(i);
+        }
+        return out;
+      };
+      /* One station's four corners, and the transform out of the road's frame.
+         `swell` pushes the section out or pulls it in without moving the
+         curve, which is how the light run sits just inside the steel instead
+         of fighting it for the same pixels. */
+      const archRing = (i, p, swell, deep) => {
+        const yaw = C.yaw[i], rx = Math.cos(yaw), rz = -Math.sin(yaw);
+        const fx = -rz, fz = rx;
+        const t = p.t * swell, w = p.t * deep;
+        const W = (lt, y, al) => [C.x[i] + rx * lt + fx * al, y, C.z[i] + rz * lt + fz * al];
+        return {
+          c: [W(p.lat - p.nl * t, p.y - p.ny * t, -w), W(p.lat + p.nl * t, p.y + p.ny * t, -w),
+              W(p.lat + p.nl * t, p.y + p.ny * t, w), W(p.lat - p.nl * t, p.y - p.ny * t, w)],
+          // the four outward face normals, in the same order as the faces
+          n: [[-fx, 0, -fz], [p.nl * rx, p.ny, p.nl * rz], [fx, 0, fz],
+              [-p.nl * rx, -p.ny, -p.nl * rz]],
+        };
+      };
+      ctx.sweep(ARCH_STEEL, 'lit', (a2, b2, zone) => {
+        if (zone && zone.style === 'volcanic') return;
+        for (const i of archesIn(a2, b2)) {
+          let prev = null;
+          for (const p of ARCH_CURVE) {
+            const r = archRing(i, p, 1.0, 0.78);
+            if (prev) {
+              for (let j = 0; j < 4; j++) {
+                const k = (j + 1) % 4, n = r.n[j];
+                quad(push(prev.c[j], n, [0, 0]), push(prev.c[k], n, [1, 0]),
+                     push(r.c[k], n, [1, 1]), push(r.c[j], n, [0, 1]));
+              }
+            }
+            prev = r;
+          }
+          // footings, and the spreader that ties each upright back to the verge
+          for (const side of [-1, 1]) {
+            const L = side * (ROAD_HALF + 3.6);
+            roadBox(i, L - 2.9, L + 2.9, -1.4, 2.4, -2.9, 2.9);
+            roadBox(i, L - side * 3.6, L, 8.8, 10.4, -0.85, 0.85);
+          }
+          // the beam across the top: the bit you actually aim at
+          roadBox(i, -(ROAD_HALF + 1.0), ROAD_HALF + 1.0, 24.2, 25.4, -1.1, 1.1);
+        }
+      });
+      ctx.sweep(ARCH, undefined, (a2, b2, zone) => {
+        if (zone && zone.style === 'volcanic') return;
+        for (const i of archesIn(a2, b2)) {
+          /* The light run along the road side of the span - pulled inside the
+             steel's own section, so it is a line ON the member rather than a
+             second member next to it. */
+          let prev = null;
+          for (const p of ARCH_CURVE) {
+            const r = archRing(i, p, 0.985, 0.42);
+            if (prev) {
+              const n = r.n[3];
+              quad(push(prev.c[0], n, [0, 0]), push(prev.c[3], n, [1, 0]),
+                   push(r.c[3], n, [1, 1]), push(r.c[0], n, [0, 1]));
+            }
+            prev = r;
+          }
+          const yaw = C.yaw[i], rx = Math.cos(yaw), rz = -Math.sin(yaw);
           const fx = -rz, fz = rx;
-          const t = 1.5;                        // half the arch's thickness
-          const ring = [];
-          for (let k = 0; k < ARCH_PTS; k++) {
-            /* A flattened arch: uprights outside the barrier, a span over the
-               road. Twenty-six units tall, because the road is forty wide and
-               anything shorter than about half its width reads as a kerb from
-               inside a car rather than as something you go THROUGH. */
-            const u = k / (ARCH_PTS - 1);
-            const ang = u * Math.PI;
-            const ox = -Math.cos(ang) * (ROAD_HALF + 3.6);
-            const oy = Math.pow(Math.sin(ang), 0.55) * 26.0;
-            const px = C.x[i] + rx * ox, pz = C.z[i] + rz * ox;
-            const n = [0, 1, 0];
-            ring.push([
-              push([px - fx * t, Math.max(-1, oy), pz - fz * t], n, [u, 0]),
-              push([px + fx * t, Math.max(-1, oy), pz + fz * t], n, [u, 1]),
-            ]);
-          }
-          for (let k = 0; k < ring.length - 1; k++) {
-            quad(ring[k][0], ring[k][1], ring[k + 1][1], ring[k + 1][0]);
-          }
-          // a beam across the top of the span: the bit you actually aim at
-          {
-            const lx = C.x[i] + rx * -(ROAD_HALF + 1.0), lz = C.z[i] + rz * -(ROAD_HALF + 1.0);
-            const gx = C.x[i] + rx * (ROAD_HALF + 1.0), gz = C.z[i] + rz * (ROAD_HALF + 1.0);
-            quad(
-              push([lx, 24.2, lz], [0, -1, 0], [0, 0]),
-              push([lx, 25.4, lz], [0, -1, 0], [0, 1]),
-              push([gx, 25.4, gz], [0, -1, 0], [1, 1]),
-              push([gx, 24.2, gz], [0, -1, 0], [1, 0]));
-          }
+          const W = (lt, y, al) => [C.x[i] + rx * lt + fx * al, y, C.z[i] + rz * lt + fz * al];
+          const nb = [0, -1, 0], e = ROAD_HALF + 1.0;
+          quad(push(W(-e, 24.1, -0.95), nb, [0, 0]), push(W(e, 24.1, -0.95), nb, [1, 0]),
+               push(W(e, 24.1, 0.95), nb, [1, 1]), push(W(-e, 24.1, 0.95), nb, [0, 1]));
         }
       });
 
@@ -3837,23 +5162,7 @@
       /* One box, laid out in the road's own frame: `lat` across, `al` along,
          `y` up. Every member of the gantry is one of these, which is what
          keeps a lattice square to a road that is turning underneath it. */
-      const signBox = (i, lat0, lat1, y0, y1, al0, al1) => {
-        const yaw = C.yaw[i], rx = Math.cos(yaw), rz = -Math.sin(yaw);
-        const fx = -rz, fz = rx;
-        const P = (lt, y, al) => [C.x[i] + rx * lt + fx * al, y, C.z[i] + rz * lt + fz * al];
-        const c = [
-          [lat0, y0, al0], [lat1, y0, al0], [lat1, y1, al0], [lat0, y1, al0],
-          [lat0, y0, al1], [lat1, y0, al1], [lat1, y1, al1], [lat0, y1, al1],
-        ].map(v => P(v[0], v[1], v[2]));
-        const F = [[0, 1, 2, 3, [0, 0, -1]], [5, 4, 7, 6, [0, 0, 1]],
-                   [4, 0, 3, 7, [-1, 0, 0]], [1, 5, 6, 2, [1, 0, 0]],
-                   [3, 2, 6, 7, [0, 1, 0]], [4, 5, 1, 0, [0, -1, 0]]];
-        for (const f of F) {
-          const n = [f[4][0] * rx + f[4][2] * fx, f[4][1], f[4][0] * rz + f[4][2] * fz];
-          quad(push(c[f[0]], n, [0, 0]), push(c[f[1]], n, [1, 0]),
-               push(c[f[2]], n, [1, 1]), push(c[f[3]], n, [0, 1]));
-        }
-      };
+      const signBox = roadBox;          // see the note on roadBox above
       const signNear = (a, b) => signs.filter(g => {
         const i = Math.round(g.s / C.step);
         return i >= a && i < b;
@@ -4011,6 +5320,49 @@
                 push([corners[3][0], base + tops[3], corners[3][1]], UPN, [0, 1]),
                 push([corners[2][0], base + tops[2], corners[2][1]], UPN, [1, 1]),
                 push([corners[1][0], base + tops[1], corners[1][1]], UPN, [1, 0]));
+              /* ------------------------------------------- A CROWN ON IT --
+               *
+               * A city of extruded rectangles with flat lids is a bar chart.
+               * What makes a skyline read as one is that the tops are all
+               * different heights AND all different SHAPES - the eye reads a
+               * silhouette long before it reads a facade, and at the distance
+               * these stand from the road (three hundred units and more) the
+               * silhouette is the entire building.
+               *
+               * So a city block gets a setback and, if it is one of the tall
+               * ones, a mast. Deterministic off the same hashes as everything
+               * else here, so the skyline is the same skyline every load, and
+               * in the same material, so it costs no extra batch: two boxes
+               * on a block that was already being written.
+               *
+               * Ruins get neither. A dead district whose towers have grown
+               * architectural crowns is a dead district somebody maintained. */
+              if (zone.style === 'city') {
+                const cap = (cHalf, y0, y1) => {
+                  const cc = [[-cHalf, -cHalf], [cHalf, -cHalf], [cHalf, cHalf], [-cHalf, cHalf]]
+                    .map(([u, w]) => [px + fx * u + rx * w, pz + fz * u + rz * w]);
+                  for (let k = 0; k < 4; k++) {
+                    const q0 = cc[k], q1 = cc[(k + 1) % 4];
+                    const ax = -(q1[1] - q0[1]), az = (q1[0] - q0[0]);
+                    const al = Math.hypot(ax, az) || 1;
+                    const n = [ax / al, 0, az / al];
+                    const uu = al / 14, uv = (y1 - y0) / 14;
+                    quad(push([q0[0], y0, q0[1]], n, [0, 0]),
+                         push([q0[0], y1, q0[1]], n, [0, uv]),
+                         push([q1[0], y1, q1[1]], n, [uu, uv]),
+                         push([q1[0], y0, q1[1]], n, [uu, 0]));
+                  }
+                  quad(push([cc[0][0], y1, cc[0][1]], UPN, [0, 0]),
+                       push([cc[3][0], y1, cc[3][1]], UPN, [0, 1]),
+                       push([cc[2][0], y1, cc[2][1]], UPN, [1, 1]),
+                       push([cc[1][0], y1, cc[1][1]], UPN, [1, 0]));
+                };
+                const top = base + hgt;
+                const ch = hgt * (0.08 + r3 * 0.13);
+                cap(half * (0.50 + r * 0.24), top, top + ch);
+                // ...and a mast on the ones tall enough to carry one
+                if (r2 > 0.52) cap(Math.max(1.6, half * 0.07), top + ch, top + ch + hgt * (0.10 + r * 0.14));
+              }
             }
           }
         }
@@ -4904,10 +6256,25 @@
           V3.make(up[0], up[1], up[2]));
         M4.mul(vp, proj, view);
 
-        /* No sky pass. envSampleAt already blends the probe toward the sky
-           by how far the ray has left the corridor, so drawing the sky into
-           the probe as well pays for a full-face fill to arrive at the same
-           answer. The clear colour stands in for it. */
+        /* THE SKY GOES IN THE PROBE AFTER ALL.
+         *
+         * It used to be argued out on the grounds that envSampleAt already
+         * blends the probe toward the sky by how far the ray has left the
+         * corridor - which is true of rays heading UP, and those are the ones
+         * the blend was written for. It is not true of the rays that matter
+         * most here. A wet road reflects almost flat: its rays run along the
+         * carriageway, under the barrier line, out through every gap in the
+         * scenery - and those have `trust` near one, so what came back was the
+         * clear colour. A flat dark violet, in the reflection, everywhere the
+         * world happens to have a hole in it, on the one surface the whole
+         * lighting model is built around.
+         *
+         * The fill is a single triangle over a 128-pixel face, twice a frame.
+         * That is thirty-two thousand pixels of a sky shader against a budget
+         * that spends millions on the main view, and what it buys is the
+         * sunset and the horizon neon actually appearing in the road. */
+        const invVP = M4.invert(this._probeInv || (this._probeInv = M4.make()), vp);
+        if (invVP) this.drawSky(invVP, this.probeTunnel || 0, eye);
         /* The probe is not allowed to see itself. Sampling the probe while
            rendering into it is a feedback loop and, on some drivers, an
            error every frame - so the pass that fills it runs with the probe
@@ -5056,7 +6423,21 @@
         set('LavaRift', [Math.min(1,p.lava[0]*1.12), Math.min(1,p.lava[1]*1.32), p.lava[2]], 1.9);
         set('SpireCore', p.lava, 1.45);
       }
-      if (p.cap) set('FinishGate', [p.cap[0] * 1.6 + 0.5, p.cap[1] * 1.6 + 0.5, p.cap[2] * 1.6 + 0.5], 0.4);
+      /* THE FINISH GANTRY TAKES THE ROUTE'S COLOUR, NOT TWENTY TIMES IT.
+
+         `cap * 1.6 + 0.5` with a gain of 0.4 comes out of the glow branch at
+         nineteen and a half times the cap - and everything past about two
+         tonemaps to the same white, so the gate lost its legs, its truss and
+         its colour all at once and became one flat slab across the frame.
+         From a drone pass over Route 2 it is most of the picture.
+
+         A third of the cap with a floor under it keeps every route's gate its
+         own colour and lands it where the tonemap can still tell the channels
+         apart. It is still the brightest structure on the course - it is the
+         only one with a lit truss over the carriageway - and now it is the
+         brightest structure rather than the brightest rectangle. */
+      if (p.cap) set('FinishGate', [p.cap[0] * 0.34 + 0.11, p.cap[1] * 0.34 + 0.11,
+                                    p.cap[2] * 0.34 + 0.11], 0.10);
       this.skyDim = p.sky === undefined ? 0.62 : p.sky;
     }
 
@@ -6110,7 +7491,11 @@
         // behind the camera the fog argument does not apply - nothing is
         // looked at through it - so the back window takes the full cut
         const back = (p.far ? 3000 : 900) * vs;
-        const fwd = shrink(p.far ? 9000 : 3400);
+        /* A batch that asked to be culled sooner is culled sooner, and never
+           later than the window it would otherwise have had. */
+        const fwd = p.fwdLimit
+          ? Math.min(p.fwdLimit, shrink(3400))
+          : shrink(p.far ? 9000 : 3400);
         if (p.s1 < camS - back || p.s0 > camS + fwd) return false;
         /* ...and then whether it is actually in front of the camera. The arc
            window has to be generous - the chase camera sits behind the car, so
@@ -6192,12 +7577,28 @@
         this.drawPart(p);
       }
 
+      /* THE MARKINGS THAT ARE FOR A PLAYER, and the screen that has none.
+       *
+       * A launch ramp is painted for two hundred and eighty units before its
+       * lip: chevrons down the centre, edge bars either side and a box where
+       * the landing is expected. All of that exists to help somebody AIM a
+       * jump. The title screen has nobody aiming anything - it is a camera
+       * watching a car - so on the menu the paint is not a cue, it is a
+       * large flat blue rectangle lying across the road, which is exactly
+       * what it was reported as.
+       *
+       * The ramp itself stays: the reel cuts to two of them on purpose and
+       * the structure is the point of the shot. Only the instructions come
+       * off, and only while nobody is driving. Same shape as `noFlare`
+       * further down - a named material dropped for one pass. */
+      const noAim = !!this.hideRaceMarkings;
       // the generated neon lives in its own buffer and is all additive
       if (this.dressingGlow && this.dressingGlow.length) {
         gl.bindVertexArray(this.exVao);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
         for (const p of this.dressingGlow) {
           if (!inRange(p)) continue;
+          if (noAim && p.mat && p.mat.name === 'StuntRampAim') continue;
           this.chunksDrawn++;
           this.drawPart(p);
         }
@@ -6455,11 +7856,13 @@
    * The three primitives below are what the boxes are replaced with, and they
    * are chosen for the three things a box gets wrong about a body:
    *
-   *   A LIMB HAS ENDS. `driverCapsule` is a cylinder with hemispherical caps,
-   *   so an upper arm meeting a shoulder is a joint rather than two corners
-   *   crossing. It also TAPERS, because an arm is thicker at the shoulder than
-   *   at the wrist and a constant section is the single clearest tell that
-   *   something was made from a cube.
+   *   AN ARM IS NOT A TUBE. `driverLimb` sweeps a section along the limb's
+   *   own axis, so an upper arm has a deltoid at the top, a belly in the
+   *   middle and a narrow end above the elbow - and a glove has knuckles. A
+   *   constant section is the single clearest tell that something was made
+   *   from a cube, and a capsule - which is what these were until the
+   *   first-person camera started looking at them - is a constant section
+   *   with two balls on it.
    *
    *   A TORSO HAS A SECTION. `driverLoft` sweeps a rounded rectangle through a
    *   list of stations, so the chest can be wide and deep, the waist narrow,
@@ -6470,51 +7873,145 @@
    *   collar is, with the brow line the visor sits under.
    *
    * All three are generated, none is imported, and all three are cheap: the
-   * whole figure is about 1,400 triangles against the old one's 400. There are
-   * at most five drivers in a frame and they are only drawn when a car is.
+   * whole figure is about 4,000 triangles against the old one's 400 - and
+   * two thirds of that is the arms and the gloves, which is the right place
+   * to spend it, because from the seat they are most of the picture. There
+   * are at most five drivers in a frame and they are only drawn when a car
+   * is.
    */
 
-  /** A tapered capsule along +Z, unit shaft length, radius r0 at the back
-      and r1 at the front, with hemispherical caps.
+  /* ------------------------------------------------------------- a limb ---
+   *
+   * WHAT WAS WRONG WITH THE ARMS, IN NUMBERS.
+   *
+   * They were capsules, and two things about that were visible from the
+   * driving seat - which is the one camera that spends its whole life looking
+   * at them, and the reason this is being rewritten now.
+   *
+   * THEY WERE TWIGS. A capsule's ring radius is a fraction of the part's own
+   * cross-section, and the numbers were 0.25 of a 0.13 section for the
+   * forearm: 3.3cm of radius, so 6.5cm across. A forearm in a race suit is
+   * about eleven. Worse, the shaft is a CONSTANT section with the taper only
+   * between its two ends, so there was no elbow, no swell below it and no
+   * wrist - one even pipe from the sleeve to the hand.
+   *
+   * AND SOMETHING WAS STUCK TO THE ELBOW. A capsule's caps are hemispheres
+   * sitting OUTSIDE the shaft, past +/-0.5 - and an upper arm is a BONE, whose
+   * z scale is however long it solved to. So the caps were scaled by the bone
+   * LENGTH along z and by the section across it: 0.30 of a 0.28 bone is a
+   * 8.4cm spike on a 3.8cm arm, pulled to a point, at the shoulder and again
+   * at the elbow. That is the thing hanging off the right elbow. It was on
+   * the left one too, and on the wrists, where the glove's own caps added
+   * another 9cm to a 13cm hand and made it a sausage.
+   *
+   * So a limb is a LOFT along its own z: a list of stations, each a
+   * superellipse of its own half width, half height and roundness. Joints are
+   * MODELLED rather than capped, which is what gets the detail back, and the
+   * shape of a joint is now a shape somebody chose rather than a side effect
+   * of the primitive.
+   *
+   * TWO RULES, AND THEY ARE THE WHOLE REASON THE ARTEFACT CANNOT COME BACK:
+   *
+   *   A BONE'S STATIONS STAY INSIDE +/-0.5. Its z scale is its solved length,
+   *   so anything outside that range is multiplied by it. The upper arm is
+   *   the only bone in the figure and its profile is clamped below.
+   *
+   *   A PLACED PART'S NEED NOT. A forearm's z scale is a constant from the
+   *   table, so nothing it carries can be stretched - which is what lets the
+   *   forearm put a proper elbow BALL behind its own origin, overlapping the
+   *   upper arm's end, so the joint is covered from the outside and no seam
+   *   opens when the wheel turns and the two axes stop agreeing.
+   *
+   * Scale: one unit is one metre - the car's near lamp sits at x -0.83 - so
+   * every number below is checkable against a person, and was.
+   */
 
-      ALONG Z, NOT Y, ON PURPOSE: every placement in this figure was authored
-      for boxes whose long axis is their local z (an upper arm is a box with
-      sz 0.34), and the whole point of this change is to swap the primitive
-      without re-deriving fifteen positions and two rotations each. */
-  function driverCapsule(segs, rings, r0, r1) {
-    const V = [], I = [];
-    const n = segs || 10, m = rings || 6;
-    const push = (x, y, z, nx, ny, nz, u, v) => V.push(x, y, z, nx, ny, nz, u, v);
-    /* The stations, bottom cap first. The shaft runs y -0.5 to +0.5 and each
-       cap is a hemisphere of that end's radius sitting outside it, so a
-       capsule asked for radius r is (1 + r0 + r1) tall overall - which the
-       placement below accounts for by scaling length separately from section. */
-    const rows = [];
-    for (let i = 0; i <= m; i++) {                 // bottom hemisphere, -90..0
-      const a = -Math.PI / 2 + (Math.PI / 2) * (i / m);
-      rows.push({ y: -0.5 + r0 * Math.sin(a), r: r0 * Math.cos(a), ny: Math.sin(a) });
-    }
-    rows.push({ y: 0.5, r: r1, ny: 0 });           // the top of the shaft
-    for (let i = 1; i <= m; i++) {                 // top hemisphere, 0..90
-      const a = (Math.PI / 2) * (i / m);
-      rows.push({ y: 0.5 + r1 * Math.sin(a), r: r1 * Math.cos(a), ny: Math.sin(a) });
-    }
-    for (let k = 0; k < rows.length; k++) {
-      const R = rows[k];
+  /** A limb: `stations` swept along +z, each {z, w, h, r} - half width, half
+      height, and roundness from 0 (a rectangle) to 1 (an ellipse). `fingers`
+      on a station puts that many rolls around its underside, which is what
+      makes a glove a hand. Normals are accumulated off the faces, because a
+      lobed section has no closed-form one. */
+  function driverLimb(stations, corners) {
+    const V = [], I = [], n = corners || 16, w = n + 1;
+    const sec = (S, th) => {
+      const c = Math.cos(th), sn = Math.sin(th);
+      const p = 2 / Math.max(0.05, S.r === undefined ? 0.9 : S.r);
+      let kx = Math.sign(c) * Math.pow(Math.abs(c), 2 / p);
+      let ky = Math.sign(sn) * Math.pow(Math.abs(sn), 2 / p);
+      if (S.fingers) {
+        /* Rolls, not ridges: `fingers` of them over the underside only, faded
+           out by the time the section reaches the back of the hand, where a
+           glove is one smooth panel. */
+        const under = Math.max(0, -ky);
+        const k = 1 + Math.cos(S.fingers * 2 * th) * under * under
+          * (S.groove === undefined ? 0.12 : S.groove);
+        kx *= k; ky *= k;
+      }
+      if (S.seam) {
+        /* PIPING. Every race suit has a seam welted along the outside of the
+           sleeve, and at the distance the driving seat looks at a forearm -
+           two thirds of a metre - a 4mm welt is a line of three or four
+           pixels running the length of the arm. It is the cheapest detail in
+           the figure and the one that most stops a limb reading as a tube,
+           because a tube has nothing on it to tell you it is turning. */
+        let d = th - S.seam[0];
+        while (d > Math.PI) d -= Math.PI * 2;
+        while (d < -Math.PI) d += Math.PI * 2;
+        const k = 1 + S.seam[2] * Math.exp(-(d * d) / (2 * S.seam[1] * S.seam[1]));
+        kx *= k; ky *= k;
+      }
+      return [kx * S.w, ky * S.h];
+    };
+    for (let k = 0; k < stations.length; k++) {
+      const S = stations[k];
       for (let s = 0; s <= n; s++) {
-        const th = Math.PI * 2 * (s / n), c = Math.cos(th), sn = Math.sin(th);
-        const nx = c * (1 - Math.abs(R.ny)), nz = sn * (1 - Math.abs(R.ny));
-        const l = Math.hypot(nx, R.ny, nz) || 1;
-        // the ring lies in XY and the axis is Z; see the note above
-        push(c * R.r, sn * R.r, R.y, nx / l, nz / l, R.ny / l, s / n, k / rows.length);
+        const q = sec(S, Math.PI * 2 * (s / n));
+        V.push(q[0], q[1], S.z, 0, 0, 0, s / n, k / (stations.length - 1));
       }
     }
-    const w = n + 1;
-    for (let k = 0; k < rows.length - 1; k++) {
+    /* Wound outward: (a, b+1, b) and (a, a+1, b+1) put the face normal along
+       the section's own outward radial, which is what the end fans below
+       already do, and what lets one accumulation pass serve both. */
+    for (let k = 0; k < stations.length - 1; k++) {
       for (let s = 0; s < n; s++) {
         const a = k * w + s, b = a + w;
-        I.push(a, b, b + 1, a, b + 1, a + 1);
+        I.push(a, b + 1, b, a, a + 1, b + 1);
       }
+    }
+    // both ends closed: a limb seen end-on from the seat must not be a pipe
+    for (const end of [0, 1]) {
+      const k = end ? stations.length - 1 : 0, base = k * w, dir = end ? 1 : -1;
+      const c0 = V.length / 8;
+      V.push(0, 0, stations[k].z, 0, 0, dir, 0.5, 0.5);
+      for (let s = 0; s < n; s++) {
+        if (dir > 0) I.push(c0, base + s, base + s + 1);
+        else I.push(c0, base + s + 1, base + s);
+      }
+    }
+    /* Smooth normals off the faces. The ring's first and last vertex are the
+       same point, so their two half-normals are summed and shared, or the
+       seam lights as a crease straight down the arm. */
+    const N = new Float64Array((V.length / 8) * 3);
+    for (let t = 0; t < I.length; t += 3) {
+      const p = [], o = [];
+      for (let j = 0; j < 3; j++) { o[j] = I[t + j] * 8; p[j] = [V[o[j]], V[o[j] + 1], V[o[j] + 2]]; }
+      const e1 = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+      const e2 = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+      const f = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+        e1[0] * e2[1] - e1[1] * e2[0]];
+      for (let j = 0; j < 3; j++) {
+        const b = I[t + j] * 3;
+        N[b] += f[0]; N[b + 1] += f[1]; N[b + 2] += f[2];
+      }
+    }
+    for (let k = 0; k < stations.length; k++) {
+      const a = (k * w) * 3, z = (k * w + n) * 3;
+      for (let j = 0; j < 3; j++) { const v = N[a + j] + N[z + j]; N[a + j] = v; N[z + j] = v; }
+    }
+    for (let i = 0; i < N.length; i += 3) {
+      const l = Math.hypot(N[i], N[i + 1], N[i + 2]) || 1;
+      const o = (i / 3) * 8;
+      V[o + 3] = N[i] / l; V[o + 4] = N[i + 1] / l; V[o + 5] = N[i + 2] / l;
     }
     return { V, I };
   }
@@ -6659,9 +8156,9 @@
       this.sc = scene; this.gl = gl;
       this.cube = driverUpload(gl, driverCube(), 'DriverBox');
       /* THE FIGURE IS NOT MADE OF BOXES ANY MORE. See the note above
-         `driverCapsule`. Three shapes replace fifteen scaled cubes:
+         `driverLimb`. Three shapes replace fifteen scaled cubes:
 
-           limb     a tapered capsule, thicker at the shoulder than the wrist
+           limb     a lofted arm or hand, with the joints modelled
            torso    one lofted sweep from hips to shoulders, so the body has a
                     section instead of three rectangles stacked on each other
            helmet   a shell rather than a sphere - longer front to back, cut
@@ -6669,9 +8166,60 @@
 
          The cube stays for the visor band and the wheel spokes, which are
          flat, hard-edged objects that a box is the right answer for. */
-      this.limb = driverUpload(gl, driverCapsule(10, 5, 0.30, 0.21), 'DriverLimb');
-      this.fore = driverUpload(gl, driverCapsule(10, 5, 0.25, 0.30), 'DriverForearm');
-      this.grip = driverUpload(gl, driverCapsule(8, 4, 0.38, 0.34), 'DriverGlove');
+      /* THE UPPER ARM, and the one profile in the figure that is not allowed
+         outside +/-0.5: it is a bone, its z scale is the length it solved to,
+         and anything past the ends gets multiplied by it. Scaled by [0.125,
+         0.125] below, so the deltoid is 12.5cm across and the end above the
+         elbow 8.4cm - a person's are about 13 and 8. */
+      /* The welt down the outside of a sleeve: a narrow raised line at the
+         top of the section, carried the length of the limb. [angle, width,
+         height] - see the note on `seam` in driverLimb. */
+      const WELT = [Math.PI / 2, 0.26, 0.070];
+      this.limb = driverUpload(gl, driverLimb([
+        { z: -0.50, w: 0.38, h: 0.380, r: 0.95 },  // into the shoulder, buried in the torso
+        { z: -0.42, w: 0.50, h: 0.490, r: 0.95 },  // the deltoid, and the widest point
+        { z: -0.26, w: 0.49, h: 0.470, r: 0.95, seam: WELT },
+        { z: -0.06, w: 0.45, h: 0.430, r: 0.95, seam: WELT },  // the belly of the arm
+        { z:  0.14, w: 0.40, h: 0.385, r: 0.95, seam: WELT },
+        { z:  0.30, w: 0.355, h: 0.350, r: 0.92, seam: WELT },
+        { z:  0.42, w: 0.335, h: 0.330, r: 0.85 },  // squaring off above the elbow
+        { z:  0.50, w: 0.30, h: 0.300, r: 0.88 },   // the end the forearm's ball covers
+      ], 20), 'DriverLimb');
+      /* THE FOREARM, which is a placed part and so may reach behind its own
+         origin - and does, by 2.6cm, to put an elbow over the joint the bone
+         solves to. Widest just below the elbow at 11.5cm, 6.9cm at the wrist,
+         and tapering into the glove's gauntlet rather than ending in one:
+         two raised rings at the same radius in the same place is a seam. */
+      this.fore = driverUpload(gl, driverLimb([
+        { z: -0.60, w: 0.30, h: 0.300, r: 0.95 },  // behind the joint, inside the upper arm
+        { z: -0.54, w: 0.44, h: 0.430, r: 0.92 },
+        { z: -0.46, w: 0.50, h: 0.480, r: 0.90 },  // the elbow itself
+        { z: -0.34, w: 0.50, h: 0.470, r: 0.93, seam: WELT },  // and the muscle under it
+        { z: -0.16, w: 0.47, h: 0.430, r: 0.95, seam: WELT },
+        { z:  0.04, w: 0.41, h: 0.360, r: 0.95, seam: WELT },
+        { z:  0.22, w: 0.34, h: 0.290, r: 0.95, seam: WELT },
+        { z:  0.34, w: 0.30, h: 0.250, r: 0.92, seam: WELT },  // the wrist, an oval
+        { z:  0.44, w: 0.285, h: 0.240, r: 0.92 }, // the sleeve, running into...
+        { z:  0.50, w: 0.27, h: 0.230, r: 0.90 },  // ...the gauntlet of the glove
+      ], 20), 'DriverForearm');
+      /* THE GLOVE. A fist closed on a rim, not a ball: flat across the back
+         of the hand, squarest over the knuckles, and four rolls curling under
+         where the fingers are - which need the segment count, because eight
+         lobes around a ring do not survive sixteen of them. 9.9cm across and
+         8.7cm deep, which is a hand in a glove. */
+      this.grip = driverUpload(gl, driverLimb([
+        { z: -0.62, w: 0.26, h: 0.240, r: 0.92 },  // up inside the sleeve
+        { z: -0.50, w: 0.30, h: 0.280, r: 0.90 },
+        { z: -0.40, w: 0.36, h: 0.330, r: 0.85 },
+        { z: -0.32, w: 0.405, h: 0.370, r: 0.74 },  // the wrist strap every glove has
+        { z: -0.26, w: 0.355, h: 0.320, r: 0.85 },
+        { z: -0.08, w: 0.40, h: 0.365, r: 0.72 },  // the back of the hand
+        { z:  0.10, w: 0.455, h: 0.420, r: 0.66, fingers: 4 },
+        { z:  0.26, w: 0.47, h: 0.445, r: 0.60, fingers: 4 },   // across the knuckles
+        { z:  0.38, w: 0.445, h: 0.435, r: 0.66, fingers: 4 },
+        { z:  0.47, w: 0.36, h: 0.390, r: 0.75, fingers: 4 },   // fingers coming round
+        { z:  0.52, w: 0.24, h: 0.300, r: 0.85 },  // ...and closed under the rim
+      ], 32), 'DriverGlove');
       this.torso = driverUpload(gl, driverLoft([
         { y: -0.50, w: 0.46, d: 0.40, r: 0.50 },   // hips, square in the seat
         { y: -0.22, w: 0.41, d: 0.36, r: 0.60 },   // waist, drawn in
@@ -6711,7 +8259,22 @@
       this.liveries[key] = {
         helmet: this.mat('DriverHelmet' + key, shell, dim(shell, 0.22), 0.05, 0.86, 0.22),
         visor: this.mat('DriverVisor' + key, [0.02, 0.03, 0.05], visor, 0.16, 0.95, 0.30),
-        suit: this.mat('DriverSuit' + key, [suit[0] * 2.6, suit[1] * 2.6, suit[2] * 2.6], dim(suit, 0.30), 0.04, 0.30, 0.02),
+        /* THE SUIT WAS 2.6 TIMES ITS OWN COLOUR.
+
+           That was set for the view through the glass, where the figure is
+           behind a dark tint and needs lifting to read at all - and from the
+           seat, where there is no glass between the eye and the sleeve, it
+           made a forearm brighter than the dash it is over and brighter than
+           the glove on the end of it. A white tube, which is what the report
+           called low quality.
+
+           1.7 is enough for the tint and not enough to blow out at arm's
+           length, and the lift the far view actually wanted is put where it
+           belongs: in the emissive, which the tint attenuates along with
+           everything else. Nomex has a dry sheen rather than none, so the
+           smoothness comes up too - which is what puts a soft highlight
+           along the welt and down the length of the arm. */
+        suit: this.mat('DriverSuit' + key, [suit[0] * 1.7, suit[1] * 1.7, suit[2] * 1.7], dim(suit, 0.55), 0.05, 0.44, 0.03),
         glove: this.mat('DriverGlove' + key, glove, [0, 0, 0], 0, 0.42, 0.06),
         rim: this.mat('DriverWheel' + key, [0.05, 0.05, 0.06], [0.02, 0.06, 0.11], 0.14, 0.55, 0.50),
         /* THE CABIN, WHICH ONLY THE DRIVER EVER SEES.
@@ -6739,9 +8302,57 @@
 
     build() {
       const X = DRIVER_X;
-      const B = (mesh, slot, x, y, z, sx, sy, sz, pitch, roll, spin) =>
+      /* THE HUB, NAMED ONCE. The rim, its spokes, its column, both hands and
+         the orbit they turn on are all the same wheel, and they were six
+         separate copies of where it is - so moving it meant finding all six
+         and the figure came apart when one was missed. It is one point now,
+         3cm higher and 1.5cm nearer than it was: the wheel shrank to 36cm
+         and a small wheel in the old place sits too low in the frame to see
+         a hand on. See the note on the rim below. */
+      const HUB = [X, -0.09, 0.845], RAKE = 0.42;
+      /* ------------------------ THE CENTRE CONSOLE, AS A SURFACE -------
+       *
+       * The boost button and the hand that presses it are authored a hundred
+       * and fifty lines apart, and they were two sets of coordinates that
+       * agreed with each other until somebody moved one: the button ended up
+       * on the tunnel at x 0.16 and the hand went to a point 0.62 from the
+       * right shoulder, which is four centimetres further than that shoulder
+       * can reach. The fist stopped short and hung in the air over the
+       * console with nothing under it - the hand pressing the void.
+       *
+       * So the console is a plane, once, here, and everything that sits on it
+       * is a HEIGHT UP ITS OWN NORMAL rather than a guess at a coordinate.
+       * The button is built from it and the hand is aimed at it, so the two
+       * cannot drift apart again.
+       *
+       * x 0 is the middle of the car - the cabin runs from -1.14 to 1.14 -
+       * which is where the tunnel now is and where the request put the
+       * button. Canted back towards the driver by 0.22, which is what makes
+       * it a control facing somebody rather than a panel facing the roof.
+       */
+      const BOOST = (() => {
+        const cant = -0.22, x = 0.0, z = 0.665, plinth = -0.412, thick = 0.050;
+        // the surface normal of a part pitched by `cant`, in (y, z)
+        const up = [Math.cos(cant), Math.sin(cant)];
+        const y0 = plinth + up[0] * thick * 0.5, z0 = z + up[1] * thick * 0.5;
+        return {
+          cant, x, z, plinth, thick, up,
+          // a height above the plinth top, as a [y, z] the table can use
+          at: (h) => [y0 + up[0] * h, z0 + up[1] * h],
+          // how high the face of the cap is, and how far it goes down
+          face: 0.067,
+          travel: 0.014,
+          // half the thickness of the glove that comes to rest on it
+          palm: 0.049,
+        };
+      })();
+      /* `spin` here means "rides the wheel". It is written as a flag rather
+         than a kind because most of what rides the wheel IS the wheel; the
+         two parts that are HELD say so with `grip`, and take the hands' own
+         angle instead of the rim's. See GRIP in driver.rs. */
+      const B = (mesh, slot, x, y, z, sx, sy, sz, pitch, roll, spin, grip) =>
         ({ mesh, slot, t: [x, y, z], s: [sx, sy, sz],
-           r: [0, pitch || 0, roll || 0], spin: !!spin });
+           r: [0, pitch || 0, roll || 0], spin: !!spin, grip: !!grip });
       /* A part with somewhere else to be. `to` is where it goes when the
          boost is asked for, and the core eases it between the two - see
          REACH in crates/synx-core/src/driver.rs. */
@@ -6787,32 +8398,114 @@
            They now ORBIT the wheel - see driver.rs. A hand at ten o'clock ends
            up at eight when the wheel is turned two hours, which is what a hand
            on a rim does. */
-        B(this.fore, 'suit', X - 0.25, -0.15, 0.70, 0.13, 0.13, 0.27, -0.20, 0.10, true),
+        B(this.fore, 'suit', X - 0.16, -0.044, 0.701, 0.115, 0.108, 0.26, -0.20, 0.10),
         /* THE RIGHT ARM LETS GO. Both of these carry a second pose - see
            REACH in driver.rs - which puts the forearm across the tunnel and
            the glove on the console button. The left hand never moves: a
            driver at a hundred and twenty does not take both hands off. */
-        R(this.fore, 'suit', X + 0.25, -0.15, 0.70, 0.13, 0.13, 0.27, -0.20, -0.10,
-          [0.02, -0.28, 0.60], 0.34, -0.55),
-        // gloves on the rim at ten and two
-        B(this.grip, 'glove', X - 0.27, -0.10, 0.84, 0.115, 0.135, 0.13, 0, 0, true),
-        R(this.grip, 'glove', X + 0.27, -0.10, 0.84, 0.115, 0.135, 0.13, 0, 0,
-          [0.16, -0.352, 0.72], -0.22, 0),
+        B(this.fore, 'suit', X + 0.16, -0.044, 0.701, 0.115, 0.108, 0.26, -0.20, -0.10),
+        /* GLOVES AT TEN AND TWO, which is where they now actually are.
+
+           They were at 0.27 either side of a hub at the same height - which
+           is nine and three, on a wheel 60cm across. Ten and two on a 36cm
+           one is 15.6cm out and 9.4cm up, and the rake tips that 4cm forward:
+           a hand can be seen holding the rim from the seat, which is the
+           whole reason any of this is drawn. Pitched with the forearm so the
+           wrist does not kink, and set 3cm behind the rim plane so the
+           fingers close over the tube rather than through it. */
+        B(this.grip, 'glove', X - 0.156, 0.004, 0.854, 0.105, 0.098, 0.115, -0.20, 0, true, true),
+        /* ...AND ONTO THE FACE OF THE BUTTON, not near it. Half a glove above
+           the cap, along the console's own normal, from the same description
+           of the console the button itself is built from - see BOOST. It puts
+           the wrist 0.39 from the right shoulder, which an arm 0.58 long
+           reaches with the elbow still bent.
+
+           MINUS THE TRAVEL, because the cap is not where it was. A hand aimed
+           at the resting face of a button that sinks fourteen millimetres
+           when it is pressed arrives fourteen millimetres above a button that
+           has been pressed - which is a smaller version of exactly the gap
+           this is here to close, and is what the first measurement of it
+           showed: 87mm of centre-to-centre against the 72 a palm resting on
+           the cap gives. Both ends of the move are now exact. */
+        R(this.grip, 'glove', X + 0.156, 0.004, 0.854, 0.105, 0.098, 0.115, -0.20, 0,
+          [BOOST.x].concat(BOOST.at(BOOST.face - BOOST.travel + BOOST.palm)),
+          BOOST.cant, 0),
       ];
-      // the wheel on its raked column
-      this.wheel = B(this.rim, 'rim', X, -0.12, 0.86, 0.60, 0.60, 0.60, 0.42, 0, true);
-      this.spokes = [0, 2.094, 4.189].map((a) => {
-        const p = B(this.cube, 'rim', X, -0.12, 0.86, 0.28, 0.045, 0.045, 0.42, a, true);
-        return p;
+      /* ----------------------------- AND THE FOREARMS ARE NOT PLACED ----
+       *
+       * They were, and it was the single worst thing about the figure once
+       * the rack got long: a forearm flagged onto the wheel is a forearm
+       * carried bodily round the hub, elbow and all, so at a ninety-degree
+       * turn the arm lay diagonally across the windscreen and at a drift it
+       * went through the driver's own chest.
+       *
+       * Each one is now an ARM - solved between the shoulder above it and
+       * the hand below it, every frame, by the core. The rows above are
+       * untouched and still say exactly where the arm rests; what has gone
+       * is the claim that the rest pose is also the pose at every other
+       * angle. See ARM in crates/synx-core/src/driver.rs.
+       *
+       * Matched by mesh and then by side rather than by index, for the same
+       * reason the upper arms are: the list above gets edited.
+       */
+      {
+        const byX = (m) => this.parts.map((q, i) => ({ q, i }))
+          .filter((o) => o.q.mesh === m).sort((p, q) => p.q.t[0] - q.q.t[0]);
+        const fores = byX(this.fore), gloves = byX(this.grip);
+        for (let k = 0; k < fores.length && k < gloves.length; k++) {
+          fores[k].q.kind = 6;            // ARM
+          fores[k].q.ref = gloves[k].i;   // ...solved to this hand
+        }
+      }
+      /* ------------------------------------------------- THE WHEEL ----
+       *
+       * IT WAS SIXTY CENTIMETRES ACROSS. In a cabin whose seats span
+       * x -0.89..0.89 - so 1.78m of car, and one metre is one unit
+       * throughout this figure - that is a wheel a third of the width of the
+       * interior, and it is the real reason the first-person view looked
+       * wrong however good the arms were: at any eye position that clears
+       * it, the rim fills the frame, and a hand on a rim that big is a small
+       * thing on a big thing. A racing wheel is 32 to 35cm. This is 36.
+       *
+       * THE SPOKES DID NOT REACH IT. They were bars 0.28 long centred on the
+       * hub, so each arm ran 0.14 into a 0.30 radius and stopped in mid air,
+       * halfway to a rim it never touched. They are arms now, not bars: one
+       * each at twelve, seven and five o'clock, offset half their own length
+       * so the inner end is at the hub and the outer end is at the rim.
+       *
+       * AND THE COLUMN STOPPED SHORT TOO, ending 9.5cm behind the hub it is
+       * supposed to be carrying. It is now built from its two ends.
+       */
+      const RIM = 0.36, RR = RIM * 0.5;
+      this.wheel = B(this.rim, 'rim', HUB[0], HUB[1], HUB[2], RIM, RIM, RIM, RAKE, 0, true);
+      /* An arm at `a` around a wheel raked by `pitch`: a yaw-free trs turns
+         local +x by the roll and then tips it by the pitch, so local +x lands
+         exactly on the wheel's own radius at that angle - which is what makes
+         one cosine here enough to place a spoke on a raked wheel. */
+      const onRim = (a, r) => {
+        const c = Math.cos(a), n = Math.sin(a);
+        return [HUB[0] + c * r, HUB[1] + n * Math.cos(RAKE) * r,
+          HUB[2] + n * Math.sin(RAKE) * r];
+      };
+      this.spokes = [Math.PI / 2, Math.PI * 7 / 6, Math.PI * 11 / 6].map((a) => {
+        const p = onRim(a, RR * 0.5);
+        return B(this.cube, 'rim', p[0], p[1], p[2], RR, 0.034, 0.030, RAKE, a, true);
       });
-      this.column = B(this.cube, 'rim', X, -0.26, 0.68, 0.06, 0.06, 0.34, 1.05);
+      {
+        // from under the dash to the middle of the wheel, and no further
+        const a = [X, -0.42, 0.55], b = HUB;
+        const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        const len = Math.hypot(d[0], d[1], d[2]);
+        this.column = B(this.cube, 'rim', (a[0] + b[0]) / 2, (a[1] + b[1]) / 2,
+          (a[2] + b[2]) / 2, 0.055, 0.055, len, -Math.atan2(d[1], d[2]));
+      }
 
       /* THE WHEEL'S OWN AXIS, which every orbiting part turns about. The rim
          sits at this point with this much rake on it, and a rake is a rotation
          about x - so the axis is z tipped by the rake, and turning the wheel
          is a rotation about that. */
-      this.hub = [X, -0.12, 0.86];
-      this.rake = 0.42;
+      this.hub = HUB;
+      this.rake = RAKE;
 
       /* ------------------------------------------------------- the cabin --
        *
@@ -6858,13 +8551,21 @@
         /* THE BINNACLE, hooded, sitting in the aperture of the wheel - which
            is where a driver reads it from, through the rim rather than over
            it. */
-        C('dash', X, -0.055, 1.16, 0.60, 0.040, 0.26, -0.34),     // -34..-17
-        C('trim', X, -0.100, 1.15, 0.56, 0.19, 0.016, 0.18),
-        C('dial', X, -0.100, 1.138, 0.50, 0.16, 0.010, 0.18),     // the glow
+        C('dash', X, -0.055, 1.16, 0.40, 0.040, 0.26, -0.34),     // -34..-17
+        C('trim', X, -0.100, 1.15, 0.37, 0.19, 0.016, 0.18),
+        C('dial', X, -0.100, 1.138, 0.33, 0.16, 0.010, 0.18),     // the glow
 
-        // the tunnel between the seats, which is the floor of the frame
-        C('dash', 0.16, -0.520, 0.88, 0.34, 0.24, 0.95),
-        C('trim', 0.16, -0.408, 0.90, 0.29, 0.014, 0.90),
+        /* THE TUNNEL BETWEEN THE SEATS, which is the floor of the frame -
+           and which is now actually between them. It was at x 0.16, so it ran
+           from -0.01 to 0.33 in a cabin whose centreline is 0 and whose doors
+           are at plus and minus 1.14: a console a third of its own width off
+           to one side, which reads as a car built wrong rather than as one
+           seen from the left-hand seat. */
+        C('dash', 0.0, -0.520, 0.88, 0.38, 0.24, 0.95),
+        C('trim', 0.0, -0.408, 0.90, 0.33, 0.014, 0.90),
+        // a shoulder down each side of it, so the top reads as a surface
+        C('trim', -0.166, -0.455, 0.90, 0.012, 0.10, 0.88),
+        C('trim', 0.166, -0.455, 0.90, 0.012, 0.10, 0.88),
 
         // one line of metal down each door, which is what stops the sides
         // of the frame falling to flat black under this lighting
@@ -6873,20 +8574,45 @@
         C('trim', -1.10, -0.196, 0.55, 0.09, 0.013, 1.62),
         C('trim', 1.10, -0.196, 0.55, 0.09, 0.013, 1.62),
 
-        /* THE BOOST BUTTON, ON THE CONSOLE.
-
-           It sat on the wheel first, which is where a real car that boosts
-           would put it - and that is exactly why it was worth moving. A
-           button under the thumb is pressed without anybody moving, and the
-           thing worth seeing here is the DRIVER: a hand coming off the rim,
-           crossing to the console, pressing, and going back. Put it on the
-           wheel and there is nothing to watch.
-
-           So it is on the tunnel between the seats, canted up towards the
-           driver, far enough over that the reach is a real one. */
-        C('btn', 0.16, -0.392, 0.72, 0.15, 0.045, 0.15, -0.22, 0, 3, 0.014),
-        // ...the bezel around it, which does not move when it does
-        C('trim', 0.16, -0.404, 0.72, 0.21, 0.026, 0.21, -0.22),
+        /* --------------------------- THE BOOST BUTTON, ON THE CONSOLE ----
+         *
+         * It sat on the WHEEL first, which is where a real car that boosts
+         * would put it - and that is exactly why it was worth moving. A
+         * button under the thumb is pressed without anybody moving, and the
+         * thing worth seeing here is the DRIVER: a hand coming off the rim,
+         * crossing to the console, pressing, and going back. Put it on the
+         * wheel and there is nothing to watch.
+         *
+         * It was then two boxes - a cap and a plate - sitting off centre on a
+         * console that was itself off centre, which reads as a lid rather
+         * than as a control. Seven pieces now, all of them built up the cant
+         * of the console from BOOST rather than typed in:
+         *
+         *   a plinth, so the control stands PROUD of the tunnel instead of
+         *   lying on it;
+         *   a bezel around the plinth top;
+         *   a lit halo the cap sits down inside, which does NOT travel - so
+         *   the light stays where the light is and the cap goes into it;
+         *   a guard rail either side, at cap height, so the thing cannot be
+         *   caught by an elbow;
+         *   the cap;
+         *   and the mark on the cap, which travels WITH it, because a lit
+         *   glyph that stays behind while its own button sinks is the single
+         *   clearest way to tell a player that none of this is really there.
+         */
+        ...(() => {
+          const B = BOOST, cap = B.at(0.0445);
+          return [
+            C('dash', B.x, B.plinth, B.z, 0.30, B.thick, 0.30, B.cant),
+            C('trim', B.x, B.at(0.007)[0], B.at(0.007)[1], 0.26, 0.014, 0.26, B.cant),
+            C('dial', B.x, B.at(0.018)[0], B.at(0.018)[1], 0.235, 0.008, 0.235, B.cant),
+            C('trim', B.x - 0.098, B.at(0.030)[0], B.at(0.030)[1], 0.020, 0.060, 0.24, B.cant),
+            C('trim', B.x + 0.098, B.at(0.030)[0], B.at(0.030)[1], 0.020, 0.060, 0.24, B.cant),
+            C('btn', B.x, cap[0], cap[1], 0.15, 0.045, 0.15, B.cant, 0, 3, B.travel),
+            C('dial', B.x, B.at(0.0700)[0], B.at(0.0700)[1], 0.090, 0.006, 0.090,
+              B.cant, 0, 3, B.travel),
+          ];
+        })(),
       ];
 
       /* THE UPPER ARMS ARE NOT PLACED, THEY ARE SOLVED.
@@ -6902,11 +8628,13 @@
          at rest is the figure that was there before - it is only what happens
          when the wheel moves that is new.
 
-         A capsule is a unit shaft along its local z with a cap at each end, so
-         a bone is a rotation taking +z onto the shoulder-to-elbow line and a z
-         scale of exactly that length. The caps then overlap into the shoulder
-         and the elbow, which is what makes a joint look like a joint rather
-         than two tubes meeting. */
+         A limb is a unit shaft along its local z, so a bone is a rotation
+         taking +z onto the shoulder-to-elbow line and a z scale of exactly
+         that length - which is precisely why the upper arm's profile is the
+         one in this figure that may not leave +/-0.5. See driverLimb. The
+         joint is covered from the FOREARM side instead: its elbow ball
+         reaches 2.6cm back past the point this bone solves to, so the two
+         overlap however far apart their axes swing. */
       /* Found by mesh rather than by index: the parts list is edited often
          enough that two hard-coded positions in it is a bug waiting for the
          next person to add a pocket. */
@@ -6915,14 +8643,47 @@
         .filter((o) => o.q.mesh === this.fore)
         .sort((a, b) => a.q.t[0] - b.q.t[0]);
       const arm = (sgn, at) => {
-        // the shoulder end of the upper arm the fixed rig used to draw
-        const t = [X + sgn * 0.20, -0.07, 0.44], pitch = -0.55, sz = 0.34;
-        const ax = [0, -Math.sin(pitch), Math.cos(pitch)];   // the capsule's own axis
+        /* THE SHOULDER, WRITTEN DOWN RATHER THAN BACK-DERIVED.
+
+           It used to be computed from the pose of a fixed upper arm that no
+           longer exists - take that arm's centre, step back half its length
+           along its own axis - which put the joint at y -0.159: eleven
+           centimetres below the torso's own shoulder line, so the arm hung
+           off the middle of the chest. It is now the point itself, at torso
+           station 0.30, just under the top of the shoulders, which is where
+           the joint in a person is. */
         return {
           slot: 'suit',
           mesh: this.limb,
-          s: [0.15, 0.15],
-          shoulder: [t[0] - ax[0] * 0.5 * sz, t[1] - ax[1] * 0.5 * sz, t[2] - ax[2] * 0.5 * sz],
+          s: [0.135, 0.135],
+          /* THE SHOULDER, AND WHY IT MOVED FORWARD.
+
+             It was at z 0.31, which is 0.535 behind the hub - and the arm
+             between them is 0.26 of forearm and about 0.27 of upper arm.
+             That is an arm at full stretch, and it measured as one: the
+             shoulder-to-wrist distance at rest was 0.523 against a reach of
+             0.527, so the elbow had nothing left to give and the hands could
+             follow the rim through about four degrees before the arm ran
+             out. Which is the ten-degree steering animation in the report,
+             seen from the other end.
+
+             0.37 is still inside the chest - the torso spans z 0.05..0.47 and
+             leans back, so its front face at shoulder height is near 0.42 -
+             and it is where the joint in somebody sitting in a racing seat
+             is: forward of the spine, not on it. With the length below it
+             leaves the arm resting at 0.46 of a 0.58 reach, which is an elbow
+             with a real bend in it, and lets the hands hold the rim through
+             about seventy-five degrees each way. */
+          shoulder: [X + sgn * 0.20, -0.075, 0.37],
+          /* HOW LONG THE UPPER ARM IS, said rather than measured.
+
+             The core takes the rest distance if no length is given, and that
+             is what it used to do - but the rest distance is the length of an
+             arm that is already straight, and an arm solved at exactly its
+             rest length can only ever straighten. 0.32 against a 0.26 forearm
+             and a 0.115 glove is a person's proportions: 0.695 from shoulder
+             to fingertip on a 0.74 torso. */
+          len: 0.32,
           // which part in the rig supplies the elbow, for the core to solve to
           ref: at,
         };
@@ -6990,13 +8751,16 @@
           t[o + 3] = b.s[0]; t[o + 4] = b.s[1];
           t[o + 8] = 2;                 // BONE
           t[o + 9] = b.ref;
+          t[o + 11] = b.len || 0;       // the length to solve at; 0 = the rest one
         } else {
           const p = e.part;
           t[o] = p.t[0]; t[o + 1] = p.t[1]; t[o + 2] = p.t[2];
           t[o + 3] = p.s[0]; t[o + 4] = p.s[1]; t[o + 5] = p.s[2];
           t[o + 6] = p.r[1]; t[o + 7] = p.r[2];
-          // 0 PLAIN, 1 SPIN, 3 BUTTON - see driver.rs
-          t[o + 8] = p.kind !== undefined ? p.kind : (p.spin ? 1 : 0);
+          // 0 PLAIN, 1 SPIN, 3 BUTTON, 4 REACH, 5 GRIP, 6 ARM - see driver.rs
+          t[o + 8] = p.kind !== undefined ? p.kind : (p.grip ? 5 : (p.spin ? 1 : 0));
+          // an ARM names the hand it is solved to, the way a BONE names its elbow
+          if (p.ref !== undefined) t[o + 9] = p.ref;
           t[o + 10] = p.travel || 0;
           if (p.to) {
             t[o + 12] = p.to[0]; t[o + 13] = p.to[1]; t[o + 14] = p.to[2];
@@ -7019,15 +8783,63 @@
         `press` is 0..1 of how hard the boost is being asked for. */
     draw(model, key, steer, inside, press) {
       const gl = this.gl, L = this.liveryFor(key);
-      /* `steer` is the ROAD-WHEEL angle, a third of a radian at full lock. A
-         real rack is about fourteen turns of wheel to one of tyre; three and a
-         half is the readable version of that. */
-      const spin = Math.max(-1, Math.min(1, (steer || 0) * 3.4)) * 1.45;
-      /* THE WHOLE POSE, IN ONE CALL. Seventeen matrices come back already
-         multiplied into the car's own transform - see driver.rs. There is no
-         matrix arithmetic left on this side at all. */
-      if (!this.rigN || !NR.drvPose) return;
-      const pose = NR.drvPose(model, spin, press || 0);
+      /* THE RACK, AND WHICH WAY IT TURNS.
+       *
+       * `steer` is the ROAD-WHEEL angle and it is small: the rack is speed
+       * sensitive, so at anything like speed full input is five hundredths of
+       * a radian. The old ratio of 3.4 turned that into fourteen degrees of
+       * rim - a driver holding a wheel almost still through a corner they are
+       * visibly taking - and the clamp at 1.45 meant even full lock in a car
+       * park only reached eighty-three.
+       *
+       * A real rack is about fifteen degrees of wheel to one of tyre. Sixteen
+       * here, because it lands the two poses that matter where they should be:
+       * a normal corner is a tenth of a radian at the tyre and now ninety-two
+       * degrees at the rim, and the counter-steer held through a drift is two
+       * tenths and a hundred and eighty-three. Past that the clamp holds it at
+       * a hundred and ninety, which is as far as hands that stay on the rim
+       * can go before they are underneath it.
+       *
+       * AND IT IS NEGATED. Positive steer is a RIGHT turn - measured, not
+       * assumed: two seconds of +0.30 moves the car's lateral toward its own
+       * +X, which is its right - and a right turn is the rim going CLOCKWISE.
+       * Without the sign the wheel answered every corner backwards, which is
+       * the one thing about a steering wheel nobody can fail to notice. See
+       * --probe driver, which now measures the direction rather than only the
+       * distance. */
+      /* SIXTEEN TO ONE, AND NO CLIFF AT THE END OF IT.
+       *
+       * This was a clamp: multiply by the rack, cut at lock. A clamp is
+       * visible - the rim winds round and then stops dead while the car is
+       * still turning in - so the last of the travel is compressed instead.
+       * tanh is linear at the rack ratio where it matters and asymptotic at
+       * the lock, so the wheel is never quite at the stop and never jumps to
+       * it.
+       *
+       * What this actually produces, which is the point of the exercise:
+       *
+       *   a quick direction change   0.05 rad of tyre    45 deg of wheel
+       *   a normal corner            0.10                85
+       *   turn-in to a slow one      0.20               142
+       *   full lock, in a drift      0.35 and up        178 and up
+       *
+       * against the ten degrees of total travel this used to have.
+       */
+      const RACK = 16.0, RIM_LOCK = 3.32;
+      const spin = -RIM_LOCK * Math.tanh((steer || 0) * RACK / RIM_LOCK);
+      /* ...AND THE HANDS ASK FOR ALL OF IT, which is not the same as getting
+       * it. How far a hand can actually follow the rim is a question about
+       * the length of an arm and the distance to a shoulder, and the core is
+       * the only side of this boundary that knows either - so it is asked
+       * there, in closed form, and the answer is whatever the arms can hold.
+       * See reach_arc in crates/synx-core/src/driver.rs.
+       *
+       * The saturation that used to be here was a guess at that number, and
+       * it was wrong in both directions: far too generous for the figure as
+       * authored, whose arms were straight at rest and could hold the rim
+       * through about four degrees, and too mean once they could bend. */
+      const hand = spin;
+      const pose = NR.drvPose(model, spin, hand, press || 0);
       if (!pose) return;
       gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
       let bound = null;

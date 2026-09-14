@@ -9,11 +9,109 @@ use crate::math::{clamp, damp};
 use crate::track::Track;
 use crate::vehicle::{Input, Vehicle};
 
-// Below the vehicle's 2.05 g steering ceiling, leaving authority for corrections.
-const GRIP_LAT: f64 = 1.45 * 9.81 / 0.733;
-const BRAKE_A: f64 = 1.45 * 9.81 / 0.733;
+/* ------------------------------------------------- WHAT THE TYRES DO ------
+ *
+ * THE PLANNER'S GRIP IS MEASURED OFF THE SOLVER, NOT ASSERTED AT IT.
+ *
+ * This used to be one constant - 1.45 g, "below the vehicle's 2.05 g steering
+ * ceiling" - and the 2.05 g is a RACK SIZING, not a tyre. `steering_lock`
+ * shrinks the available rack angle with the square of speed so that full lock
+ * always asks for 2.05 g; whether the tyres deliver it is a different
+ * question, and the answer is no.
+ *
+ * Measured on this solver at 240 Hz, settled, no drift, on a barrier-free
+ * skidpad - steer swept to find the largest sustained `v * yaw_rate`:
+ *
+ *      30 u/s  19.83      70 u/s  16.89
+ *      40      19.06      80      16.20
+ *      45      18.68      90      15.78
+ *      60      17.59     100+     15.78
+ *
+ * So the car has LESS grip the faster it goes: mass is constant, the tyre
+ * loses to load sensitivity, and the downforce does not make it back. A
+ * planner holding one number for all of it is optimistic by twenty-one per
+ * cent at racing speed, and that is not a rounding error - it is the
+ * difference between a corner that can be taken and one that cannot.
+ *
+ * What that looked like in the game is exactly what was reported. At pace 1.0
+ * the engine's own 80.6 top speed binds before the corner limit does, so the
+ * fault is invisible; the moment a director asks for more pace the planner
+ * starts using corner speeds the tyres cannot hold, the car understeers to the
+ * outside with the steering already on the stop, and from there it spends the
+ * route between the barriers. It is why the harder difficulties were SLOWER
+ * than the easier ones on half the routes, and it is why Chapter 7's R-IX
+ * could never be given the pace to catch anybody.
+ *
+ * The line below fits the measurements to within 0.05 u/s^2 over the whole
+ * range and is clamped at both ends: flat above 90, where the measurement
+ * itself is flat, and capped at the low-speed plateau.
+ */
+const GRIP_LAT_BASE: f64 = 21.99;
+const GRIP_LAT_FADE: f64 = 0.0726;
+const GRIP_LAT_FLOOR: f64 = 15.78;
+const GRIP_LAT_CEIL: f64 = 19.90;
+
+/* WHAT A COMPOUND UPGRADE IS ACTUALLY WORTH.
+ *
+ * `grip_scale` multiplies tyre mu directly, and the naive planner multiplied
+ * its own limit by the same number. Measured, a mu of 1.34 buys 7% more
+ * lateral at 80 u/s, not 34%: the limit up there is not friction-bound, so
+ * most of the compound is spent on nothing. A director that hands the driver
+ * 1.34 and a planner that believes it is a planner asking for a quarter more
+ * corner speed than exists, which is the single most reliable way to put a car
+ * in a wall.
+ *
+ *   mu   1.00   1.10   1.20   1.34   1.60      (at 80 u/s)
+ *   a    16.20  16.63  16.98  17.36  17.92
+ *
+ * which is 1 + 0.20 * (mu - 1) to within a per cent over the useful range.
+ */
+const GRIP_SCALE_WORTH: f64 = 0.20;
+/* ...and the same argument for a slippery surface, in the other direction.
+ * Measured at 80 u/s: 1.00 -> 16.20, 0.75 -> 14.83, 0.55 -> 14.39, so the
+ * solver loses much less than the mu suggests. The response here is
+ * deliberately STEEPER than the measurement - a planner that over-estimates
+ * how much oil costs it brakes early and looks careful; one that
+ * under-estimates puts the car in the wall on the one surface the chapter
+ * built to punish exactly that. */
+const SURFACE_FLOOR: f64 = 0.55;
+
+/* Longitudinal, measured the same way: a full-brake stop from 60 averages
+   15.2 u/s^2 and from 80 averages 16.0, drag included. The reserve is what is
+   left over for the front tyres to also be steering with - the friction
+   ellipse is one budget and the planner is spending from it twice. */
+const BRAKE_A: f64 = 15.60;
+const BRAKE_RESERVE: f64 = 0.88;
 const ACCEL_A: f64 = 0.42 * 9.81 / 0.733;
 const WHEELBASE: f64 = 3.716;
+
+/// Sustained lateral acceleration the tyres actually deliver at `speed`,
+/// in world units per second squared. See the note above.
+#[inline]
+pub fn grip_lat_at(speed: f64) -> f64 {
+    clamp(
+        GRIP_LAT_BASE - GRIP_LAT_FADE * speed.max(0.0),
+        GRIP_LAT_FLOOR,
+        GRIP_LAT_CEIL,
+    )
+}
+
+/// The fastest a corner of curvature `k` can be held.
+///
+/// Grip falls with speed, so this is implicit: `v^2 k = a(v)`. Three fixed
+/// point passes from the optimistic end, which is a contraction because `a` is
+/// monotonically decreasing - the residual after three is under a hundredth of
+/// a unit per second anywhere on the curve.
+#[inline]
+pub fn corner_speed(k: f64, grip_frac: f64) -> f64 {
+    let k = k.abs().max(1e-6);
+    let g = grip_frac.max(0.05);
+    let mut v = (GRIP_LAT_CEIL * g / k).sqrt();
+    for _ in 0..3 {
+        v = (grip_lat_at(v) * g / k).sqrt();
+    }
+    v
+}
 
 /// Legacy fields remain ABI-compatible. Difficulty changes margins and reaction,
 /// never random mistakes; assist/target/drift_skill/mistakes are no longer controls.
@@ -169,10 +267,8 @@ pub fn build_profile(line: &RacingLine, grip_frac: f64, top_speed: f64) -> Vec<f
     let n = line.count;
     let ds = line.step;
     let mut v = vec![0.0f32; n];
-    let a_lat = GRIP_LAT * grip_frac;
     for i in 0..n {
-        let k = (line.curv[i] as f64).max(1e-6);
-        v[i] = top_speed.min((a_lat / k).sqrt()) as f32;
+        v[i] = top_speed.min(corner_speed(line.curv[i] as f64, grip_frac)) as f32;
     }
     let a_b = BRAKE_A * grip_frac;
     for i in (0..n.saturating_sub(1)).rev() {
@@ -218,7 +314,10 @@ pub struct Driver {
     reverse: f64,
     rival_prev: Option<f64>,
     rival_speed: f64,
-    profile: Vec<f32>,
+    /// How long the car has been committed to a jump: set on the approach,
+    /// held through the flight, and spent down over the landing so the line is
+    /// not snatched back the instant the wheels touch.
+    jump_commit: f64,
 }
 
 fn angle(a: f64) -> f64 {
@@ -228,6 +327,37 @@ fn angle(a: f64) -> f64 {
 /// Short enough to track a bend at racing speed; shared with the JS hint sampler.
 pub fn lookahead(speed: f64) -> f64 { clamp(10.0 + speed.max(0.0) * 0.48, 14.0, 68.0) }
 
+/* ------------------------------------------------------ the stunt course ---
+ *
+ * A RAMP IS PART OF THE ROAD, SO EVERY DRIVER HAS TO BE ABLE TO TAKE ONE.
+ *
+ * The solver already knows about ramps - `Vehicle::arm_ramp` installs an
+ * arc-length window and `update_air` flies the car off it - but the driver did
+ * not, which meant a rival met a launch ramp with the ordinary controller
+ * running: it changed lanes on the incline because the racing line asked it
+ * to, it braked mid-climb for a corner it was about to fly over, and in the
+ * air it kept steering at a pursuit point with a yaw authority that only
+ * exists on the ground. A car that leaves a lip sideways lands sideways, and
+ * the landing scrubs everything the jump was worth.
+ *
+ * Three rules, and they are the same three a person uses:
+ *
+ *   SET UP EARLY     stop moving across the road before the incline, and hold
+ *                    whatever line you are on. The ramps span the whole
+ *                    carriageway, so there is nothing to aim at but straight.
+ *   DO NOT LIFT      the climb is a straight, and braking on it only pitches
+ *                    the car onto its nose at the exact moment it leaves.
+ *   LAND STRAIGHT    in the air the only control is a weak yaw rate; spend all
+ *                    of it on matching the road's heading where you are going
+ *                    to come down, and none of it on the racing line.
+ */
+/// How far before the incline a driver stops changing lanes, plus most of a
+/// second of travel.
+const RAMP_SET_UP: f64 = 42.0;
+/// How long the commitment survives the landing. Long enough that the wheels
+/// are down and loaded before the line is asked for again.
+const RAMP_SETTLE: f64 = 0.45;
+
 impl Driver {
     pub fn new(level: Level, _seed: u32) -> Self {
         Self {
@@ -235,7 +365,7 @@ impl Driver {
             pace_scale: 1.0, grip_scale: 1.0, last_target: 0.0, lane_hint: None,
             lag_steer: 0.0, boost_hold: 0.0, lane: 0.0, pass_side: 0.0,
             pass_lane: 0.0, pass_clear: 0.0, stuck: 0.0, reverse: 0.0,
-            rival_prev: None, rival_speed: 0.0, profile: Vec::new(),
+            rival_prev: None, rival_speed: 0.0, jump_commit: 0.0,
         }
     }
 
@@ -249,8 +379,21 @@ impl Driver {
         self.boost_hold = if secs <= 0.0 { 0.0 } else { self.boost_hold.max(secs) };
     }
 
-    pub fn build_profile_for(&mut self, line: &RacingLine) {
-        self.profile = line.curv.iter().map(|k| (GRIP_LAT / (*k as f64).max(1e-6)).sqrt() as f32).collect();
+    /// Kept for the bridge, which calls it whenever the course or the level
+    /// changes. The geometric limits are now solved from `line.curv` at the
+    /// speed they will actually be taken at - see `corner_speed` - so there is
+    /// nothing left to precompute, and a cache that agreed with the planner
+    /// only at one speed was the thing being wrong.
+    pub fn build_profile_for(&mut self, _line: &RacingLine) {}
+
+    /// The share of the tyre this driver is willing to use, including what the
+    /// surface and any compound upgrade are ACTUALLY worth on this solver.
+    fn grip_fraction(&self, car: &Vehicle) -> f64 {
+        let compound = clamp(car.grip_scale.min(self.grip_scale), 1.0, 2.2);
+        let tyre = 1.0 + (compound - 1.0) * GRIP_SCALE_WORTH;
+        let surface = SURFACE_FLOOR
+            + (1.0 - SURFACE_FLOOR) * clamp(car.surface_grip, 0.18, 1.08);
+        self.cfg.grip * tyre * surface
     }
 
     fn sample(values: &[f32], line: &RacingLine, s: f64) -> f64 {
@@ -263,13 +406,31 @@ impl Driver {
     pub fn drive(&mut self, dt: f64, car: &Vehicle, track: &Track,
         line: &RacingLine, world: &WorldView) -> Input {
         if !dt.is_finite() || dt <= 0.0 || line.count < 2 { return Input::default(); }
-        if self.profile.len() != line.count { self.build_profile_for(line); }
         let dt = dt.min(0.1);
         self.skill = clamp(self.cfg.skill, 0.0, 1.0);
         let speed = car.v_long.max(0.0);
         let s = car.s_track;
         let pr = track.project(car.x, car.z, s);
         let look = lookahead(speed);
+
+        /* The jump the car has been handed, if any. Read off the car rather
+           than passed in: the solver owns the window, so there is exactly one
+           copy of where the ramp is and the driver cannot disagree with the
+           thing that is going to launch it. */
+        let airborne = car.is_airborne();
+        let mut on_ramp = false;
+        let mut set_up = false;
+        if let Some(r) = car.ramp {
+            on_ramp = s >= r.s0 && s <= r.s1;
+            let to_incline = r.s0 - s;
+            set_up = to_incline > 0.0 && to_incline < RAMP_SET_UP + speed * 0.9;
+        }
+        self.jump_commit = if airborne || on_ramp || set_up {
+            RAMP_SETTLE
+        } else {
+            (self.jump_commit - dt).max(0.0)
+        };
+        let committed = self.jump_commit > 0.0;
         // Use absolute road coordinates for every lane, including obstacle hints.
         // Passing and obstacle avoidance choose ONE target, never additive offsets.
         let edge = (track.half_width - 3.5).max(1.0);
@@ -327,6 +488,12 @@ impl Driver {
         if let Some(hint) = self.lane_hint.filter(|v| v.is_finite()) {
             wanted_lane = clamp(hint, -edge, edge);
         }
+        /* SET UP FOR THE JUMP, then stop moving. Every lane decision above -
+           the racing line, a committed pass, a director's obstacle corridor -
+           is overruled from the moment the ramp is close enough to matter
+           until the car is down and loaded again. Nothing about a lane is
+           worth arriving at a lip crooked for. */
+        if committed { wanted_lane = self.lane; }
         // Smooth committed lane changes, with room for the whole chassis at either edge.
         self.lane += clamp(wanted_lane - self.lane, -5.0 * dt, 5.0 * dt);
         self.lane = clamp(self.lane, -edge, edge);
@@ -348,11 +515,13 @@ impl Driver {
 
         // Pace is independent of the player's gap. Directors can request higher
         // straight-line pace, but cannot manufacture steering authority or grip.
-        let grip = self.cfg.grip * clamp(car.surface_grip, 0.18, 1.08)
-            * clamp(car.grip_scale.min(self.grip_scale), 1.0, 2.2);
-        let lateral_a = (GRIP_LAT * grip).min(27.4 * 0.75);
+        /* One grip fraction, and every limit below is solved from it at the
+           speed it applies to - `corner_speed` folds the fade with speed into
+           the answer, so there is no single "lateral_a" left to be wrong at
+           every speed but one. */
+        let grip = self.grip_fraction(car);
         // Keep braking capacity in reserve while the tyres are also turning.
-        let braking = BRAKE_A * grip.min(1.3) * 0.72;
+        let braking = BRAKE_A * grip * BRAKE_RESERVE;
         let base_top = car.engine_top;
         let pace = 0.5 + self.skill * 0.5;
         let top = base_top * pace * self.pace_scale.max(0.5);
@@ -377,15 +546,16 @@ impl Driver {
             let line_off = Self::sample(&line.off, line, q);
             let offset = (self.lane - line_off).abs();
             let k = k / (1.0 - k * offset).max(0.45);
-            let corner_v2 = (Self::sample(&self.profile, line, q).powi(2) * lateral_a / GRIP_LAT)
-                .min(lateral_a / k.max(1e-6));
+            // Solved at the speed the corner is actually taken at, so the
+            // grip fade with speed is inside the answer rather than outside it.
+            let corner_v = corner_speed(k, grip);
             let distance = (d - speed * 0.16).max(0.0);
-            target = target.min((corner_v2 + 2.0 * braking * distance).sqrt());
+            target = target.min((corner_v * corner_v + 2.0 * braking * distance).sqrt());
             d += line.step.min(6.0);
         }
         // A displaced or bumped car needs grip to rejoin its line as well as turn.
         let requested_k = curvature.abs();
-        if requested_k > 1e-5 { target = target.min((lateral_a / requested_k).sqrt()); }
+        if requested_k > 1e-5 { target = target.min(corner_speed(requested_k, grip)); }
         let road_heading = angle(car.yaw - pr.yaw);
         let lateral_velocity = car.vx * pr.yaw.cos() - car.vz * pr.yaw.sin();
         let projected_edge = pr.lateral + lateral_velocity * 0.45;
@@ -404,12 +574,36 @@ impl Driver {
             && error > if car.boosting { 0.4 } else { 2.0 } && speed > 18.0;
         if boost { throttle = 1.0; }
 
+        /* ---- the climb and the flight -----------------------------------
+           On the incline there is nothing to brake for: the ramps stand on
+           straights, and lifting here only pitches the car onto its nose at
+           the moment it stops being supported. */
+        if on_ramp {
+            brake = 0.0;
+            throttle = throttle.max(0.75);
+        }
+        if airborne {
+            /* No wheel is carrying load, so the pursuit term above is asking a
+               contact patch that is not there. All that is left is a weak,
+               damped yaw rate - and the only thing worth spending it on is
+               matching the road's heading where the car is going to come down.
+               The landing is scored on exactly that angle; see `update_air`. */
+            let land = track.at(s + speed * 0.55);
+            let err = angle(land.yaw - car.yaw);
+            steer = clamp(err * 3.0 - car.yaw_rate * 1.1, -1.0, 1.0);
+            brake = 0.0;
+            boost = false;
+            throttle = 1.0;
+        }
+
         // Recover using controls only; reverse long enough to clear a barrier, then
         // rejoin. Race starts are not stalls, and directors cannot boost a recovery.
-        if world.race_on && speed < 3.0 && (pr.lateral.abs() > edge - 1.0 || road_heading.abs() > 0.7) {
+        if world.race_on && !airborne && speed < 3.0
+            && (pr.lateral.abs() > edge - 1.0 || road_heading.abs() > 0.7) {
             self.stuck += dt;
         } else { self.stuck = 0.0; }
         if self.stuck > 0.65 && self.reverse <= 0.0 { self.reverse = 1.5; self.stuck = 0.0; }
+        if airborne { self.reverse = 0.0; }
         if self.reverse > 0.0 {
             self.reverse -= dt;
             throttle = 0.0; brake = 1.0; boost = false;
@@ -775,6 +969,139 @@ mod tests {
                  - that is the weave, not a racing line"
             );
         }
+    }
+
+    /* ------------------------------------------------- the stunt course --
+     *
+     * A RIVAL HAS TO BE ABLE TO TAKE A RAMP.
+     *
+     * The three rules are set up, do not lift, and land straight; these are
+     * the three tests. `landing` is the solver's own measurement - the heading
+     * error at touchdown, squared, times a roll term - so there is nothing
+     * subjective in the assertion.
+     */
+    fn straight_course() -> Track {
+        Track::new(shipped(4000))
+    }
+
+    /// Drive a driver at a ramp and report what it did with it.
+    fn take_ramp(level: Level, lip: f64, len: f64, h: f64, rival: bool)
+        -> (f64, usize, usize, f64) {
+        let t = straight_course();
+        let line = RacingLine::build(&t, t.half_width * 0.68);
+        let mut d = Driver::new(level, 99);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, lip - 700.0, 0.0);
+        car.v_long = 78.0;
+        car.speed = 78.0;
+        let dt = 1.0 / 60.0;
+        let (mut landing, mut walls, mut off, mut lift) = (0.0f64, 0usize, 0usize, 0.0f64);
+        let mut armed = false;
+        let mut landed = false;
+        for _ in 0..(60 * 40) {
+            // the same arming rule Game.updateRamps applies
+            let to_lip = lip - car.s_track;
+            if to_lip < 280.0 + len && to_lip > -14.0 {
+                if !armed { car.arm_ramp(lip - len, lip, h); armed = true; }
+            } else if armed && to_lip <= -14.0 {
+                armed = false;
+                car.arm_ramp(0.0, 0.0, 0.0);
+            }
+            let world = if rival {
+                // a car alongside, exactly where a pass would be wanted
+                let p = t.at(car.s_track + 18.0);
+                WorldView {
+                    race_on: true, has_rival: true, rival_s: car.s_track + 18.0,
+                    rival_x: p.x + p.yaw.cos() * 3.0, rival_z: p.z - p.yaw.sin() * 3.0,
+                    finish_at: 100_000.0,
+                }
+            } else {
+                WorldView { race_on: true, finish_at: 100_000.0, ..Default::default() }
+            };
+            let cmd = d.drive(dt, &car, &t, &line, &world);
+            // braking ON the incline is the thing that pitches a car onto its
+            // nose at the moment it stops being supported
+            if car.s_track >= lip - len && car.s_track <= lip { lift = lift.max(cmd.brake); }
+            car.update(&t, dt, cmd, true);
+            if car.last_hit && car.last_hit_kind == crate::vehicle::HitKind::Wall { walls += 1; }
+            car.last_hit = false;
+            if car.offroad { off += 1; }
+            if car.landed != 0.0 && !landed { landing = car.landing; landed = true; }
+            if car.s_track > lip + 700.0 { break; }
+        }
+        assert!(landed, "the driver never left the ramp at all");
+        (landing, walls, off, lift)
+    }
+
+    #[test]
+    fn a_driver_lands_a_ramp_straight() {
+        for level in [EASY, MEDIUM, HARD, IMPOSSIBLE] {
+            for (len, h) in [(54.0, 2.8), (46.0, 3.4), (40.0, 3.9), (32.0, 4.8)] {
+                let (q, walls, off, lift) = take_ramp(level, 9_000.0, len, h, false);
+                assert!(q > 0.62, "landed at {q:.2} off a {len}/{h} ramp");
+                assert_eq!((walls, off), (0, 0), "left the road taking a {len}/{h} ramp");
+                assert_eq!(lift, 0.0, "braked on the incline of a {len}/{h} ramp");
+            }
+        }
+    }
+
+    /* ...INCLUDING WITH A CAR TO PASS.
+     *
+     * This is the one that needs the commitment. Every lane the driver picks -
+     * the racing line, a committed pass, a director's obstacle corridor - is
+     * an offset it steers toward, and steering toward one at the lip is
+     * exactly how a car leaves crooked. A rival alongside on the approach used
+     * to be worth a full lane change over the incline.
+     */
+    #[test]
+    fn a_pass_in_progress_does_not_cost_the_landing() {
+        let (q, walls, off, _) = take_ramp(IMPOSSIBLE, 9_000.0, 46.0, 3.4, true);
+        assert!(q > 0.62, "a pass on the approach cost the landing: {q:.2}");
+        assert_eq!((walls, off), (0, 0), "left the road passing over a ramp");
+    }
+
+    /// Air control is the only thing left in the air, and it has to be spent
+    /// on the road's heading. A car launched crooked must come down straighter
+    /// than it went up.
+    #[test]
+    fn the_driver_straightens_the_car_in_the_air() {
+        let t = straight_course();
+        let line = RacingLine::build(&t, t.half_width * 0.68);
+        let dt = 1.0 / 60.0;
+        let measure = |steer_in_air: bool| {
+            let mut d = Driver::new(IMPOSSIBLE, 5);
+            let mut car = Vehicle::new(&t, 0.0);
+            car.reset(&t, 8_900.0, 0.0);
+            car.v_long = 80.0;
+            car.speed = 80.0;
+            car.arm_ramp(8_954.0, 9_000.0, 3.4);
+            let mut kicked = false;
+            let mut worst = 0.0f64;
+            for _ in 0..(60 * 20) {
+                let cmd = d.drive(dt, &car, &t, &line,
+                    &WorldView { race_on: true, finish_at: 100_000.0, ..Default::default() });
+                let cmd = if steer_in_air { cmd } else { Input { steer: 0.0, ..cmd } };
+                car.update(&t, dt, cmd, true);
+                if car.is_airborne() && !kicked {
+                    /* Throw it out of shape the moment it leaves the lip. Six
+                       degrees: past the tolerance a landing scores anything
+                       for, and inside what a flight this long can take back at
+                       AIR_YAW against AIR_YAW_DAMP. A launch a long way out is
+                       meant to cost something - that is the trial. */
+                    car.yaw += 0.11;
+                    kicked = true;
+                }
+                if car.is_airborne() {
+                    worst = worst.max(crate::math::ang_diff(car.yaw, t.at(car.s_track).yaw).abs());
+                }
+                if car.landed != 0.0 { return (car.landing, worst); }
+            }
+            (0.0, worst)
+        };
+        let (with, _) = measure(true);
+        let (without, _) = measure(false);
+        assert!(with > without, "air control did not help: {with:.2} against {without:.2}");
+        assert!(with > 0.62, "a correctable launch still landed at {with:.2}");
     }
 
     /// Difficulty must separate the drivers. HARD has to beat EASY over the

@@ -69,6 +69,55 @@ pub const MAT: usize = 16;
 pub const PLAIN: f32 = 0.0;
 pub const SPIN: f32 = 1.0;
 pub const BONE: f32 = 2.0;
+/* A part that rides the RIM but not all of the way round it.
+ *
+ * The rack is sixteen to one, so a corner turns the wheel most of a quarter
+ * turn and a drift most of a half - and a hand welded to the rim through that
+ * ends up underneath it with the arm laid across the windscreen. A driver does
+ * not do that; the wheel slides through their hands and they shuffle. So the
+ * rim gets the full angle and the hands get their own, which saturates.
+ *
+ * Everything that is HELD - the two forearms and the two gloves - is one of
+ * these. Everything that IS the wheel stays SPIN. */
+pub const GRIP: f32 = 5.0;
+/* AN ARM THAT IS SOLVED RATHER THAN SWUNG.
+ *
+ * GRIP was only ever right for a HAND. A forearm carried round the hub with
+ * it is a forearm whose elbow is carried round too, and at the angles this
+ * rack now reaches - most of a quarter turn for a corner, most of a half for
+ * a drift - that puts the elbow out over the passenger seat with the arm
+ * lying across the windscreen. It was correct at ten degrees and absurd at
+ * ninety, which is the whole of what changed.
+ *
+ * So the forearm stops being placed at all. The HAND rides the rim, because
+ * that is what a hand does; the elbow is then wherever a shoulder that cannot
+ * move and a wrist that has must put it, which is a two-bone solve with one
+ * answer. The upper arm is already a BONE to the elbow, so it comes along for
+ * free, and the whole arm bends and extends through the turn the way an arm
+ * in a car does.
+ *
+ * The record for one of these is its REST pose, exactly as before -
+ * `calibrate` reads the shoulder, the two lengths, the wrist and the plane the
+ * elbow falls in straight out of it, so the figure standing still is the
+ * figure that was authored and nothing has to be written down twice. */
+pub const ARM: f32 = 6.0;
+
+/* HOW FAR A HAND IS WILLING TO GO, as opposed to how far it is able to.
+ *
+ * The arm solve answers the second question and it answers it generously:
+ * measured, the figure can keep its grip through a hundred and sixty degrees
+ * on one lock, because the far side of the rim happens to swing back towards
+ * the shoulder. Geometrically fine, and nobody drives like that - it puts the
+ * left hand at five o'clock with the arms crossed and the elbows locked, and
+ * it is wildly lopsided, because the SAME arm can only manage half that on
+ * the other lock.
+ *
+ * So there is a limit on top of the reach: ninety-two degrees, which is a
+ * hand from ten o'clock to one and back, symmetrical, and is what a driver
+ * with their hands where they belong actually does before the wheel starts
+ * sliding through them. The rim goes on to its own lock either way - the gap
+ * between the two is the shuffle. */
+pub const HAND_LOCK: f64 = 1.6;
 pub const BUTTON: f32 = 3.0;
 pub const REACH: f32 = 4.0;
 
@@ -90,6 +139,28 @@ struct Part {
     to: [f64; 3],
     to_pitch: f64,
     to_roll: f64,
+    /// For a bone: the length to solve at, if the table names one. Zero means
+    /// "whatever the rest pose happens to be", which is what this was before
+    /// there was anywhere to put a number - and a rest pose with the arm
+    /// already straight leaves an arm that can never bend.
+    length: f64,
+    /* ---- worked out once by `calibrate`, for an ARM and nothing else ---- */
+    /// The shoulder this arm hangs from: the fixed end of whichever BONE
+    /// names it.
+    shoulder: [f64; 3],
+    /// How long the upper arm is, which is that BONE's own `length` if it has
+    /// one and the rest distance otherwise.
+    upper: f64,
+    /// The far end of the forearm at rest - the wrist joint, not the middle
+    /// of the glove.
+    rest_wrist: [f64; 3],
+    /// Wrist minus the referenced glove's own origin, so the wrist can be
+    /// carried by a hand that has gone somewhere else entirely.
+    wrist_off: [f64; 3],
+    /// Which way the elbow falls off the shoulder-to-wrist line. Taken from
+    /// where the elbow sits at rest, so the authored pose is reproduced
+    /// exactly at zero and is the swing plane at every other angle.
+    pole: [f64; 3],
 }
 
 #[derive(Default)]
@@ -105,10 +176,127 @@ pub struct Rig {
     /// the car's own up axis. Nine floats, handed back as a pointer rather
     /// than copied across the boundary.
     cam: [f32; 9],
+    /// This frame's solved elbows, indexed by part. An ARM fills its own in
+    /// and the BONE above it reads it back, which is how the upper arm ends
+    /// up at the same joint the forearm does without either of them knowing
+    /// the other exists. Kept as a field rather than a local so the solve
+    /// allocates nothing on the frames where nothing has changed shape.
+    elbow: Vec<Option<[f64; 3]>>,
 }
 
 /// Column-major 4x4, the same order the renderer wants.
 type M4 = [f64; 16];
+
+/* The handful of vector operations the arm solve needs. Written out here
+   rather than pulled in, because a dependency for six three-line functions is
+   a dependency for six three-line functions. */
+#[inline]
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+#[inline]
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+#[inline]
+fn len3(a: [f64; 3]) -> f64 {
+    dot3(a, a).sqrt()
+}
+#[inline]
+fn norm3(a: [f64; 3]) -> [f64; 3] {
+    let l = len3(a).max(1e-9);
+    [a[0] / l, a[1] / l, a[2] / l]
+}
+#[inline]
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+#[inline]
+fn xform(m: &M4, p: [f64; 3]) -> [f64; 3] {
+    [
+        m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12],
+        m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13],
+        m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14],
+    ]
+}
+
+/// The smoothstep a REACH travels on, in one place because three things now
+/// have to agree about where a hand is part way across.
+#[inline]
+fn ease01(k: f64) -> f64 {
+    let k = k.clamp(0.0, 1.0);
+    k * k * (3.0 - 2.0 * k)
+}
+
+/* WHERE THE ELBOW GOES.
+ *
+ * Two bones, a fixed shoulder, a wrist that has moved: the elbow is on a
+ * circle, and which point of that circle it is on is the only thing left to
+ * choose. `pole` chooses it - the direction the joint is allowed to fall in -
+ * and taking that from the authored rest pose means the solve reproduces the
+ * figure that was drawn by hand at zero and only starts inventing anything
+ * once the wheel moves.
+ *
+ * The arm is allowed to reach for something it cannot get to: the distance is
+ * clamped rather than the solve refused, so an unreachable target straightens
+ * the arm and points it, which is what a person does and a great deal better
+ * than a NaN.
+ */
+fn elbow_of(shoulder: [f64; 3], wrist: [f64; 3], upper: f64, fore: f64, pole: [f64; 3]) -> [f64; 3] {
+    let to = sub3(wrist, shoulder);
+    let reach = (upper + fore).max(1e-4);
+    let d = len3(to).clamp((upper - fore).abs().max(1e-4), reach * 0.9999);
+    let n = norm3(to);
+    // the foot of the elbow on the shoulder-wrist line, and its height off it
+    let a = ((upper * upper - fore * fore) / d + d) * 0.5;
+    let h = (upper * upper - a * a).max(0.0).sqrt();
+    // the pole, squared off against the line, so the elbow swings in a plane
+    let k = dot3(pole, n);
+    let mut u = [pole[0] - n[0] * k, pole[1] - n[1] * k, pole[2] - n[2] * k];
+    if len3(u) < 1e-6 {
+        // a pole along the arm names no plane at all; any perpendicular will do
+        let alt = if n[1].abs() > 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        u = cross3(cross3(n, alt), n);
+    }
+    let u = norm3(u);
+    [
+        shoulder[0] + n[0] * a + u[0] * h,
+        shoulder[1] + n[1] * a + u[1] * h,
+        shoulder[2] + n[2] * a + u[2] * h,
+    ]
+}
+
+/* EASING INTO A LIMIT INSTEAD OF HITTING IT.
+ *
+ * The hands have a hard bound - past it the arm is not long enough and the
+ * grip comes off the rim - but arriving at a hard bound at a hard stop is
+ * exactly as readable as a clipping plane. The last quarter of the travel is
+ * compressed into an exponential approach instead, so a hand slows as it runs
+ * out of arm and the wheel keeps turning through it. Which is what shuffling
+ * a wheel looks like, without animating a re-grip.
+ */
+fn ease_into(v: f64, lo: f64, hi: f64) -> f64 {
+    fn soft(x: f64, edge: f64) -> f64 {
+        if edge <= 1e-6 {
+            return 0.0;
+        }
+        let knee = edge * 0.75;
+        if x <= knee {
+            x
+        } else {
+            knee + (edge - knee) * (1.0 - (-(x - knee) / (edge - knee)).exp())
+        }
+    }
+    if v >= 0.0 {
+        soft(v, hi.max(0.0))
+    } else {
+        -soft(-v, (-lo).max(0.0))
+    }
+}
 
 fn identity() -> M4 {
     let mut m = [0.0; 16];
@@ -162,6 +350,7 @@ impl Rig {
             rake: 0.0,
             head: [0.0; 3],
             cam: [0.0; 9],
+            elbow: Vec::new(),
         }
     }
 
@@ -189,10 +378,156 @@ impl Rig {
                 to: [r[12] as f64, r[13] as f64, r[14] as f64],
                 to_pitch: r[15] as f64,
                 to_roll: r[16] as f64,
+                length: r[11] as f64,
+                ..Part::default()
             });
         }
         self.out.clear();
         self.out.resize(n * MAT, 0.0);
+        self.elbow.clear();
+        self.elbow.resize(n, None);
+        self.calibrate();
+    }
+
+    /* WHAT AN ARM IS, READ OFF THE POSE SOMEBODY DREW.
+     *
+     * An ARM record is a rest pose and nothing else - the same twelve numbers
+     * a GRIP forearm had - and everything the solve needs comes out of it
+     * here, once, at load:
+     *
+     *   THE SHOULDER is the fixed end of whichever BONE names this part. It
+     *   is already in the table; asking for it again in the arm's own record
+     *   would be the same point written down twice, and two copies of a point
+     *   are two points as soon as anybody edits one.
+     *
+     *   THE LENGTHS are the forearm's own z scale, and the upper arm's
+     *   authored `length` - or, if the table does not name one, the rest
+     *   distance from the shoulder to the elbow. Naming one matters: the
+     *   figure as drawn has the arm very nearly straight, and an arm solved at
+     *   exactly its rest length can only ever straighten, so the hands could
+     *   travel about four degrees before running out of arm.
+     *
+     *   THE POLE is where the elbow actually sits at rest, measured off the
+     *   shoulder-to-wrist line. That is what makes this safe to turn on: at
+     *   zero the solve puts the elbow back exactly where the author put it,
+     *   so nothing about the figure standing still changes.
+     */
+    fn calibrate(&mut self) {
+        let id = identity();
+        let n = self.parts.len();
+        let mut fill: Vec<Option<([f64; 3], f64, [f64; 3], [f64; 3], [f64; 3])>> = vec![None; n];
+        for i in 0..n {
+            let p = self.parts[i];
+            if p.kind as f32 != ARM {
+                continue;
+            }
+            let elbow = self.end_of(&p, -0.5, &id, 0.0);
+            let wrist = self.end_of(&p, 0.5, &id, 0.0);
+            // the shoulder, and how long the bone hanging off it wants to be
+            let mut shoulder = elbow;
+            let mut upper = 0.0;
+            for q in self.parts.iter() {
+                if q.kind as f32 == BONE && q.reference == i {
+                    shoulder = q.t;
+                    upper = q.length;
+                    break;
+                }
+            }
+            if upper <= 1e-4 {
+                upper = len3(sub3(elbow, shoulder)).max(1e-3);
+            }
+            let glove = self.parts.get(p.reference).map(|g| g.t).unwrap_or(wrist);
+            let off = sub3(wrist, glove);
+            // where the elbow hangs, off the line between the two fixed ends
+            let n_line = norm3(sub3(wrist, shoulder));
+            let e = sub3(elbow, shoulder);
+            let k = dot3(e, n_line);
+            let mut pole = [
+                e[0] - n_line[0] * k,
+                e[1] - n_line[1] * k,
+                e[2] - n_line[2] * k,
+            ];
+            if len3(pole) < 1e-3 {
+                /* A STRAIGHT ARM NAMES NO PLANE, and the figure as authored is
+                   within a centimetre of straight - so the fallback is not an
+                   edge case here, it is the case.
+
+                   DOWN, AND TUCKED IN. The first version of this pointed the
+                   elbows AWAY from the centreline, on the reasoning that
+                   elbows point away from the body. They do when you are
+                   standing up. Sitting behind a wheel with something to
+                   reach for, they come IN - which is not a stylistic
+                   preference here, it is the difference between an arm with
+                   its elbow beside the driver's own hip and one with a joint
+                   the size of a fist resting on the centre console next to
+                   the hand that is pressing the button on it. That is what
+                   outboard produced, measured: the right elbow at x -0.14,
+                   which is on the tunnel.
+
+                   In, and down, and a shade forward: x -0.33, y -0.19,
+                   z 0.65 for the right arm at rest, which is beside the
+                   chest where it belongs. The direction is taken from the
+                   hub rather than written twice, so it is right for both
+                   arms and stays right if the figure is ever mirrored. */
+                let side = if shoulder[0] >= self.hub[0] { -1.0 } else { 1.0 };
+                pole = [side * 0.55, -1.0, 0.05];
+            }
+            fill[i] = Some((shoulder, upper, wrist, off, norm3(pole)));
+        }
+        for i in 0..n {
+            if let Some((shoulder, upper, wrist, off, pole)) = fill[i] {
+                let q = &mut self.parts[i];
+                q.shoulder = shoulder;
+                q.upper = upper;
+                q.rest_wrist = wrist;
+                q.wrist_off = off;
+                q.pole = pole;
+            }
+        }
+    }
+
+    /* HOW FAR ROUND THE WHEEL THIS HAND CAN GO.
+     *
+     * The wrist rides a circle about the hub, so its distance from a shoulder
+     * that does not move is
+     *
+     *     d(theta)^2 = C - 2K cos(theta - phi)
+     *
+     * for three constants that fall straight out of the geometry. Setting that
+     * equal to the arm's reach gives the arc the hand is allowed, exactly and
+     * in closed form - no search, no iteration, and no chance of the bisection
+     * that would otherwise be here disagreeing with itself between frames.
+     *
+     * Returns the middle of the allowed arc and its half width.
+     */
+    fn reach_arc(&self, p: &Part) -> (f64, f64) {
+        let (ca, sa) = (self.rake.cos(), self.rake.sin());
+        /* THE AXIS THE WHEEL TURNS ABOUT, read back out of spin_matrix rather
+           than guessed from the rake. It is NEGATIVE in y: that matrix has
+           m[0][2] = -sin(s)cos(rake) and m[2][0] = +sin(s)sin(rake), and a
+           rotation about a unit u has R[0][2] = +u_y sin(s), so u_y = -sin(rake).
+           Getting this backwards mirrors the allowed arc about the rest pose -
+           the hand is free in the direction it should be limited and limited in
+           the direction it is free - which shows up as an arm stretching past
+           its own length on one lock and stopping short on the other. */
+        let axis = [0.0, -sa, ca];
+        let v0 = sub3(p.rest_wrist, self.hub);
+        let along = dot3(v0, axis);
+        let par = [axis[0] * along, axis[1] * along, axis[2] * along];
+        let perp = sub3(v0, par);
+        let side = cross3(axis, perp);
+        let sh = sub3(sub3(p.shoulder, self.hub), par);
+        let c = dot3(perp, perp) + dot3(sh, sh);
+        let (x, y) = (dot3(perp, sh), dot3(side, sh));
+        let k = (x * x + y * y).sqrt();
+        let reach = (p.upper + p.s[2]) * 0.995;
+        if k < 1e-9 {
+            // the shoulder is on the wheel's own axis: every angle is the same
+            return (0.0, core::f64::consts::PI);
+        }
+        let phi = y.atan2(x);
+        let cut = ((c - reach * reach) / (2.0 * k)).clamp(-1.0, 1.0);
+        (phi, cut.acos())
     }
 
     pub fn len(&self) -> usize {
@@ -328,66 +663,187 @@ impl Rig {
     /// far side is the whole saving: it is one multiply per part either way,
     /// and doing it in the same pass avoids handing seventeen matrices back
     /// only for the caller to multiply every one of them again.
-    /// `press` is 0..1 of however hard the boost is being asked for. It
-    /// moves the parts that are controls and nothing else.
-    pub fn pose(&mut self, model: &[f32], spin_angle: f64, press: f64) {
+    ///
+    /// `spin_angle` is where the RIM is - the full steering angle through the
+    /// rack, which at sixteen to one is most of a half turn at drift angles.
+    /// `hand_angle` is where the hands would LIKE to be, and is not the same
+    /// number: it is clamped here to whatever the arms can actually hold.
+    /// `press` is 0..1 of however hard the boost is being asked for. It moves
+    /// the parts that are controls, and the hand that goes to them.
+    pub fn pose(&mut self, model: &[f32], spin_angle: f64, hand_angle: f64, press: f64) {
         let mut m: M4 = identity();
         for i in 0..16 {
             m[i] = *model.get(i).unwrap_or(&0.0) as f64;
         }
+        let n = self.parts.len();
         let spin = self.spin_matrix(spin_angle);
-        for i in 0..self.parts.len() {
+
+        /* HOW FAR THE HANDS GO, WHICH THE ARMS DECIDE AND NOT THE RACK.
+         *
+         * Every arm gives an arc it can hold the rim through; the hands take
+         * the intersection of them. Both hands therefore move by the same
+         * angle and stay opposite each other on the rim, which is what a pair
+         * of hands on a wheel look like - clamping each arm separately is more
+         * physical and reads as a driver whose hands have come unstuck from
+         * one another.
+         *
+         * Zero is forced into the arc whatever the geometry says. A figure
+         * authored so badly that its rest pose is out of reach should sit
+         * still, not snap somewhere else the moment it is drawn.
+         */
+        let mut lo = -core::f64::consts::PI * 4.0;
+        let mut hi = core::f64::consts::PI * 4.0;
+        let mut arms = false;
+        for i in 0..n {
             let p = self.parts[i];
-            let local = match p.kind {
-                k if k as f32 == BONE => {
-                    let elbow = match self.parts.get(p.reference) {
-                        Some(f) => self.end_of(f, -0.5, &spin, press),
-                        // a table that names a part that is not there poses the
+            if p.kind as f32 != ARM {
+                continue;
+            }
+            let (phi, half) = self.reach_arc(&p);
+            lo = lo.max(phi - half);
+            hi = hi.min(phi + half);
+            arms = true;
+        }
+        let hand = if arms {
+            ease_into(
+                hand_angle,
+                lo.min(0.0).max(-HAND_LOCK),
+                hi.max(0.0).min(HAND_LOCK),
+            )
+        } else {
+            hand_angle
+        };
+        let hands = self.spin_matrix(hand);
+        // a hand on its way to the console has let go, so the rim leaves it
+        let gone = self.spin_matrix(hand * (1.0 - ease01(press)));
+
+        /* THE ELBOWS, BEFORE ANYTHING IS PLACED. An upper arm is a bone to a
+           joint the forearm decides, and the two parts are in whatever order
+           the table happens to list them - so the joints are all solved first
+           and both ends then read the same answer. */
+        if self.elbow.len() != n {
+            self.elbow.resize(n, None);
+        }
+        for e in self.elbow.iter_mut() {
+            *e = None;
+        }
+        for i in 0..n {
+            let p = self.parts[i];
+            if p.kind as f32 != ARM {
+                continue;
+            }
+            let wrist = self.wrist_of(&p, &hands, &gone, press);
+            self.elbow[i] = Some(elbow_of(p.shoulder, wrist, p.upper, p.s[2], p.pole));
+        }
+
+        for i in 0..n {
+            let p = self.parts[i];
+            let k = p.kind as f32;
+            let local = if k == ARM {
+                /* THE FOREARM IS THE BONE BETWEEN THEM. Its length comes out
+                   of the solve exactly - the elbow was placed at the arm's own
+                   z scale from the wrist - so nothing is stretched here even
+                   though `bone` would happily stretch it. */
+                let wrist = self.wrist_of(&p, &hands, &gone, press);
+                let elbow = self.elbow[i].unwrap_or(p.t);
+                Self::bone(elbow, wrist, p.s[0], p.s[1])
+            } else if k == BONE {
+                let elbow = match self.elbow.get(p.reference).copied().flatten() {
+                    Some(e) => e,
+                    // an older-style bone, onto the back end of a placed part
+                    None => match self.parts.get(p.reference) {
+                        Some(f) => self.end_of(f, -0.5, &hands, press),
+                        // a table naming a part that is not there poses the
                         // bone as a zero-length stub rather than reading past
                         // the end of the list
                         None => p.t,
-                    };
-                    Self::bone(p.t, elbow, p.s[0], p.s[1])
+                    },
+                };
+                Self::bone(p.t, elbow, p.s[0], p.s[1])
+            } else {
+                /* A button sinks along its own down axis, which after a
+                   yaw-free trs is the second column negated. Done to the
+                   translation rather than to the matrix so the housing
+                   around it does not move with it. */
+                let (mut t, pitch, roll) = self.placed(&p, press);
+                if k == BUTTON && press > 0.0 {
+                    let (cp, sp) = (pitch.cos(), pitch.sin());
+                    let (cr, sr) = (roll.cos(), roll.sin());
+                    let down = [-sr, -cp * cr, -sp * cr];
+                    let d = press.clamp(0.0, 1.0) * p.travel;
+                    t = [t[0] + down[0] * d, t[1] + down[1] * d, t[2] + down[2] * d];
                 }
-                _ => {
-                    /* A button sinks along its own down axis, which after a
-                       yaw-free trs is the second column negated. Done to the
-                       translation rather than to the matrix so the housing
-                       around it does not move with it. */
-                    let (mut t, pitch, roll) = self.placed(&p, press);
-                    if p.kind as f32 == BUTTON && press > 0.0 {
-                        let (cp, sp) = (pitch.cos(), pitch.sin());
-                        let (cr, sr) = (roll.cos(), roll.sin());
-                        let down = [-sr, -cp * cr, -sp * cr];
-                        let k = press.clamp(0.0, 1.0) * p.travel;
-                        t = [t[0] + down[0] * k, t[1] + down[1] * k, t[2] + down[2] * k];
-                    }
-                    let mut l = trs(t, pitch, roll);
-                    for c in 0..4 {
-                        l[c] *= p.s[0];
-                    }
-                    for c in 4..8 {
-                        l[c] *= p.s[1];
-                    }
-                    for c in 8..12 {
-                        l[c] *= p.s[2];
-                    }
-                    /* A reach starts on the rim, so it turns with the rim -
-                       otherwise the hand lets go of a wheel that has moved out
-                       from under it. It keeps doing so all the way across,
-                       which is wrong by a few millimetres at the far end and
-                       wrong by a whole hand if it does not. */
-                    let k = p.kind as f32;
-                    if k == SPIN || k == BUTTON || k == REACH {
-                        l = mul(&spin, &l);
-                    }
-                    l
+                let mut l = trs(t, pitch, roll);
+                for c in 0..4 {
+                    l[c] *= p.s[0];
                 }
+                for c in 4..8 {
+                    l[c] *= p.s[1];
+                }
+                for c in 8..12 {
+                    l[c] *= p.s[2];
+                }
+                /* WHAT TURNS WITH WHAT.
+                 *
+                 * SPIN is the wheel itself - rim, spokes, column - and it gets
+                 * the full steering angle, all the way to lock.
+                 *
+                 * GRIP is a hand ON that wheel, and it gets the hands' angle,
+                 * which is the most of it the arms can follow.
+                 *
+                 * REACH is a hand LEAVING it, so the rim's angle leaves the
+                 * hand as it goes: a hand that arrives at a fixed console
+                 * button still carrying a hundred and eighty degrees of
+                 * steering is a hand somewhere behind the driver's seat.
+                 *
+                 * AND A BUTTON TURNS WITH NEITHER. This list used to include
+                 * BUTTON, from when the boost control was on the wheel. It has
+                 * been on the centre console for a long time and the spin was
+                 * never taken off it - so the console button orbited the
+                 * steering hub on a two-thirds-of-a-unit radius and swung out
+                 * to somewhere around the driver's right elbow, on its own,
+                 * leaving its bezel behind on the console. That is the loose
+                 * chunk by the elbow in the report, and at sixteen to one it
+                 * would have become spectacular. */
+                if k == SPIN {
+                    l = mul(&spin, &l);
+                } else if k == GRIP {
+                    l = mul(&hands, &l);
+                } else if k == REACH {
+                    l = mul(&gone, &l);
+                }
+                l
             };
             let world = mul(&m, &local);
             for c in 0..16 {
                 self.out[i * MAT + c] = world[c] as f32;
             }
+        }
+    }
+
+    /* WHERE AN ARM'S WRIST ACTUALLY IS.
+     *
+     * It is wherever the hand went, plus the fixed offset from the middle of
+     * that hand to the joint behind it. Deriving it from the hand rather than
+     * from the rim is what lets the right arm follow its own hand across to
+     * the console: the hand is a REACH and has somewhere else to be, and an
+     * arm solved to the rim while its hand is on the boost button is an arm
+     * with a gap in it.
+     */
+    fn wrist_of(&self, p: &Part, hands: &M4, gone: &M4, press: f64) -> [f64; 3] {
+        match self.parts.get(p.reference) {
+            Some(g) => {
+                let (gt, _, _) = self.placed(g, press);
+                let local = [
+                    gt[0] + p.wrist_off[0],
+                    gt[1] + p.wrist_off[1],
+                    gt[2] + p.wrist_off[2],
+                ];
+                let frame = if g.kind as f32 == REACH { gone } else { hands };
+                xform(frame, local)
+            }
+            // no hand named: the arm just holds the rim where it was drawn
+            None => xform(hands, p.rest_wrist),
         }
     }
 }
@@ -425,14 +881,30 @@ impl Rig {
 /// Where the eyes sit on the head, in figure space.
 ///
 /// The head is a shell centred at y 0.115 of scale 0.37 - see the parts table
-/// in js/scene.js - so its crown is at 0.30 and its chin at -0.03. Eyes sit a
-/// little above the middle of a face and at the front of the skull, which puts
-/// them here. z is forward of the head's centre by most of its depth: a camera
-/// at the centre of the skull renders the inside of the visor.
-/// Raised a little from the middle of the face: at 0.155 the eye sits level
-/// with the top of the seat's own bounding box, which is close enough to the
-/// headrest that a hard corner can put it inside one.
-const EYE: [f64; 3] = [0.0, 0.170, 0.30];
+/// in js/scene.js - so its crown is at 0.30 and its chin at -0.03, and the
+/// headliner over the seat is at 0.323. This puts the eye at 0.23, which is
+/// 9cm below the crown and 9cm under the roof: a driver's head in a car,
+/// rather than a camera on top of one.
+///
+/// THE Z USED TO BE 0.30, AND THAT IS THE WHOLE OF THE FRAMING BUG.
+///
+/// It was pushed most of a head-depth forward on the grounds that a camera at
+/// the centre of the skull renders the inside of the visor - which is true of
+/// every view except the one this is for, because the first-person view drops
+/// the helmet, the visor and the torso before it draws anything (see `own` in
+/// js/scene.js). Nothing was ever there to render.
+///
+/// What it cost was the entire cockpit. It left the eye 36cm behind the wheel
+/// instead of 59cm, so the hub sat 48 degrees below the view axis - nearly two
+/// frame-heights under the bottom edge at this field of view - and the driver
+/// could see the top arc of the rim and nothing holding it. Both hands, both
+/// forearms and the whole of the dash the hands are over were off the screen.
+/// A shot of that looks like a wheel that turns itself, and no amount of work
+/// on the arms can show up in it.
+///
+/// At 0.06 the eye sits just forward of the head's centre, where an eye is,
+/// and the hands land in the bottom quarter of the frame where they belong.
+const EYE: [f64; 3] = [0.0, 0.115, 0.06];
 
 /// How far ahead the look-at point is put. Far enough that the direction is
 /// what matters and the distance does not.
@@ -511,18 +983,23 @@ mod tests {
     /// on, and the upper arm solved back to a fixed shoulder.
     fn rig() -> Rig {
         let mut r = Rig::new();
-        r.set_hub(-0.42, -0.12, 0.86, 0.42);
+        /* THE SAME NUMBERS THE GAME SHIPS. A fixture that drifts from the
+           rig it stands in for keeps passing while the thing it is about
+           breaks, which is what happened here: this still described a 60cm
+           wheel with the hands at nine and three long after neither was
+           true. Every row below is copied from build() in js/scene.js. */
+        r.set_hub(-0.42, -0.09, 0.845, 0.42);
         // t xyz, s xyz, pitch, roll, kind, ref, spare, spare
         #[rustfmt::skip]
         let table: Vec<f32> = vec![
-            // 0: the rim itself, which turns about its own axis
-            -0.42, -0.12, 0.86,  0.60, 0.60, 0.60,  0.42, 0.0,  SPIN, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            // 1: a forearm, which rides the wheel
-            -0.67, -0.15, 0.70,  0.13, 0.13, 0.27, -0.20, 0.10, SPIN, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            // 2: a glove on the rim
-            -0.69, -0.10, 0.84,  0.115, 0.135, 0.13, 0.0, 0.0,  SPIN, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            // 3: the upper arm, solved from a fixed shoulder to part 1's elbow
-            -0.62, 0.0195, 0.2949, 0.15, 0.15, 0.0, 0.0, 0.0,   BONE, 1.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            // 0: the rim itself, which turns about its own axis - 36cm across
+            -0.42, -0.09, 0.845, 0.36, 0.36, 0.36,  0.42, 0.0,  SPIN, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            // 1: a forearm - not placed, but solved to the glove below it
+            -0.58, -0.044, 0.701, 0.115, 0.108, 0.26, -0.20, 0.10, ARM, 2.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            // 2: a glove, on the rim at ten o'clock, which rides it
+            -0.576, 0.004, 0.854, 0.105, 0.098, 0.115, -0.20, 0.0, GRIP, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            // 3: the upper arm, 0.32 long, from a fixed shoulder to part 1's elbow
+            -0.62, -0.075, 0.37, 0.135, 0.135, 0.0, 0.0, 0.0,   BONE, 1.0, 0.0, 0.32,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             // 4: the torso, which does none of this
             -0.42, -0.30, 0.26,  0.56, 0.74, 0.42, -0.20, 0.0,  PLAIN, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
@@ -566,16 +1043,17 @@ mod tests {
     fn a_grip_never_leaves_the_rim() {
         let mut r = rig();
         let m = eye();
-        r.pose(&m, 0.0, 0.0);
+        r.pose(&m, 0.0, 0.0, 0.0);
         let hub = origin(&r, 0);
         let rest = origin(&r, 2);
         let radius = dist(rest, hub);
-        assert!(radius > 0.2, "the glove is on the hub, not the rim: {radius:.4}");
+        // a 36cm rim is 0.18 of radius, and a hand sits just inside it
+        assert!(radius > 0.12, "the glove is on the hub, not the rim: {radius:.4}");
 
         let mut moved: f64 = 0.0;
         for step in -8..=8 {
             let a = step as f64 * 0.18;
-            r.pose(&m, a, 0.0);
+            r.pose(&m, a, a, 0.0);
             let hub_now = origin(&r, 0);
             let grip = origin(&r, 2);
             assert!(
@@ -592,7 +1070,10 @@ mod tests {
             );
             moved = moved.max(dist(grip, rest));
         }
-        assert!(moved > 0.2, "the hands barely moved: {moved:.4} - they are turning on the spot");
+        /* Lock to lock over this sweep is 2.88 rad, so a hand on a 0.18
+           rim travels a 0.24 chord. A hand turning on the spot travels
+           nothing at all, which is the failure being excluded. */
+        assert!(moved > 0.15, "the hands barely moved: {moved:.4} - they are turning on the spot");
     }
 
     /* THE ARM STAYS ATTACHED AT BOTH ENDS.
@@ -604,11 +1085,11 @@ mod tests {
     fn an_upper_arm_follows_the_hand() {
         let mut r = rig();
         let m = eye();
-        let shoulder = [-0.62, 0.0195, 0.2949];
+        let shoulder = [-0.62, -0.075, 0.37];
         let mut span = (f64::MAX, f64::MIN);
         for step in -8..=8 {
             let a = step as f64 * 0.18;
-            r.pose(&m, a, 0.0);
+            r.pose(&m, a, a, 0.0);
             let arm = origin(&r, 3);
             // the bone's origin is its midpoint, so both ends are one half-axis away
             let half = [
@@ -625,13 +1106,167 @@ mod tests {
             let len = (half[0] * half[0] + half[1] * half[1] + half[2] * half[2]).sqrt() * 2.0;
             span = (span.0.min(len), span.1.max(len));
         }
-        // it has to actually stretch, or it is not following anything
+        /* AND IT IS THE SAME ARM THROUGHOUT.
+
+           This used to assert the opposite - that the bone CHANGED length by
+           at least two centimetres - because the only way a fixed shoulder
+           reached a forearm that had been carried bodily round the hub was to
+           telescope, and the test was written to describe what the code did.
+           A limb that grows and shrinks as the wheel turns is not an arm; it
+           was only ever invisible because the wheel barely turned. Now the
+           elbow is solved and the bone has the length the table gives it, at
+           every angle. */
         assert!(
-            span.1 - span.0 > 0.02,
-            "the arm was the same length at every angle ({:.4}..{:.4}) - it is not solving",
+            span.1 - span.0 < 2e-3,
+            "the upper arm telescoped between {:.4} and {:.4} as the wheel turned",
             span.0,
             span.1
         );
+        assert!(
+            (span.0 - 0.32).abs() < 2e-3,
+            "the upper arm solved at {:.4} rather than the 0.32 it was given",
+            span.0
+        );
+    }
+
+    /* THE ARM DOES NOT COME APART, AND DOES NOT GO THROUGH ITSELF.
+     *
+     * Three joints, two segments, and the only thing that may change between
+     * frames is the angle at the elbow. Both segments keep the length the
+     * table gives them at every steering angle in the sweep, and the wrist
+     * stays on the rim - which together are the whole contract of the solve.
+     */
+    #[test]
+    fn an_arm_keeps_its_own_bones() {
+        let mut r = rig();
+        let m = eye();
+        let shoulder = [-0.62, -0.075, 0.37];
+        let mut bend = (f64::MAX, f64::MIN);
+        for step in -12..=12 {
+            let a = step as f64 * 0.16;
+            r.pose(&m, a, a, 0.0);
+            // the forearm, by its own matrix: origin at the middle, z the shaft
+            let mid = origin(&r, 1);
+            let half = [
+                r.out[1 * MAT + 8] as f64 * 0.5,
+                r.out[1 * MAT + 9] as f64 * 0.5,
+                r.out[1 * MAT + 10] as f64 * 0.5,
+            ];
+            let elbow = [mid[0] - half[0], mid[1] - half[1], mid[2] - half[2]];
+            let wrist = [mid[0] + half[0], mid[1] + half[1], mid[2] + half[2]];
+            let fore = dist(elbow, wrist);
+            assert!(
+                (fore - 0.26).abs() < 2e-3,
+                "at {a:.2} rad the forearm is {fore:.4} long, not 0.26"
+            );
+            let up = dist(shoulder, elbow);
+            assert!(
+                (up - 0.32).abs() < 2e-3,
+                "at {a:.2} rad the upper arm is {up:.4} long, not 0.32"
+            );
+            // ...and the hand is still on the end of it
+            let hand = origin(&r, 2);
+            assert!(
+                dist(hand, wrist) < 0.06,
+                "at {a:.2} rad the glove is {:.4} from the wrist",
+                dist(hand, wrist)
+            );
+            bend = (bend.0.min(dist(shoulder, wrist)), bend.1.max(dist(shoulder, wrist)));
+        }
+        /* THE ELBOW HAS TO ACTUALLY WORK. A shoulder-to-wrist distance that
+           never changes is an arm being carried round rigidly, which is the
+           thing this replaced. */
+        assert!(
+            bend.1 - bend.0 > 0.03,
+            "the arm held one shape all the way round ({:.4}..{:.4})",
+            bend.0,
+            bend.1
+        );
+        // and it is never asked to be longer than it is
+        assert!(bend.1 < 0.58, "the arm was stretched to {:.4} of a 0.58 reach", bend.1);
+    }
+
+    /* THE HANDS GO ROUND FAR ENOUGH TO BE WORTH DRAWING.
+     *
+     * The figure as it was could hold the rim through about four degrees
+     * before the arm ran out, which is why a sixteen-to-one rack looked like a
+     * ten-degree one. The arms are now long enough and the shoulder forward
+     * enough that a hand follows a real corner most of the way round.
+     */
+    #[test]
+    fn the_hands_follow_a_real_corner() {
+        let mut r = rig();
+        let m = eye();
+        r.pose(&m, 0.0, 0.0, 0.0);
+        let hub = origin(&r, 0);
+        let rest = origin(&r, 2);
+        let angle = |p: [f64; 3], q: [f64; 3]| -> f64 {
+            let a = sub3(p, hub);
+            let b = sub3(q, hub);
+            (dot3(a, b) / (len3(a) * len3(b)).max(1e-9)).clamp(-1.0, 1.0).acos()
+        };
+        // a quarter turn of wheel, which is what a normal corner now asks for
+        r.pose(&m, 1.57, 1.57, 0.0);
+        let went = angle(rest, origin(&r, 2));
+        assert!(
+            went > 1.0,
+            "at a quarter turn of wheel the hands moved {:.0} degrees",
+            went.to_degrees()
+        );
+        /* ...and at a drift they stop, while the rim does not. The wheel is
+           at three radians and the hands are nowhere near it: that gap IS the
+           shuffle, and a hand that kept up with the rim here would be under
+           the wheel with the arm through the windscreen. */
+        r.pose(&m, 3.2, 3.2, 0.0);
+        let far = angle(rest, origin(&r, 2));
+        assert!(
+            far < 2.0,
+            "the hands followed the rim to {:.0} degrees of drift lock",
+            far.to_degrees()
+        );
+        assert!(far >= went - 1e-9, "the hands went BACKWARDS past the limit");
+    }
+
+    /* A HAND ON ITS WAY TO THE CONSOLE HAS LET GO OF THE WHEEL.
+     *
+     * A REACH used to keep the rim's rotation all the way across, which is
+     * right at the start of the move and nonsense at the end of it: the boost
+     * button is bolted to the car, so a hand arriving at it while still
+     * carrying a hundred and eighty degrees of steering arrives somewhere
+     * behind the seat. Fully pressed, the steering angle must not move the
+     * hand at all.
+     */
+    #[test]
+    fn a_pressing_hand_ignores_the_wheel() {
+        let mut r = Rig::new();
+        r.set_hub(0.0, 0.0, 0.0, 0.42);
+        #[rustfmt::skip]
+        let table: Vec<f32> = vec![
+            0.3, 0.0, 0.0,  0.1, 0.1, 0.1,  0.0, 0.0,  REACH, 0.0, 0.0, 0.0,
+            0.0, -0.4, 0.2,  0.0, 0.0, 0.0,
+        ];
+        r.load(&table);
+        r.pose(&eye(), 1.4, 1.4, 1.0);
+        let a = [r.out[12] as f64, r.out[13] as f64, r.out[14] as f64];
+        r.pose(&eye(), -1.4, -1.4, 1.0);
+        let b = [r.out[12] as f64, r.out[13] as f64, r.out[14] as f64];
+        assert!(
+            dist(a, b) < 1e-5,
+            "lock to lock moved a fully pressed hand by {:.4}",
+            dist(a, b)
+        );
+        // ...and it is on the button, not near it
+        assert!(
+            dist(a, [0.0, -0.4, 0.2]) < 1e-5,
+            "the hand arrived {:.4} from the button",
+            dist(a, [0.0, -0.4, 0.2])
+        );
+        // at rest it still rides the rim, or it never held the wheel at all
+        r.pose(&eye(), 1.4, 1.4, 0.0);
+        let held = [r.out[12] as f64, r.out[13] as f64, r.out[14] as f64];
+        r.pose(&eye(), -1.4, -1.4, 0.0);
+        let other = [r.out[12] as f64, r.out[13] as f64, r.out[14] as f64];
+        assert!(dist(held, other) > 0.1, "an unpressed hand did not ride the wheel");
     }
 
     /// A part that is not on the wheel must not care what the wheel is doing.
@@ -639,9 +1274,9 @@ mod tests {
     fn the_wheel_does_not_move_the_body() {
         let mut r = rig();
         let m = eye();
-        r.pose(&m, 0.0, 0.0);
+        r.pose(&m, 0.0, 0.0, 0.0);
         let rest = origin(&r, 4);
-        r.pose(&m, 1.45, 0.0);
+        r.pose(&m, 1.45, 1.45, 0.0);
         let locked = origin(&r, 4);
         assert!(
             dist(rest, locked) < 1e-6,
@@ -656,12 +1291,12 @@ mod tests {
     fn the_figure_rides_the_car() {
         let mut r = rig();
         let mut m = eye();
-        r.pose(&m, 0.3, 0.0);
+        r.pose(&m, 0.3, 0.3, 0.0);
         let before: Vec<[f64; 3]> = (0..r.len()).map(|i| origin(&r, i)).collect();
         m[12] = 120.0;
         m[13] = 4.0;
         m[14] = -37.5;
-        r.pose(&m, 0.3, 0.0);
+        r.pose(&m, 0.3, 0.3, 0.0);
         for i in 0..r.len() {
             let a = before[i];
             let b = origin(&r, i);
@@ -693,6 +1328,28 @@ mod tests {
         /* ...and BELOW the roof, which is what the bonnet camera existed to
            work around. Over the seat the headliner is at 0.385. */
         assert!(e[1] < 0.385, "the eye is through the roof at y {}", e[1]);
+
+        /* AND IT CAN SEE THE WHEEL IT IS HOLDING.
+         *
+         * The eye being on the face is not enough - it was on the face when
+         * the whole cockpit was two frame-heights below the bottom edge. What
+         * makes a first-person view a driving position is where the eye is
+         * relative to the WHEEL, and the core knows where that is, because
+         * the hub is loaded with the rig.
+         *
+         * Behind it far enough to see over it, above it by less than a head.
+         * At 36cm behind and 40cm above - which is what shipped - the hub sat
+         * 48 degrees down and the hands were off the screen. */
+        let hub = [-0.42f64, -0.09, 0.845];
+        let back = hub[2] - e[2];
+        let rise = e[1] - hub[1];
+        assert!(back > 0.45, "the eye is {back:.3}u behind the wheel - too close to see over it");
+        assert!(rise < 0.40, "the eye is {rise:.3}u above the hub - the wheel is off the bottom");
+        assert!(
+            (rise / back).atan() < 0.52,
+            "the hub is {:.0} degrees below the view axis, so the hands are out of frame",
+            (rise / back).atan().to_degrees()
+        );
 
         // move the head, and the eye must move with it by exactly as much
         r.set_head(-0.42, 0.315, 0.20);
@@ -772,9 +1429,9 @@ mod tests {
             0.0, 0.5, 0.0,  0.1, 0.1, 0.1,  0.0, 0.0,  BUTTON, 0.0, 0.02, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
         r.load(&table);
-        r.pose(&eye(), 0.0, 0.0);
+        r.pose(&eye(), 0.0, 0.0, 0.0);
         let rest = r.out[13];
-        r.pose(&eye(), 0.0, 1.0);
+        r.pose(&eye(), 0.0, 0.0, 1.0);
         let down = r.out[13];
         assert!(
             ((rest - down) as f64 - 0.02).abs() < 1e-5,
@@ -782,10 +1439,10 @@ mod tests {
             rest - down
         );
         // ...and half a press is half the travel, so it can follow a ramp
-        r.pose(&eye(), 0.0, 0.5);
+        r.pose(&eye(), 0.0, 0.0, 0.5);
         assert!((((rest - r.out[13]) as f64) - 0.01).abs() < 1e-5, "the travel is not linear");
         // an unpressed button is exactly where the table put it
-        r.pose(&eye(), 0.0, 0.0);
+        r.pose(&eye(), 0.0, 0.0, 0.0);
         assert!((r.out[13] - rest).abs() < 1e-6, "it did not come back up");
     }
 
@@ -815,24 +1472,24 @@ mod tests {
         ];
         r.load(&table);
 
-        r.pose(&eye(), 0.0, 0.0);
+        r.pose(&eye(), 0.0, 0.0, 0.0);
         assert!(r.out[12].abs() < 1e-6, "at rest the hand has already moved: {}", r.out[12]);
-        r.pose(&eye(), 0.0, 1.0);
+        r.pose(&eye(), 0.0, 0.0, 1.0);
         assert!((r.out[12] - 1.0).abs() < 1e-6, "it did not arrive: {}", r.out[12]);
-        r.pose(&eye(), 0.0, 0.0);
+        r.pose(&eye(), 0.0, 0.0, 0.0);
         assert!(r.out[12].abs() < 1e-6, "it did not come back: {}", r.out[12]);
 
         /* THE EASE. At the half way point a smoothstep is exactly half, so
            that says nothing on its own - what separates it from a straight
            line is the ENDS. A tenth of the way through, a linear hand is a
            tenth of the way across; an eased one has barely left. */
-        r.pose(&eye(), 0.0, 0.1);
+        r.pose(&eye(), 0.0, 0.0, 0.1);
         let early = r.out[12] as f64;
         assert!(early < 0.05, "the hand left at a constant speed: {early:.4} at 10%");
-        r.pose(&eye(), 0.0, 0.9);
+        r.pose(&eye(), 0.0, 0.0, 0.9);
         let late = r.out[12] as f64;
         assert!(late > 0.95, "the hand arrived at a constant speed: {late:.4} at 90%");
-        r.pose(&eye(), 0.0, 0.5);
+        r.pose(&eye(), 0.0, 0.0, 0.5);
         assert!(((r.out[12] as f64) - 0.5).abs() < 1e-5, "it is not symmetrical");
     }
 
@@ -846,7 +1503,7 @@ mod tests {
             0.0, 0.0, 0.0,  0.15, 0.15, 0.0,  0.0, 0.0,  BONE, 99.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
         r.load(&table);
-        r.pose(&eye(), 0.4, 0.0);
+        r.pose(&eye(), 0.4, 0.4, 0.0);
         assert_eq!(r.len(), 1);
         assert!(r.out.iter().all(|v| v.is_finite()), "a bad reference produced a NaN pose");
     }

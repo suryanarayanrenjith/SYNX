@@ -331,7 +331,7 @@ fn diag_open() -> bool {
        a command - the path is data, and a folder name with a space or an
        ampersand in it cannot become anything else. */
     #[cfg(target_os = "windows")]
-    let r = std::process::Command::new("rundll32")
+    let r = diag::quiet(std::process::Command::new("rundll32"))
         .args(["url.dll,FileProtocolHandler"])
         .arg(&p)
         .spawn();
@@ -383,7 +383,8 @@ fn launch_game(app: tauri::AppHandle, settings: serde_json::Value) -> Result<boo
        label for something that does not happen. */
     if parsed.renderer() != startup_renderer() || parsed.vsync != startup_vsync() {
         let exe = std::env::current_exe().map_err(|e| format!("cannot find the executable: {e}"))?;
-        std::process::Command::new(exe)
+        // ...quietly, like every other child here - see diag::quiet
+        diag::quiet(std::process::Command::new(exe))
             .arg("--play")
             .spawn()
             .map_err(|e| format!("could not restart for the renderer change: {e}"))?;

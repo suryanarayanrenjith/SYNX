@@ -179,6 +179,22 @@ if (WANT.check) {
      transition. */
   step('DOM lookups');
   run(process.execPath, ['tools/checkdom.js'], 'DOM lookup check');
+
+  /* The campaign, walked down both paths without driving any of it: every
+     line, every portrait it names, every branch, both endings, and the state
+     machine that plays them. A story defect loads clean and runs clean in
+     exactly the way a dangling DOM lookup does - the difference is that it is
+     six chapters in before anybody sees it. */
+  step('story');
+  run(process.execPath, ['tools/checkstory.js'], 'campaign and branch check');
+
+  /* THE RAMPS, WHICH EXIST THREE TIMES OVER: a row in the table, a window on
+     the solver, and geometry somebody builds. Nothing makes those agree, and
+     when they stop agreeing a car launches off a surface that is not where it
+     is drawn - which was reported as ghost ramps the cars were jumping
+     through, and which no test then in the suite could have caught. */
+  step('ramps');
+  run(process.execPath, ['tools/checkramps.js'], 'ramp geometry and arming check');
 }
 
 if (WANT.smoke) {
