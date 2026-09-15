@@ -1,7 +1,8 @@
 /* Build web/data/synx.pak — every asset the game ships, in one file.
  *
  *     node tools/pack.js            build from assets-src/
- *     node tools/pack.js --check    ...and verify every entry reads back
+ *     node tools/pack.js --check    verify the EXISTING pack, writing nothing
+ *     node tools/pack.js --force    ...build even if it drops entries
  *     node tools/pack.js --list     show what is in the existing pack
  *     node tools/pack.js --unpack   extract the pack back to assets-src/
  *
@@ -182,6 +183,48 @@ if (process.argv.includes('--unpack')) {
   process.exit(0);
 }
 
+/* ---------------------------------------------------------------- checking --
+ *
+ * --check VERIFIES WHAT IS ON DISK. It did not: the build ran unconditionally
+ * above it and --check only added a pass over the file it had just written, so
+ * "verify every entry byte for byte" was really "pack, then verify the pack you
+ * just made" - which is a tautology on a good day and a disaster on a bad one.
+ *
+ * The bad day: assets-src is a scratch directory that is not checked in, so it
+ * is routinely absent or half-populated. Run --check against four files and it
+ * cheerfully replaced a forty-two megabyte shipped archive with a three hundred
+ * kilobyte one, reported "verified: all 4 entries match", and exited zero. The
+ * only copy of ninety-six assets was then a git blob.
+ *
+ * So the verification reads the existing pack and never writes anything, and
+ * the BUILD refuses to shrink the archive without being told to - see the
+ * guard below. */
+if (process.argv.includes('--check')) {
+  if (!fs.existsSync(OUT)) {
+    console.error('There is no pack at ' + path.relative(ROOT, OUT) + ' to check.');
+    process.exit(1);
+  }
+  const { buf, toc: back, base } = readPack();
+  let bad = 0, unchecked = 0;
+  for (const e of back) {
+    const d = dirFor(e.n);
+    /* An entry with no source directory cannot be compared against one. That
+       used to throw here - `d.src` on undefined - which turned "this pack has
+       an entry I retired" into a stack trace. */
+    if (!d) { unchecked++; continue; }
+    const srcPath = path.join(SRC, d.src, path.basename(e.n));
+    if (!fs.existsSync(srcPath)) { console.error('  MISSING SOURCE ' + e.n); bad++; continue; }
+    const got = buf.slice(base + e.o, base + e.o + e.l);
+    if (!got.equals(fs.readFileSync(srcPath))) { console.error('  MISMATCH ' + e.n); bad++; }
+  }
+  console.log('checked ' + path.relative(ROOT, OUT) + '  (' + mb(buf.length) + ', '
+    + back.length + ' entries)');
+  if (unchecked) console.log('  ' + unchecked + ' entry/entries had no source to compare against');
+  console.log(bad ? '  ' + bad + ' ENTRIES CORRUPT'
+    : '  verified: all ' + back.length + ' entries match their source byte for byte');
+  process.exit(bad ? 1 : 0);
+}
+
 // --------------------------------------------------------------- building ---
 const files = collect();
 if (!files.length) {
@@ -200,6 +243,32 @@ for (const f of files) {
   offset += buf.length;
 }
 
+/* THE ARCHIVE MAY NOT SHRINK BY ACCIDENT.
+ *
+ * assets-src is a scratch tree. It is not checked in, --unpack can be
+ * interrupted, and a tool that walks it can leave it holding a handful of
+ * files - at which point a plain `node tools/pack.js` quietly replaces the
+ * shipped archive with those. Losing an asset that way is silent: the pack
+ * builds, the game starts, and a texture is missing somewhere down the road.
+ *
+ * So a build that would DROP entries stops and says which. Removing something
+ * on purpose is what --force is for, and tools/trimatlas.js does not need it
+ * because it edits sheets in place rather than deleting them. */
+if (fs.existsSync(OUT) && !process.argv.includes('--force')) {
+  const have = new Set(files.map((f) => f.rel));
+  const gone = readPack().toc.map((e) => e.n).filter((n) => !have.has(n));
+  if (gone.length) {
+    console.error('Refusing to build: ' + gone.length + ' entry/entries in the existing pack'
+      + ' are not in ' + path.relative(ROOT, SRC) + '.');
+    for (const n of gone.slice(0, 12)) console.error('  missing  ' + n);
+    if (gone.length > 12) console.error('  ...and ' + (gone.length - 12) + ' more');
+    console.error('\nThat is what a half-finished --unpack looks like.'
+      + ' Run `node tools/pack.js --unpack` first,'
+      + ' or pass --force if the removal is deliberate.');
+    process.exit(1);
+  }
+}
+
 const tocJson = Buffer.from(JSON.stringify(toc), 'utf8');
 const header = Buffer.alloc(12);
 header.write('SYNXPAK1', 0, 'ascii');
@@ -214,26 +283,4 @@ console.log('  table of contents  ' + tocJson.length + ' bytes');
 console.log('  data               ' + mb(offset));
 console.log('  total              ' + mb(pak.length));
 
-if (process.argv.includes('--check')) {
-  /* Read it back the way the game will and prove every entry survives. The
-     pack is the only copy the shipped build has; a packer that silently
-     truncated one texture would not be found until somebody drove past it. */
-  const { buf, toc: back, base } = readPack();
-  let bad = 0;
-  let unchecked = 0;
-  for (const e of back) {
-    const d = dirFor(e.n);
-    /* An entry with no source directory cannot be compared against one. That
-       used to throw here - `d.src` on undefined - which turned "this pack has
-       an entry I retired" into a stack trace. */
-    if (!d) { unchecked++; continue; }
-    const srcPath = path.join(SRC, d.src, path.basename(e.n));
-    if (!fs.existsSync(srcPath)) { console.error('  MISSING SOURCE ' + e.n); bad++; continue; }
-    const got = buf.slice(base + e.o, base + e.o + e.l);
-    if (!got.equals(fs.readFileSync(srcPath))) { console.error('  MISMATCH ' + e.n); bad++; }
-  }
-  if (unchecked) console.log('  ' + unchecked + ' entry/entries had no source to compare against');
-  console.log(bad ? '  ' + bad + ' ENTRIES CORRUPT'
-                  : '  verified: all ' + back.length + ' entries match their source byte for byte');
-  if (bad) process.exit(1);
-}
+

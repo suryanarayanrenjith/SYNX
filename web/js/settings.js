@@ -245,6 +245,29 @@
       opts: ['OFF', '25%', '50%', '75%', '100%'], def: 4,
       hint: 'Engine, tyres, impacts and the interface.' },
 
+    // ==================================================== LAUNCHER: clips ==
+    /* THE REPLAY BUFFER.
+       OFF by default, and F8 turns it on. A replay buffer costs a readback
+       every captured frame and up to a few hundred megabytes of memory, and
+       neither is something to spend on a player who has not asked for it. What
+       the other rows control is what it costs once they have: the size of the
+       picture, how often it is taken, and the ceiling on the ring. */
+    { where: 'launcher', tab: 2, group: 'RECORDING', key: 'recOn', label: 'REPLAY BUFFER',
+      opts: ['OFF', 'ON'], def: 0,
+      hint: 'Off until you ask for it - F8, here, or the RECORDING ON / OFF row on the CONTROLS screen. Once on it keeps the last half minute of play in memory, F9 writes it to a file after the fact, and at the end of a run it reads back over every frame it is holding, picks the best stretch and saves that on its own.' },
+    { where: 'launcher', tab: 2, key: 'recSize', label: 'CLIP SIZE',
+      opts: ['480p', '540p', '720p'], def: 0,
+      hint: 'How big the recorded picture is. It is read back off the graphics card every captured frame, so this is the row that decides what recording costs: 720p is more than twice the work of 480p.' },
+    { where: 'launcher', tab: 2, key: 'recFps', label: 'CLIP FRAME RATE',
+      opts: ['20', '30', '60'], def: 1,
+      hint: 'Captured frames per second. The game keeps running at its own rate; a frame that will not be kept is never read back at all.' },
+    { where: 'launcher', tab: 2, key: 'recQuality', label: 'CLIP QUALITY',
+      opts: ['LOW', 'NORMAL', 'HIGH'], def: 1,
+      hint: 'How hard each frame is compressed. Higher is a bigger file and a bigger share of the memory budget below.' },
+    { where: 'launcher', tab: 2, key: 'recBudget', label: 'REPLAY MEMORY',
+      opts: ['48 MB', '96 MB', '192 MB', '384 MB'], def: 1,
+      hint: 'The ceiling on what the buffer may hold. Whichever runs out first - this or the half minute - decides how far back a replay reaches.' },
+
     // ======================================================= GAME: gamepad ==
     /* Tab 1 of the CONTROLS screen. Tab 0 is the keyboard, whose rows are key
        BINDINGS rather than settings and are declared in js/game.js beside the

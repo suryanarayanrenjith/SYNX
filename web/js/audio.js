@@ -66,6 +66,20 @@
   const MUSIC_TRACKS = [MENU_TRACK, CUTSCENE_TRACK, FACTORY_TRACK, FINAL_TRACK].concat(RADIO_TRACKS);
   const ENVIRONMENTS = new Set(['coast', 'canyon', 'mesa', 'city']);
   const FADE = 1.6;              // seconds; long enough to sound intentional
+  /* ...AND A SHORTER ONE FOR A CUE.
+   *
+   * A cross-fade and a cue are two different events and they were the same
+   * number. A cross-fade happens in the middle of a drive when the scenery
+   * changes family, and 1.6 seconds is right for it: nobody should be able to
+   * say where one song ended. A CUE is the title theme arriving on the frame
+   * the veil lifts and the opening shot starts moving - and fading that in
+   * over a second and a half means the first bar and a half of the track, the
+   * part written to be the beginning, happens under a fader on its way up.
+   *
+   * The whole point of holding the music back through the cold open and the
+   * safety notice - see onMusic in js/game.js - is that it lands WITH the
+   * picture. It cannot land if it is still arriving when the shot is over. */
+  const CUE_FADE = 0.42;
 
   class Audio {
     constructor() {
@@ -244,7 +258,9 @@
         el.loop = !!def.loop;
         el.preload = 'auto';
         el.volume = 0;
-        const entry = { el, gain: null, ready: false, broken: false, def, stopToken: 0 };
+        /* `pending` is a mix that was asked for before this element could
+           serve it; see the canplay handler below for why it has to survive. */
+        const entry = { el, gain: null, ready: false, broken: false, def, stopToken: 0, pending: null };
         this.tracks[def.key] = entry;
         el.addEventListener('canplay', () => {
           if (!this.ctx || entry.ready) return;
@@ -256,7 +272,30 @@
             entry.gain = g;
             entry.ready = true;
             el.volume = 1;
-            if (this.current === def.key) this._mixTo(def.key, false);
+            /* THE INTENT THAT ARRIVED BEFORE THE ELEMENT DID.
+             *
+             * This is the music-sync bug, and it is a one-word one: the
+             * replay used to be `_mixTo(def.key, false)`, so a track that was
+             * asked to START FROM THE TOP while it was still buffering came
+             * back as a track asked to carry on from wherever it was.
+             *
+             * It matters because of exactly when it happens. The title theme
+             * is deliberately held through the cold open and the
+             * photosensitivity notice and then cued on the frame the veil
+             * lifts - and on a cold cache that frame is very often before
+             * `canplay`. So the one moment in the game where the music is
+             * supposed to hit a picture was the one moment the restart was
+             * dropped, and the theme came in late, from the middle, under a
+             * one-and-a-half-second fade.
+             *
+             * The request is remembered instead and replayed in full. */
+            if (this.current === def.key) {
+              const want = entry.pending;
+              entry.pending = null;
+              this._mixTo(def.key, want ? !!want.restart : false, want ? want.fade : undefined);
+            } else {
+              entry.pending = null;
+            }
           } catch (e) { /* a second source on one element is not allowed */ }
         }, { once: true });
         el.addEventListener('ended', () => {
@@ -321,54 +360,89 @@
     /**
      * Compatibility entry point used by Game: 'menu' selects the title theme;
      * 'race' selects the environment radio; null fades all music out.
+     *
+     * `opts.cue` marks a track that is being STARTED TO A PICTURE rather than
+     * merely selected: it restarts from the top whether or not it is already
+     * the current track, and it arrives on the short fade instead of the
+     * cross-fade. The title theme landing on the frame the opening shot begins
+     * is the only caller, and it is the only one that should be - everything
+     * else is a transition between two pieces of music, where being unable to
+     * hear the join is the whole point. See startIntro in js/game.js.
      */
-    playTrack(key) {
+    playTrack(key, opts) {
+      const cue = !!(opts && opts.cue);
+      const fade = cue ? CUE_FADE : (opts && opts.fade);
       if (key === 'menu') {
         this.intent = 'menu';
-        this._mixTo('menu', this.current !== 'menu');
+        this._mixTo('menu', cue || this.current !== 'menu', fade);
         return;
       }
       if (key === 'cutscene') {
         this.intent = 'cutscene';
-        this._mixTo('cutscene', this.current !== 'cutscene');
+        this._mixTo('cutscene', cue || this.current !== 'cutscene', fade);
         return;
       }
       if (key === 'factory') {
         this.intent = 'factory';
-        this._mixTo('factory', this.current !== 'factory');
+        this._mixTo('factory', cue || this.current !== 'factory', fade);
         return;
       }
       if (key === 'final') {
         this.intent = 'final';
-        this._mixTo('final', this.current !== 'final');
+        this._mixTo('final', cue || this.current !== 'final', fade);
         return;
       }
       if (key === 'race' || key === 'radio') {
         const alreadyOnAir = this.intent === 'radio' && !!this._radioDef(this.current);
         this.intent = 'radio';
-        if (alreadyOnAir) this._mixTo(this.current, false);
+        if (alreadyOnAir && !cue) this._mixTo(this.current, false, fade);
         else this._startRadio(true);
         return;
       }
       this.intent = null;
-      this._mixTo(null, false);
+      this._mixTo(null, false, fade);
     }
 
-    _mixTo(key, restart) {
+    /* Can this track start on the frame it is asked to?
+     *
+     * A media element is not playable until it has buffered, and the title
+     * theme is cued at an exact moment - the frame the veil lifts. Asked
+     * before that, so the opening can wait a beat rather than start a shot the
+     * music then arrives late over. See js/intro.js.
+     *
+     * A track that has FAILED reports ready, deliberately: there is nothing to
+     * wait for, and a caller that waits for a file which is never coming has
+     * turned a missing song into a hang. */
+    trackReady(key) {
+      const t = this.tracks && this.tracks[key];
+      if (!t) return false;
+      return !!(t.ready || t.broken);
+    }
+
+    /** True when there is no music at all, so nothing can be waited for. */
+    get muted() {
+      return !this.ready || (this.musicVol !== undefined && this.musicVol <= 0);
+    }
+
+    _mixTo(key, restart, fade) {
       this.current = key;
       const silent = this.musicVol !== undefined && this.musicVol <= 0;
+      const span = fade === undefined ? FADE : Math.max(0.02, fade);
       for (const k of Object.keys(this.tracks)) {
         const t = this.tracks[k];
         const want = !silent && k === key;
         if (!t.ready || !t.gain) {
-          if (!want && t.el) t.el.pause();
+          /* Not ready to be mixed yet. Remember what was asked for rather than
+             dropping it - the canplay handler replays this, restart and all. */
+          if (want) t.pending = { restart: !!restart, fade };
+          else { t.pending = null; if (t.el) t.el.pause(); }
           continue;
         }
         const now = this.ctx.currentTime;
         t.gain.gain.cancelScheduledValues(now);
         t.gain.gain.setValueAtTime(t.gain.gain.value, now);
         const target = want ? (t.def.gain || 1) : 0;
-        t.gain.gain.linearRampToValueAtTime(target, now + FADE);
+        t.gain.gain.linearRampToValueAtTime(target, now + span);
         if (want) {
           t.stopToken++;
           if (restart) {
@@ -380,7 +454,7 @@
           const token = ++t.stopToken;
           global.setTimeout(() => {
             if (t.stopToken === token && this.current !== k && !t.el.paused) t.el.pause();
-          }, FADE * 1000 + 60);
+          }, span * 1000 + 60);
         }
       }
     }

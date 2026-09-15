@@ -1559,6 +1559,21 @@
     async load(onProgress) {
       const gl = this.gl;
       const step = (v) => { this.progress = v; if (onProgress) onProgress(v); };
+      /* THE COLD OPEN IS ON THE SAME THREAD AS ALL OF THIS.
+       *
+       * Every `mark` below is a synchronous pass over a hundred and seventy-five
+       * kilometres of course, and while one is running nothing else on the page
+       * can run either - so the tachometer in front of the load stopped dead for
+       * the length of each one. Those stalls ARE the stutter that gets reported
+       * as the loading screen lagging; the loading screen was never the slow
+       * part.
+       *
+       * So a frame is handed back between passes. It costs one frame per call
+       * and it is capped, so the load is no slower on a machine that cannot
+       * produce one - see NR.Boot.breathe. */
+      const Boot = global.NR.Boot;
+      const phase = (key, frac, detail) => { if (Boot) Boot.set(key, frac, detail); };
+      const breathe = () => (Boot ? Boot.breathe() : Promise.resolve());
 
       step(0.02);
       /* THE SCENE COMES OUT OF THE PACK.
@@ -1583,6 +1598,8 @@
             return r.arrayBuffer();
           });
       step(0.55);
+      phase('geometry', 0.05);
+      await breathe();
 
       this.man = manifest;
       const T = (window.__synxLoad = window.__synxLoad || {});
@@ -1602,7 +1619,11 @@
       this.srcIdx = idx;
 
       mark('fixupGeometry', () => this.fixupGeometry(verts));
+      phase('geometry', 0.3);
+      await breathe();
       mark('fixupInstances', () => this.fixupInstances());
+      phase('geometry', 0.5);
+      await breathe();
 
       /* Carry the road on past where the data stops.
        *
@@ -1617,9 +1638,12 @@
         this.courseLength = manifest.centre.length;
         this.shippedLength = manifest.centre.shippedCount * manifest.centre.step;
       }
+      phase('geometry', 0.85);
+      await breathe();
       // needs the EXTENDED centreline: the campaign ends at 173 km and the
       // shipped one stops at 26.9
       mark('relocateFinishGantry', () => this.relocateFinishGantry());
+      phase('geometry', 1);
 
       this.vao = gl.createVertexArray();
       gl.bindVertexArray(this.vao);
@@ -1686,11 +1710,20 @@
       await Promise.all(names.map(n => this.loadTexture(n).then(() => {
         done++;
         step(0.65 + 0.32 * (done / Math.max(1, names.length)));
+        phase('textures', done / Math.max(1, names.length),
+          done + ' / ' + names.length + ' SURFACES');
       })));
 
       await this.loadSky();
+      phase('textures', 1, '');
+      await breathe();
+      phase('world', 0.1);
       mark('buildDrawLists', () => this.buildDrawLists());
+      phase('world', 0.35);
+      await breathe();
       mark('buildDressing', () => this.buildDressing());
+      phase('world', 0.94);
+      await breathe();
       /* AFTER the dressing, for two reasons. The road field and the audit
          itself are both built by buildDressing, so nothing can be asked this
          question before it has run; and by now the instances are where they
@@ -1701,6 +1734,7 @@
       if (this.auditInstances) this.auditInstances(this.man);
       this.ready = true;
       step(1);
+      phase('world', 1);
       return this;
     }
 

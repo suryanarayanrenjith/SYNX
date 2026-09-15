@@ -474,6 +474,9 @@
 <script src="js/settings.js?v=rust-1"></script>
 <!-- The controller. Loaded before the game, which holds the only instance. -->
 <script src="js/ui.js?v=rust-1"></script>
+<!-- The one number the whole boot reports into, and the yield that lets the
+     cold open keep drawing through it. Before anything that loads. -->
+<script src="js/boot.js?v=rust-1"></script>
 <script src="js/ignition.js?v=rust-1"></script>
 <script src="js/staging.js?v=rust-1"></script>
 <script src="js/intro.js?v=rust-1"></script>
@@ -497,6 +500,9 @@
 <script src="js/modeselect.js?v=rust-1"></script>
 <script src="js/net.js?v=rust-1"></script>
 <script src="js/multiplayer.js?v=rust-1"></script>
+<!-- The replay buffer. Loaded after the game, before the bootstrap that
+     starts it: it needs NR.Rec from js/wasm.js and the Game from js/game.js. -->
+<script src="js/record.js?v=rust-1"></script>
 <script src="js/host.js?v=rust-1"></script>
 <script src="js/main.js?v=rust-1"></script>
 </body>

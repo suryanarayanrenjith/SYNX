@@ -358,6 +358,45 @@
    * keep the exact arc lengths, lengths and heights they shipped with - are
    * the top of that progression rather than a separate idea.
    */
+  /* ==================================== AURORA FORGE // THE BROKEN ROOF ==
+   *
+   * A kilometre of Aurora's production hall has lost its roof, and somebody
+   * has run a steel ramp up through the hole. The road carries on underneath;
+   * what this is, is a second line over the top of it.
+   *
+   * WHY IT IS A TABLE AND NOT SIX NUMBERS IN THE GEOMETRY.
+   *
+   * This section exists three times over - as the window the solver is armed
+   * with, as the structure js/chapters.js builds, and as the stretch of hall
+   * that has to be CLEARED so the car is not driving over a gantry crane it
+   * cannot see. Those three have to agree to the unit: a deck drawn where the
+   * car is not is a car driving through the air, and a deck the car reaches
+   * before the hall has stopped hanging machinery over the road is a
+   * collision with something a kilometre up. See tools/checkramps.js, which
+   * exists because exactly that went wrong twice before.
+   *
+   * So it is declared once, here, and published on NR.
+   *
+   *   foot    the ramp leaves the floor
+   *   deck    it levels out onto the roof
+   *   edge    the roof run ends and the slope down begins
+   *   floor   the slope reaches the road again
+   *   h       how far the deck is above the road
+   *
+   * WHERE IT SITS, AND WHY THERE. Chapter 6's last set piece is the Aurora
+   * hauler at 128,200 and its finale runs the last two hundred units into the
+   * flag at 131,300. Between them is three kilometres of hall with nothing
+   * scheduled in it, which is the only window on this route long enough to
+   * take a climb, a run and a descent with no trial underneath any of it.
+   */
+  const FORGE_ROOF = {
+    foot: 128760, deck: 128900, edge: 129900, floor: 130060, h: 18.0,
+    /* What the hall must not build. Wider than the structure at both ends, so
+       the breach in the roof is open BEFORE the ramp reaches it and the last
+       overhead member is well behind the car when it comes back down. */
+    clearFrom: 128600, clearTo: 130220,
+  };
+
   const COURSE_RAMPS = [
     { id: 'l1_seawall', level: 1, s: 1120,   len: 54, h: 2.8, name: 'SEAWALL LAUNCH' },
     { id: 'l2_spine',   level: 2, s: 23900,  len: 46, h: 3.4, name: 'SPINE LAUNCH' },
@@ -403,6 +442,17 @@
        These three are 0.12, 0.32 and 0.12 degrees, they are 440 apart so the
        section reads as one run rather than three errands, and the lengths,
        heights, names and order are exactly what they were. */
+    /* The Forge roof, and the one ramp on the course with a DESCENT: `drop`
+       units of slope off the far end that the car drives DOWN rather than
+       falls off. Every mark is derived from FORGE_ROOF above so the structure
+       and the window cannot drift apart. See armRampRoad in js/wasm.js. */
+    { id: 'l6_roof', level: 6,
+      s: FORGE_ROOF.edge,
+      len: FORGE_ROOF.deck - FORGE_ROOF.foot,
+      crest: FORGE_ROOF.edge - FORGE_ROOF.deck,
+      drop: FORGE_ROOF.floor - FORGE_ROOF.edge,
+      h: FORGE_ROOF.h, lip: FORGE_ROOF.h, roof: true,
+      name: 'THE BROKEN ROOF' },
     { id: 'jump_a',     level: 7, s: 164620, len: 46, h: 3.4, name: 'FIRST LAUNCH' },
     { id: 'jump_b',     level: 7, s: 165060, len: 38, h: 4.1, name: 'SECOND LAUNCH' },
     { id: 'jump_c',     level: 7, s: 165500, len: 32, h: 4.8, name: 'LONG LAUNCH' },
@@ -548,6 +598,13 @@
   const RAMP_CLEAN = 0.62;
   /* A ramp a bumper behind the car is not the next one. */
   const RAMP_PAST = -14;
+  /* WHERE A RAMP STOPS BEING THE ONE THE CAR IS ON.
+     For the eight launch ramps that is the lip - past it the car is in the air
+     and the window has done its job. The Forge roof keeps going: its descent
+     is part of the structure, and letting the next-ramp search step past it at
+     the top of the slope would take the window off the solver with the car
+     still eighteen units up, which drops it. */
+  const rampEnd = (r) => r.s + (r.drop || 0);
 
   /* ---------------------------------------------------------- FREE ROAM ----
    *
@@ -1116,6 +1173,18 @@
       hint: 'ESC always pauses whatever this is set to, because it is the one key nobody has to be told.' },
     { key: 'fullscreen', label: 'FULLSCREEN', def: ['f'],
       hint: 'Takes the whole display. The same as the WINDOW MODE row on the first page.' },
+    /* THE RECORDER. Three rows, and they are GLOBAL: once the buffer is on it
+       runs on every screen the game has, so the keys work in a race, in Free
+       Roam, on the title screen and in the middle of a cutscene. The function
+       keys are the ones nothing else in the game uses and the ones every other
+       recorder in the world has trained people to reach for. F8 is first
+       because nothing is recording until it is pressed. */
+    { key: 'clipToggle', label: 'RECORDING ON / OFF', def: ['f8'],
+      hint: 'Starts the replay buffer, which is OFF until you ask for it. Turning it off again gives its memory straight back.' },
+    { key: 'clipSave', label: 'SAVE REPLAY', def: ['f9'],
+      hint: 'Writes the last thirty seconds to a file. The buffer is already running, so this is a save rather than a start - and it does not pause the game for a moment: the file is built on the recorder’s own thread while you keep driving.' },
+    { key: 'clipMark', label: 'MARK HIGHLIGHT', def: ['f10'],
+      hint: 'Tags this moment. Marked moments are stitched into one reel at the end of the run, automatically - and if you never mark anything, the recorder reads back over every frame it is holding and picks the best stretch itself.' },
   ];
 
   /* How a key event name is written on a cap. `e.key` is lowercased before it
@@ -3884,6 +3953,8 @@
     fadeTo(v) { this.fadeTarget = v; }
 
     resetCar() {
+      /* Last run's footage is not this run's. */
+      if (NR.Record) NR.Record.runStarted();
       // both cars start on the chosen route's own line, not at the head of the
       // course - a level is a stretch of road, and it begins where it begins
       const s0 = this.startAt === undefined ? 30 : this.startAt;
@@ -4009,6 +4080,12 @@
       if (this.hud && this.hud.setGlow) {
         this.hud.setGlow([0, 0.55, 1, 1.6][st.hudGlow === undefined ? 2 : st.hudGlow]);
       }
+
+      /* THE REPLAY BUFFER, from the five rows the player owns.
+         Read here rather than in js/record.js so the recorder has no opinion
+         about where settings live - it is handed numbers, the same way the HUD
+         is handed a glow scale. */
+      this.applyRecorderSettings(st);
 
       this.fogDensity = FX.fogDensity * (ultra ? 1.10 : 1);
       this.volDensity = FX.volDensity * (ultra ? 1.35 : 1);
@@ -4206,6 +4283,35 @@
     }
 
     /** Write the settings out and return to the title screen. */
+    /* The recorder's five rows, turned into the numbers it takes.
+     *
+     * A change of size, rate or quality has to rebuild the ring and therefore
+     * throws away whatever was in it - which is correct and is why the rows
+     * are on the launcher's page rather than on a pause menu: nobody should be
+     * able to lose the replay they were about to save by nudging a slider.
+     */
+    applyRecorderSettings(st) {
+      const R = NR.Record;
+      if (!R) return;
+      /* Read as `st.<key>`, which is the shape tools/checksettings.js looks
+         for. An alias would hide the read from it, and a row nothing can be
+         seen to read is exactly what that check exists to catch. */
+      if (!st) st = (NR.Settings && NR.Settings.read) ? NR.Settings.read() : {};
+      const pick = (v, list, def) => list[v === undefined ? def : M.clamp(v | 0, 0, list.length - 1)];
+      R.configure({
+        /* DEFAULTS TO OFF. `recOn` absent means a save file written before
+           the row existed, or a fresh install, and both of those are a player
+           who has not asked to be recorded. F8 is how they ask. */
+        on: (st.recOn === undefined ? 0 : st.recOn) !== 0,
+        width: pick(st.recSize, [854, 960, 1280], 0),
+        fps: pick(st.recFps, [20, 30, 60], 1),
+        quality: pick(st.recQuality, [55, 72, 88], 1),
+        budgetMb: pick(st.recBudget, [48, 96, 192, 384], 1),
+        windowMs: R.defaults.windowMs,
+        replayMs: R.defaults.replayMs,
+      });
+    }
+
     saveAndExitControls() {
       this.applySettings();          // also persists to the save file
       this.audio.select();
@@ -4291,7 +4397,17 @@
     }
 
     /** Menu and race run different tracks; this picks the right one. */
-    onMusic() {
+    /**
+     * Pick the track this screen should be playing.
+     *
+     * `cue` means the caller is starting music TO A PICTURE rather than
+     * changing which track is on: it restarts from the top and arrives on a
+     * short fade, so the opening bar lands with the shot instead of under a
+     * fader. There is exactly one caller that passes it - startIntro - and
+     * there should only ever be one, because everywhere else in the game the
+     * right answer is a cross-fade nobody can hear the join in.
+     */
+    onMusic(cue) {
       /* SILENCE UNTIL THE COLD START.
 
          The menu theme used to come up the instant the game reached the menu
@@ -4336,7 +4452,7 @@
         ? (this.confirmFrom || 'menu') : this.state;
       const menu = MENU_STATES.has(effective);
       if (menu) {
-        this.audio.playTrack('menu');
+        this.audio.playTrack('menu', cue ? { cue: true } : undefined);
       } else {
         /* Chapters 6 and 7 have authored scores, so their scenery must never
            be allowed to re-enter the environment-radio selector. */
@@ -4880,7 +4996,7 @@
     nextRamp(s) {
       let next = null;
       for (const r of COURSE_RAMPS) {
-        if (r.s - s < RAMP_PAST) continue;
+        if (rampEnd(r) - s < RAMP_PAST) continue;
         if (!next || r.s < next.s) next = r;
       }
       return next;
@@ -4912,6 +5028,11 @@
           if (player) {
             J.taken++;
             if (q >= RAMP_CLEAN) J.clean++;
+            /* A landing that scored is a moment. The threshold is the game's
+               own definition of clean rather than a second one invented here. */
+            if (q >= RAMP_CLEAN && NR.Record) {
+              NR.Record.mark(car.__rampTook === 'l6_roof' ? 'roof' : 'cleanLanding');
+            }
             J.landing = q;
             J.landedId = car.__rampTook || null;
           }
@@ -4919,15 +5040,25 @@
         const s = car.sTrack || 0;
         const next = this.nextRamp(s);
         const span = next ? next.len + (next.crest || 0) : 0;
-        const arm = !!next && (next.s - s) < RAMP_TELEGRAPH + span && (next.s - s) > RAMP_PAST;
+        /* Two distances, because a ramp with a descent has two ends. The head
+           decides when it is close enough to arm; the tail decides when the
+           car has finished with it, and for the roof run that is the bottom of
+           the slope rather than the top. */
+        const arm = !!next && (next.s - s) < RAMP_TELEGRAPH + span
+          && (rampEnd(next) - s) > RAMP_PAST;
         if (arm) {
           if (car.__rampArmed !== next.id) {
             car.__rampArmed = next.id;
             car.__rampTook = next.id;
-            /* A crest is a top to drive along, and only the blocked bore has
-               one. Everything else is the plain wedge it always was, armed
-               through the same call it always used. */
-            if (next.crest && car.armRampDeck) {
+            /* Three shapes, and the third is the Forge roof.
+               A plain wedge climbs and launches; a CREST is a top to drive
+               along before the structure runs out, which only the blocked bore
+               has; and a ramp with a DROP comes back down under its own wheels
+               at the far end, which only the broken roof has. */
+            if (next.drop && car.armRampRoad) {
+              car.armRampRoad(next.s - next.crest - next.len, next.s - next.crest,
+                next.s, next.s + next.drop, next.h, next.lip || next.h);
+            } else if (next.crest && car.armRampDeck) {
               car.armRampDeck(next.s - next.crest - next.len, next.s - next.crest,
                 next.s, next.h, next.lip || next.h);
             } else {
@@ -5184,6 +5315,12 @@
       /* Winning banks the difficulty it was won at, which is what opens the
          next road - and only up to the setting that was actually beaten. A
          Free Roam tour is not a chapter result and never writes one. */
+      /* THE RUN IS OVER. Anything that was marked becomes a reel, unasked -
+         which is the half of this feature a player never has to know about. */
+      if (NR.Record) {
+        if (this.won) NR.Record.mark('win');
+        NR.Record.runEnded();
+      }
       if (this.won && !this.freeRoam) {
         const lvl = this.levelIndex;
         const won = this.diffIndex + 1;
@@ -6492,20 +6629,31 @@
            launching early. Same three-part profile the solver uses; see the
            note above `Ramp` in crates/synx-core/src/vehicle.rs. */
         for (const r of COURSE_RAMPS) {
-          const crest = r.crest || 0;
+          const crest = r.crest || 0, drop = r.drop || 0;
           const foot = r.s - crest - r.len;
-          if (s < foot || s > r.s) continue;
+          if (s < foot || s > r.s + drop) continue;
           const d = s - foot;
+          const lip = r.lip === undefined ? r.h : r.lip;
           let height, pitch;
           if (d <= r.len) {
             const u = d / Math.max(1, r.len);
-            height = r.h * u * u;
-            pitch = Math.atan(2 * r.h * u / r.len);
-          } else {
+            if (drop) {
+              // a ramp onto a deck eases flat at the top; see Ramp in the core
+              height = r.h * u * u * (3 - 2 * u);
+              pitch = Math.atan(6 * r.h * u * (1 - u) / r.len);
+            } else {
+              height = r.h * u * u;
+              pitch = Math.atan(2 * r.h * u / r.len);
+            }
+          } else if (d <= r.len + crest) {
             const v = (d - r.len) / Math.max(1, crest);
-            const lip = r.lip === undefined ? r.h : r.lip;
             height = r.h + (lip - r.h) * v;
             pitch = Math.atan((lip - r.h) / Math.max(1, crest));
+          } else {
+            // the descent, which is driven rather than flown
+            const v = (d - r.len - crest) / Math.max(1, drop);
+            height = lip * (1 - v * v * (3 - 2 * v));
+            pitch = Math.atan(-6 * lip * v * (1 - v) / drop);
           }
           reel.air = { flying: false, ramp: r, height, pitch };
           return reel.air;
@@ -6513,7 +6661,10 @@
         /* Past the end of the structure it was on: launch, carrying whatever
            vertical speed the profile was already producing - which off a crest
            is the shallow rise along it rather than the incline. */
-        if (state && state.ramp && s > state.ramp.s && state.height > 0.02) {
+        /* ...and a ramp with a descent never launches: the car comes off the
+           bottom of the slope at road level, which is the whole point of it. */
+        if (state && state.ramp && !state.ramp.drop
+            && s > state.ramp.s && state.height > 0.02) {
           const r = state.ramp;
           const crest = r.crest || 0;
           const lip = r.lip === undefined ? r.h : r.lip;
@@ -6707,15 +6858,92 @@
      */
     startIntro() {
       this.intro = { at: performance.now() };
-      // the cutscene has begun, so the score may start with it
-      this.musicHeld = false;
-      this.onMusic();
+      /* THE SCORE STARTS WITH THE SHOT, AND FROM THE TOP.
+       *
+       * The theme is held back through the cold open and the photosensitivity
+       * notice - see onMusic - for exactly this: so that the first bar of it
+       * is the first frame of the opening move. That only works if it is CUED
+       * rather than selected. Selecting it restarts it only when it was not
+       * already the current track and brings it in over a second and a half,
+       * which is most of the way through a six-second shot; cueing it starts
+       * it from zero on a short fade, every time, and js/intro.js has already
+       * waited for the element to be able to do that. */
+      this.releaseMusic();
       this.introReveal = 0;
       /* Retyped, so the rows arrive letter by letter as the shot lands
          rather than being present the moment they become visible. The
          typewriter is the menu's own - see the TYPE_CPS loop in update -
          so this is only a matter of putting it back to the start. */
       for (const it of this.menuItems) it.typed = 0;
+    }
+
+    /**
+     * Let the score start, wherever the opening actually ended.
+     *
+     * The hold is released by startIntro, which is the frame the veil lifts -
+     * and that is the ONLY path that was releasing it. A player who skipped
+     * the opening, and anyone with reduced motion turned on (for whom there is
+     * no opening at all), therefore reached a title screen in silence: the
+     * hold was still on, and the DOM safety net in onMusic could not clear it
+     * because the gesture that skipped the intro was handled BEFORE the veil
+     * it checks for had been removed. The next press started the music, so the
+     * bug read as "the theme comes in a few seconds late, sometimes".
+     *
+     * It is cued rather than selected for the same reason startIntro cues it:
+     * the first bar should be the first frame of the screen it belongs to.
+     */
+    releaseMusic() {
+      if (!this.musicHeld) return;
+      this.musicHeld = false;
+      this.onMusic(true);
+    }
+
+    /* ------------------------------------------------------- THE RECORDER --
+     *
+     * Read here rather than in the state machine's own input pass, because the
+     * recorder is GLOBAL: it has to answer on the title screen, in a menu, in
+     * the middle of a cutscene and while a chapter director owns the frame -
+     * all of which return early from `update` long before the driving
+     * controls are looked at.
+     *
+     * The gate is still asked. A key that has just changed screen must not
+     * also save a clip on the way through. See NR.Gate.
+     */
+    /** A line in the corner, if there is anything up yet to put it in. The
+        recorder's keys are global and answer on the title screen, where the
+        HUD may not have been built. */
+    toast(text, colour) {
+      if (this.hud && this.hud.toast) this.hud.toast(text, colour);
+    }
+
+    pollRecorder() {
+      const R = NR.Record;
+      if (!R || !this.input) return;
+      if (NR.Gate && !NR.Gate.open()) return;
+      /* F8 FIRST, and it is the only one that does anything while the
+         recorder is off. The other two are answered with the reason rather
+         than with silence: a key that does nothing and says nothing is a key
+         the player decides is broken. */
+      if (this.input.actHit('clipToggle')) {
+        if (R.on) { R.stop(); this.toast('RECORDING OFF', '#ffb400'); }
+        else if (R.start()) this.toast('RECORDING ON — F10 MARKS, F9 SAVES', '#5affc0');
+        else this.toast('RECORDER UNAVAILABLE' + (R.why ? ' — ' + R.why : ''), '#ff8a3a');
+        return;
+      }
+      const askedSave = this.input.actHit('clipSave');
+      const askedMark = this.input.actHit('clipMark');
+      if (!askedSave && !askedMark) return;
+      if (!R.on) { this.toast('RECORDING IS OFF — PRESS F8', '#ffb400'); return; }
+      /* NEITHER OF THESE BLOCKS. The save is posted to the recorder's own
+         thread and this returns on the same frame it was asked on; the file
+         is built and written while the game carries on, and the clip comes
+         back as a message. The car never stops answering the wheel, which is
+         the whole of what was wrong with the first version of this. */
+      if (askedSave) R.save('replay');
+      if (askedMark) {
+        R.mark('MANUAL');
+        this.toast('MOMENT MARKED', '#39e6ff');
+      }
     }
 
     /** Settle everything at once - the skip, and the end of the move. */
@@ -7105,7 +7333,21 @@
         gl.viewport(0, 0, this.outW || this.w, this.outH || this.h);
         gl.clearColor(0.02, 0.005, 0.06, 1);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        this.hud.draw(this, dt);
+        /* ...BUT NOT THE LOADING CARD, WHILE THE COLD OPEN IS OVER IT.
+         *
+         * This loop is started before load() is awaited, so for the whole of
+         * the boot it is drawing a full-screen card - a chrome-ramp wordmark,
+         * two neon headlines and a bar, every one of them a shadow-blurred
+         * fill over the whole canvas - underneath an opaque veil with a
+         * tachometer on it. Nobody can see any of it, and it is competing for
+         * the one thread with both the load AND the screen that is covering
+         * the load.
+         *
+         * The card is not deleted: it is still the right thing to show on a
+         * machine with no 2D context, under reduced motion, and any other
+         * path where the cold open declined to run. It is simply not drawn
+         * while something opaque is in front of it. */
+        if (!(NR.Ignition && NR.Ignition.running)) this.hud.draw(this, dt);
         return;
       }
 
@@ -7955,6 +8197,15 @@
            dt is clamped to 50ms so a stall cannot teleport the car, and a
            benchmark that cannot see a 200ms frame is a benchmark that will
            recommend a preset which stutters. See js/bench.js. */
+        /* THE RECORDER SEES THE FINISHED FRAME.
+           After draw and before the input is rolled over, so what lands in the
+           ring is exactly what the player was looking at - the grade, the
+           bloom and the interface included - and the keys below are read on
+           the same frame they were pressed. */
+        if (NR.Record) {
+          NR.Record.capture(dt);
+          this.pollRecorder();
+        }
         if (NR.Bench && NR.Bench.running) NR.Bench.tick(this, frameMs);
         this.input.endFrame();
         // the marker gpuBusy waits on next frame, after all of this frame is queued
@@ -8012,6 +8263,9 @@
      from these same rows - for Chapter 7, whose three ramps are in here, and
      for the harnesses that assert a ramp stands on a straight. */
   global.NR.COURSE_RAMPS = COURSE_RAMPS;
+  /* js/chapters.js builds the structure against exactly these marks, and
+     tools/checkramps.js checks the three descriptions against each other. */
+  global.NR.FORGE_ROOF = FORGE_ROOF;
   /* The title screen's running order, published so a tool can start the drive
      somewhere in particular. Every menu defect reported so far has been at a
      specific place on the course, and without this the only way to look at one

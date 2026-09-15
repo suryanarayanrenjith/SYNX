@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/synx-core", "crates/synx-net", "src-tauri"]
+members = ["crates/synx-core", "crates/synx-net", "crates/synx-rec", "src-tauri"]
 
 # crates/synx-net is the multiplayer wire format: the quantisation and the byte
 # layout, and nothing else. The server is deployed from its own repository and

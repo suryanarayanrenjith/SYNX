@@ -548,6 +548,18 @@ pub extern "C" fn synx_veh_arm_ramp_deck(id: u32, s0: f64, s1: f64, s2: f64, h: 
     with_car(id, |v, _| v.arm_ramp_deck(s0, s1, s2, h, lip));
 }
 
+/// Arm a ramp that climbs to a deck and comes back DOWN off the far end.
+///
+/// The Forge roof run is the only thing on the course that wants this: a car
+/// that is meant to end up back on the factory floor cannot be thrown off an
+/// eighteen-unit drop to get there. `s3 <= s2` is exactly
+/// `synx_veh_arm_ramp_deck`.
+#[no_mangle]
+pub extern "C" fn synx_veh_arm_ramp_road(id: u32, s0: f64, s1: f64, s2: f64, s3: f64,
+                                         h: f64, lip: f64) {
+    with_car(id, |v, _| v.arm_ramp_road(s0, s1, s2, s3, h, lip));
+}
+
 /// Move a car to a lateral offset on the road WITHOUT resetting it.
 ///
 /// An arrival is not a standing start: Chapter 1 opens with the player already

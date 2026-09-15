@@ -1660,27 +1660,57 @@ pub fn collide_cars(a: &mut Vehicle, b: &mut Vehicle) -> f64 {
 /// tunnel mouth has a top you drive ALONG before you run out of it, and a
 /// structure with no top reads as a jump rather than as a way past.
 ///
-/// So a ramp has three marks rather than two:
+/// So a ramp has four marks rather than two:
 ///
 ///   s0 .. s1   the incline, `h * u^2`, as it always was
 ///   s1 .. s2   the CREST: a long shallow run from `h` up to `lip`
-///   s2         the end of it, where the car runs out of structure
+///   s2 .. s3   the DESCENT, `lip` back down to the road
+///   s3         the end of it, where the car runs out of structure
 ///
-/// `s2 == s1` with `lip == h` is exactly the old wedge, which is what
-/// `arm_ramp` still builds - so the eight launch ramps on the course are
-/// untouched by any of this.
+/// `s2 == s1` with `lip == h` and `s3 == s2` is exactly the old wedge, which
+/// is what `arm_ramp` still builds - so the eight launch ramps on the course
+/// are untouched by any of this.
+///
+/// # Why a descent, when falling off the end already worked
+///
+/// Because a structure a car is meant to come back down off is not a jump.
+/// Aurora Forge's roof run climbs eighteen units, holds that for a kilometre
+/// and has to put the car back on the factory floor at the far end - and the
+/// only thing the two-part profile could do there was throw it off an
+/// eighteen-unit drop at whatever speed it was carrying. That is a crash, not
+/// a way down, and building the way down as scenery under a falling car does
+/// not help: the flight ends when the car reaches the ROAD, so the slope would
+/// be something it passed through.
+///
+/// # And the incline eases differently when there is one
+///
+/// A launch ramp wants a kicker: `h * u^2` has its steepest slope at the very
+/// top, which is exactly what throws the car. A ramp onto a deck wants the
+/// opposite - it has to arrive PARALLEL to the thing it joins, or there is a
+/// corner at the top that the suspension reads as an impact. So a ramp with a
+/// descent eases both ends with smoothstep, whose slope is zero at both, and a
+/// ramp without one keeps the quadratic it has always had.
 #[derive(Clone, Copy, Default)]
 pub struct Ramp {
-    /// Where the incline starts, where it levels onto the crest, and where the
-    /// crest ends, in arc length.
+    /// Where the incline starts, where it levels onto the crest, where the
+    /// crest ends, and where the descent reaches the road, in arc length.
     pub s0: f64,
     pub s1: f64,
     pub s2: f64,
+    pub s3: f64,
     /// Height at the crest and at the far end of it, in world units. A crest
     /// that rises slightly is what makes a makeshift ramp throw the car at all
     /// rather than simply drop it off the end.
     pub h: f64,
     pub lip: f64,
+}
+
+/// Smoothstep: zero slope at both ends, which is what lets a ramp meet a deck
+/// without a corner in it.
+#[inline]
+fn smoothstep(u: f64) -> f64 {
+    let u = u.clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
 }
 
 /* WHY THE FIRST TUNE FELT LIKE A PAPER CAR, AND WHAT FIXED IT.
@@ -1758,12 +1788,25 @@ impl Vehicle {
         self.arm_ramp_deck(s0, s1, s1, h, h);
     }
 
+    /// Arm a ramp with a crest to drive along AND a descent off the far end.
+    ///
+    /// `s2 .. s3` eases `lip` back down to the road, and the car stays on the
+    /// ground for the whole of it - there is no launch. Passing `s3 <= s2`
+    /// gives the launch ramp `arm_ramp_deck` builds.
+    pub fn arm_ramp_road(&mut self, s0: f64, s1: f64, s2: f64, s3: f64, h: f64, lip: f64) {
+        self.ramp = if h > 0.0 && s1 > s0 && s2 >= s1 {
+            Some(Ramp { s0, s1, s2, s3: s3.max(s2), h, lip: if lip > 0.0 { lip } else { h } })
+        } else {
+            None
+        };
+    }
+
     /// Arm a ramp with a crest to drive along. `s1` is where the climb levels
     /// off and `s2` where the structure runs out; `lip` is the height there.
     /// Passing `s2 == s1` and `lip == h` is the plain wedge `arm_ramp` builds.
     pub fn arm_ramp_deck(&mut self, s0: f64, s1: f64, s2: f64, h: f64, lip: f64) {
         self.ramp = if h > 0.0 && s1 > s0 && s2 >= s1 {
-            Some(Ramp { s0, s1, s2, h, lip: if lip > 0.0 { lip } else { h } })
+            Some(Ramp { s0, s1, s2, s3: s2, h, lip: if lip > 0.0 { lip } else { h } })
         } else {
             None
         };
@@ -1784,28 +1827,51 @@ impl Vehicle {
         if !self.airborne {
             let mut launched = false;
             if let Some(r) = self.ramp {
-                let end = r.s2.max(r.s1);
+                let crest_end = r.s2.max(r.s1);
+                /* A ramp with a descent ends at the bottom of it; one without
+                   ends where the structure does, exactly as before. */
+                let has_down = r.s3 > crest_end;
+                let end = if has_down { r.s3 } else { crest_end };
                 if self.s_track >= r.s0 && self.s_track <= end {
                     let prev = self.air_y;
                     if self.s_track <= r.s1 {
-                        /* THE INCLINE. Quadratic, not linear: a ramp with a
-                           constant slope has a corner at the bottom that the
-                           car hits rather than rides, and the whole feel of a
-                           jump is in the transition being smooth. */
+                        /* THE INCLINE.
+                           A LAUNCH ramp is quadratic: a constant slope has a
+                           corner at the bottom that the car hits rather than
+                           rides, and the steepest part being at the very top
+                           is what throws it.
+                           A ramp onto a DECK is smoothstepped instead, because
+                           it has to arrive parallel to the deck it joins - a
+                           quadratic meets a flat roof at its steepest and the
+                           suspension reads that as an impact. */
                         let span = (r.s1 - r.s0).max(1.0);
                         let u = ((self.s_track - r.s0) / span).clamp(0.0, 1.0);
-                        self.air_y = r.h * u * u;
-                        self.air_pitch = (2.0 * r.h * u / span).atan();
-                    } else {
+                        if has_down {
+                            self.air_y = r.h * smoothstep(u);
+                            self.air_pitch = (6.0 * r.h * u * (1.0 - u) / span).atan();
+                        } else {
+                            self.air_y = r.h * u * u;
+                            self.air_pitch = (2.0 * r.h * u / span).atan();
+                        }
+                    } else if self.s_track <= crest_end {
                         /* THE CREST, which is the part that is driven along.
                            Straight rather than curved: it is a deck somebody
                            laid, not a moulded kicker, and the shallow rise
                            along it is the only thing throwing the car at the
                            far end. */
-                        let span = (end - r.s1).max(1.0);
+                        let span = (crest_end - r.s1).max(1.0);
                         let v = ((self.s_track - r.s1) / span).clamp(0.0, 1.0);
                         self.air_y = r.h + (r.lip - r.h) * v;
                         self.air_pitch = ((r.lip - r.h) / span).atan();
+                    } else {
+                        /* THE DESCENT. Smoothstepped, so it leaves the deck
+                           level and reaches the road level - the car drives
+                           down it rather than dropping off the end of the
+                           structure, which is the whole reason it exists. */
+                        let span = (r.s3 - crest_end).max(1.0);
+                        let v = ((self.s_track - crest_end) / span).clamp(0.0, 1.0);
+                        self.air_y = r.lip * (1.0 - smoothstep(v));
+                        self.air_pitch = (-6.0 * r.lip * v * (1.0 - v) / span).atan();
                     }
                     /* The vertical speed is read back off the profile rather
                        than assumed, so what leaves the end is what the car was
@@ -2201,6 +2267,88 @@ mod tests {
         let d = (fast.speed - slow.speed).abs();
         assert!(d < 1.5, "120 Hz reached {} u/s, 30 Hz reached {}", fast.speed, slow.speed);
     }
+    /// A ROAD RAMP CLIMBS, RUNS LEVEL, AND COMES BACK DOWN ON ITS WHEELS.
+    ///
+    /// Aurora Forge's roof run is the only structure on the course the car is
+    /// meant to LEAVE the way it arrived. Three things have to hold and the
+    /// two-part profile could not give any of them: the car reaches the deck
+    /// height, it stays on the ground for the whole of it - a launch off an
+    /// eighteen-unit deck is a crash, not a way down - and it ends the section
+    /// back on the road rather than above it.
+    #[test]
+    fn a_road_ramp_comes_back_down() {
+        let t = straight_track(6000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 400.0, 0.0);
+        car.v_long = 70.0;
+        // climb 500..640, deck 640..1400, descend 1400..1560
+        car.arm_ramp_road(500.0, 640.0, 1400.0, 1560.0, 18.0, 18.0);
+
+        let dt = 1.0 / 120.0;
+        let (mut peak, mut deck_frames, mut air_frames) = (0.0f64, 0, 0);
+        let mut off_deck = 0.0f64;
+        for _ in 0..(40 * 120) {
+            let input = Input { throttle: 1.0, ..Default::default() };
+            car.update(&t, dt, input, true);
+            if car.airborne {
+                air_frames += 1;
+            }
+            if car.air_y > peak {
+                peak = car.air_y;
+            }
+            if car.s_track > 700.0 && car.s_track < 1350.0 {
+                deck_frames += 1;
+                // on the deck the height must be the deck height, flat
+                let err = (car.air_y - 18.0).abs();
+                if err > off_deck {
+                    off_deck = err;
+                }
+            }
+            if car.s_track > 1600.0 {
+                break;
+            }
+        }
+        assert!(air_frames == 0, "a road ramp launched the car for {air_frames} frames");
+        assert!(deck_frames > 60, "the car never spent time on the deck");
+        assert!(
+            (peak - 18.0).abs() < 0.05,
+            "the deck is 18 units up and the car reached {peak}"
+        );
+        assert!(off_deck < 0.02, "the deck was not level: {off_deck} units of error");
+        assert!(
+            car.s_track > 1600.0,
+            "the car never reached the end of the section (s={})",
+            car.s_track
+        );
+        assert!(
+            car.air_y.abs() < 0.02,
+            "the car finished {} units above the road",
+            car.air_y
+        );
+    }
+
+    /// ...and the eight launch ramps are untouched by any of it. The same
+    /// window, armed the old way, still throws the car.
+    #[test]
+    fn a_deck_ramp_without_a_descent_still_launches() {
+        let t = straight_track(4000);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 400.0, 0.0);
+        car.v_long = 70.0;
+        car.arm_ramp_deck(500.0, 560.0, 600.0, 10.4, 12.0);
+
+        let dt = 1.0 / 120.0;
+        let mut air_frames = 0;
+        for _ in 0..(10 * 120) {
+            let input = Input { throttle: 1.0, ..Default::default() };
+            car.update(&t, dt, input, true);
+            if car.airborne {
+                air_frames += 1;
+            }
+        }
+        assert!(air_frames > 10, "the crest ramp stopped launching: {air_frames} air frames");
+    }
+
     /// A RAMP MUST LAUNCH THE CAR, AND THE CAR MUST COME DOWN.
     ///
     /// The three things a jump has to be, none of which the road-locked solver

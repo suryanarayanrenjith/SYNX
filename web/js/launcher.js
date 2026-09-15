@@ -41,7 +41,7 @@
      the page from a row's group header, which is what this did first, meant a
      new group silently landed on whichever page the lookup table happened to
      default to. */
-  const TABS = ['DISPLAY', 'GRAPHICS', 'AUDIO'];
+  const TABS = ['DISPLAY', 'GRAPHICS', 'SOUND + REPLAY'];
 
   /** Whatever was thrown, as something a person can read. */
   function msgOf(e) {

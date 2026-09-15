@@ -1,0 +1,15 @@
+[package]
+name = "synx-rec"
+version = "1.0.0"
+edition = "2021"
+description = "SYNX recorder: a replay-buffer ring, a baseline JPEG encoder and an AVI muxer, with no dependencies."
+
+[lib]
+# A cdylib AND an rlib. The cdylib is web/wasm/synx_rec.wasm, the module the
+# recorder's Web Worker loads - see src/abi.rs for why the encoder has its own
+# module and its own thread rather than living in the simulation core. The
+# rlib is what lets the encoder be tested natively: 'cargo test -p synx-rec'
+# runs the round trip against a decoder that never ships.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

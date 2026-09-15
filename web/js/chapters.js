@@ -1852,11 +1852,42 @@
   const TRUCK_S = 128200;
   const GATE_REVEAL_UNITS = 50 / .733;
   const DAMAGED_CAP = (100 / 3.6) / .733; // the physics world is .733 m/unit
+  /* LOSING THE FORGE. `JAVAS_WARN` is where the chapter starts saying so and
+     `JAVAS_GONE` is where it stops asking; the two hundred units between them
+     are about four seconds at the trial's pace, which is long enough to be a
+     warning and short enough not to be a second chance. `LOST_CARD` is how
+     long TRIAL FAILED holds before js/story.js takes the frame back. */
+  const JAVAS_WARN = 480, JAVAS_GONE = 680, LOST_CARD = 1.5;
+  /* The phases the player has the car on this road. Everything else is a
+     cinematic, a conversation, a rewind or the solo calibration run, and none
+     of those is a thing that can be lost by being behind. */
+  const LIVE_PHASES = new Set(['lightning', 'machinery', 'sorting', 'scrap', 'ghost']);
   const RACEMODE_CAP = (198 * .44704) / .733; // 50% above the observed 132 MPH limit
   /* The sorting floor's three chutes, and the walls between them. The road is
      forty units of tarmac inside a barrier at twenty, so three lanes wide
      enough to take a car at speed leaves the dividers at just under seven. */
   const CHUTE = [-13, 0, 13], DIVIDER = 6.8;
+  /* THE BALERS THAT STAND IN THEM.
+     `BORE_W` is the widest a machine can be without putting its parts in the
+     bay next door: three of them at 12.4 leave two tenths of clear air
+     between one platen and the next, and nothing any of them carries reaches
+     past its own chute wall. At the seventeen and eighteen-four they were
+     built at, every machine overlapped both its neighbours - which is a
+     z-fight on three coplanar roofs as well as a lane full of somebody
+     else's hydraulics.
+     `BORE_CLEAR` is the height the bore is a clear tube to. Two of the three
+     have to be driveable end to end - that is the trial - so everything that
+     moves at idle lives above it, and only a machine that has actually taken
+     a car puts anything on the floor.
+     `COLUMN` is the outboard frame line, outside the twenty-unit barrier. */
+  const BORE_W = 12.4, BORE_CLEAR = 2.0, JAW_HIGH = 3.95, COLUMN = 21.4;
+  /* The two faces each bore presses between, which are the faces of its OWN
+     bay: the road edge and the chute wall for the outer two, both chute walls
+     for the middle one. A shoe placed a fixed distance from the machine's
+     centre instead - which is how they were placed - lands in the next bay
+     along for two of the three, and in the same half-metre of air as its
+     neighbour's shoe for all three. */
+  const BORE_FACE = [[-20.0, -8.4], [-5.2, 5.2], [8.4, 20.0]];
   /* How far from the centreline a car can reach on the Forge deck. LEVELS[5]
      names no driveHalf of its own, so it takes NR.DRIVE_HALF - and the scrap
      line has to solve against the same number the physics does, or a ram that
@@ -1945,6 +1976,21 @@
    * under it is lit.
    */
   const HALL_FROM = 112000, HALL_TO = 131500, HALL_CHUNK = 1800;
+  /* THE BREACH, declared in js/game.js because the solver is armed from the
+     same numbers. See NR.FORGE_ROOF and the note above it. */
+  const ROOF = NR.FORGE_ROOF
+    || { foot: 128760, deck: 128900, edge: 129900, floor: 130060, h: 18,
+         clearFrom: 128600, clearTo: 130220 };
+  /* WHAT "EMPTY" MEANS, as one number.
+     A member whose whole depth sits above this line is overhead: the roof, the
+     purlins, the crane rails, the conveyor, the ducts, the trays, the high
+     bays. Below it are the things that hold the building up and the things a
+     driver passes at eye level - the walls reach 15.6 but start at 0.2, the
+     columns are founded on the slab, the catwalk deck is at 6.1 and its
+     handrail tops out at 7.9. So the rule cuts the services and leaves the
+     structure, and it does it in two places rather than at thirty call sites.
+     See FactoryWorld.buildBreach. */
+  const BREACH_CLEAR = 8.0;
 
   class FactoryWorld {
     constructor(game) {
@@ -2023,6 +2069,11 @@
        optionally rolled about the along-road axis so a roof panel can have a
        pitch on it. */
     box(s,lat,y,w,h,len,roll){
+      /* NOTHING OVERHEAD EXISTS INSIDE THE BREACH - except the thing that
+         replaced it. Everything buildBreach emits is overhead and inside, so
+         it sets `_raw` while it runs; without that exemption the set piece
+         deletes itself and all that is left of the section is a hole. */
+      if(!this._raw&&y-h*.5>BREACH_CLEAR&&this.cleared(s))return;
       const F=this.frame(s),c=Math.cos(roll||0),sn=Math.sin(roll||0);
       // the rolled cross-section basis
       const ax=F.rx*c,ay=sn,az=F.rz*c;              // across
@@ -2076,7 +2127,24 @@
       if(last<s1-1)out.push(this.frame(s1));
       return out;
     }
+    /* A longitudinal member, in two halves: the gate, and the extrusion.
+       An overhead run that crosses the breach is emitted as the pieces either
+       side of it, each with frames of its own - the chunk's shared frames
+       cover the whole chunk and cannot describe a member with a hole in it. */
     run(s0,s1,lat,y,w,h,roll){
+      if(!this._raw&&y-h*.5>BREACH_CLEAR&&s1>ROOF.clearFrom&&s0<ROOF.clearTo){
+        const keep=this._frames;
+        for(const[p,q]of[[s0,Math.min(s1,ROOF.clearFrom)],[Math.max(s0,ROOF.clearTo),s1]]){
+          if(q-p<2)continue;
+          this._frames=this.sampleFrames(p,q);
+          this._extrude(lat,y,w,h,roll);
+        }
+        this._frames=keep;
+        return;
+      }
+      this._extrude(lat,y,w,h,roll);
+    }
+    _extrude(lat,y,w,h,roll){
       const c=Math.cos(roll||0),sn=Math.sin(roll||0);
       const rings=this._frames.map(F=>{
         const ax=F.rx*c,ay=sn,az=F.rz*c,ux=-F.rx*sn,uy=c,uz=-F.rz*sn;
@@ -2117,11 +2185,20 @@
       };
       for(let c=HALL_FROM;c<HALL_TO;c+=HALL_CHUNK){
         const a=c,b=Math.min(HALL_TO,c+HALL_CHUNK)+2;   // overlap, so no seams
+        /* The chunk's OWN span, without the overlap. Runs may be emitted
+           twice at a seam and that is what the overlap is for; a set piece may
+           not, so anything placed at a station asks this instead. */
+        this._lo=c;this._hi=c+HALL_CHUNK;
         this._frames=this.sampleFrames(a,b);
         buckets.clear();
         use(this.steel);
         this.buildShell(a,b,use);
         this.buildDetail(a,b,use);
+        this.buildBreach(a,b,use);
+        /* Both mouths of the building, set a little inside the ends so the
+           structure has hall on both sides of it. */
+        this.buildPortal(HALL_FROM+40,1,use);
+        this.buildPortal(HALL_TO-40,-1,use);
         drain(this.batches,c);
         /* THE FITTINGS, MERGED TOO.
            The high bays, the ridge rooflight, the wall channels and the floor
@@ -2542,6 +2619,350 @@
     }
 
     /* The shell, drawn. Two or three chunks a frame, one call per material. */
+    /* ============================================== THE BROKEN ROOF ======
+     *
+     * A kilometre of the hall has lost its roof, and Aurora has run a steel
+     * ramp up through the hole. The road carries straight on underneath; this
+     * is a second line over the top of it, and both cars take it.
+     *
+     * Every mark comes from NR.FORGE_ROOF in js/game.js, which is also what
+     * arms the solver - see the long note on it there. Nothing in this file
+     * restates a distance.
+     *
+     * # The one rule that empties the hall
+     *
+     * Everything overhead inside the breach simply is not built: the roof
+     * panels, the ridge, the purlins, the crane rails, the conveyor, the
+     * ducts, the trays and the high bays. That is not thirty edits at thirty
+     * call sites - it is one test in `box` and one in `run`, keyed on whether
+     * the member's whole depth sits above BREACH_CLEAR. The walls, the floor,
+     * the columns and the catwalks all reach below that line and stand; the
+     * services all sit above it and go.
+     *
+     * Doing it as a rule rather than as a list is what makes it stay true.
+     * Anything hung over this road later is cut here automatically, and a
+     * gantry crane left standing in a section the car drives OVER is a
+     * collision with something a kilometre up that nothing would have caught.
+     */
+
+    /** Is this station inside the breach - the roofless, emptied stretch? */
+    cleared(s) { return s > ROOF.clearFrom && s < ROOF.clearTo; }
+
+    /* The height of the running surface, and it has to be EXACTLY the profile
+       the solver uses or the car drives through its own road. Smoothstep on
+       the climb and on the descent, flat along the deck - see `Ramp` in
+       crates/synx-core/src/vehicle.rs. */
+    roofY(s) {
+      const R = ROOF;
+      if (s <= R.foot || s >= R.floor) return 0;
+      if (s <= R.deck) {
+        const u = (s - R.foot) / (R.deck - R.foot);
+        return R.h * u * u * (3 - 2 * u);
+      }
+      if (s <= R.edge) return R.h;
+      const v = (s - R.edge) / (R.floor - R.edge);
+      return R.h * (1 - v * v * (3 - 2 * v));
+    }
+
+    /* A swept deck whose height follows a function of arc length.
+     *
+     * `run` cannot do this: a run is a constant-height extrusion, which is
+     * right for every member in a building and wrong for the one thing here
+     * that is a road. Clipped to the chunk being built, so the descent - which
+     * crosses a chunk boundary - is emitted once rather than twice. */
+    deckSweep(s0, s1, lat, w, thick, yAt, step) {
+      const p = Math.max(s0, this._lo), q = Math.min(s1, this._hi);
+      if (q - p < 0.5) return;
+      const n = Math.max(2, Math.ceil((q - p) / (step || 7)));
+      const rings = [];
+      for (let i = 0; i <= n; i++) {
+        const s = p + (q - p) * (i / n), F = this.frame(s), y = yAt(s);
+        const ox = F.x + F.rx * lat, oz = F.z + F.rz * lat, hw = w * 0.5;
+        rings.push({
+          rx: F.rx, rz: F.rz, cx: ox, cy: y, cz: oz,
+          v: [[ox - F.rx * hw, y - thick, oz - F.rz * hw],
+              [ox + F.rx * hw, y - thick, oz + F.rz * hw],
+              [ox + F.rx * hw, y, oz + F.rz * hw],
+              [ox - F.rx * hw, y, oz - F.rz * hw]],
+        });
+      }
+      for (let i = 0; i < rings.length - 1; i++) {
+        const A = rings[i], B = rings[i + 1];
+        /* The top face's normal is taken from the segment rather than assumed
+           to be up: on the climb it is tilted by a seventh of a radian, and a
+           deck lit as though it were flat reads as a decal on the air. */
+        let fx = B.cx - A.cx, fy = B.cy - A.cy, fz = B.cz - A.cz;
+        const fl = Math.hypot(fx, fy, fz) || 1;
+        fx /= fl; fy /= fl; fz /= fl;
+        const nx = fy * A.rz, ny = fz * A.rx - fx * A.rz, nz = -fy * A.rx;
+        this.quad([nx, ny, nz], A.v[3], A.v[2], B.v[2], B.v[3]);
+        this.quad([-nx, -ny, -nz], B.v[0], B.v[1], A.v[1], A.v[0]);
+        this.quad([A.rx, 0, A.rz], A.v[1], B.v[1], B.v[2], A.v[2]);
+        this.quad([-A.rx, 0, -A.rz], B.v[0], A.v[0], A.v[3], B.v[3]);
+      }
+    }
+
+    /** A box only if this chunk owns the station - see deckSweep. */
+    spot(s, lat, y, w, h, len, roll) {
+      if (s < this._lo || s >= this._hi) return;
+      this.box(s, lat, y, w, h, len, roll);
+    }
+
+    /* ------------------------------------------------- the set piece ---- */
+    buildBreach(a, b, use) {
+      const R = ROOF;
+      if (b <= R.clearFrom || a >= R.clearTo) return;
+      this._raw = true;
+      try { this._breach(a, b, use); } finally { this._raw = false; }
+    }
+
+    _breach(a, b, use) {
+      const R = ROOF;
+      const S = (x, from) => Math.ceil(Math.max(a, from) / x) * x;
+      const yAt = (s) => this.roofY(s);
+      const DECK_W = 54;          // the car cannot pass 18 either side of centre
+
+      // --- what is left of the roof, torn open ----------------------------
+      /* The two ends of the hole. Purlin stubs bent down out of the cut, a
+         ragged concrete lip, and cable that was carrying something. Without
+         them the roof simply stops in mid-air, which reads as an unfinished
+         model rather than as damage. */
+      for (const [edge, dir] of [[R.clearFrom, 1], [R.clearTo, -1]]) {
+        if (edge < a || edge >= this._hi) continue;
+        use(this.roof);
+        this.spot(edge - dir * 1.2, 0, 17.2, 56, 1.3, 2.6);
+        use(this.steel);
+        for (let i = -6; i <= 6; i++) {
+          const lat = i * 4.3 + (i % 2 ? 0.8 : -0.6);
+          const drop = 1.1 + Math.abs(Math.sin(i * 2.1)) * 3.4;
+          this.spot(edge + dir * (1.4 + Math.abs(i) * 0.7), lat,
+            16.4 - drop * 0.5, 0.42, drop, 0.42,
+            (i % 3 - 1) * 0.30 * dir);
+        }
+        // the cut edge of the deck, bright where the steel is fresh
+        use(this.hazardPaint);
+        this.spot(edge - dir * 0.2, 0, 16.55, 56.4, 0.34, 0.5);
+        // cable, still live, hanging out of the severed tray
+        use(this.tray);
+        for (const side of [-1, 1]) {
+          this.spot(edge + dir * 2.0, side * 16.4, 11.1, 1.6, 2.4, 1.2, side * 0.5);
+        }
+        use(this.amber);
+        for (const side of [-1, 1]) this.spot(edge + dir * 2.0, side * 16.4, 10.0, 0.5, 0.5, 0.5);
+      }
+
+      // --- the ramp, and what holds it up ---------------------------------
+      /* The running surface first. It starts a little before the foot so the
+         plate is seen to be laid ON the floor rather than growing out of it. */
+      use(this.deck);
+      this.deckSweep(R.foot - 7, R.deck, 0, DECK_W - 6, 1.15, yAt, 6);
+      use(this.roof);
+      this.deckSweep(R.deck, R.edge, 0, DECK_W, 1.5, yAt, 14);
+      use(this.deck);
+      this.deckSweep(R.edge, R.floor + 7, 0, DECK_W - 6, 1.15, yAt, 6);
+
+      /* THE LEGS. A deck eighteen units up with nothing under it is a plank
+         floating in a room, and the whole of what sells this as somebody's
+         bodge is the scaffold holding it there. Four to a bent, cross-braced,
+         and they stop where the deck starts rather than passing through it. */
+      use(this.steel);
+      const IN = 20.8, OUT = 24.6;   // both outboard of the barrier at twenty
+      for (let s = S(24, R.foot); s < Math.min(b, R.floor + 8); s += 24) {
+        const y = yAt(s);
+        if (y < 0.7) continue;
+        const stand = Math.max(0.4, y - 1.5);
+        for (const side of [-1, 1]) {
+          for (const lat of [IN, OUT]) this.spot(s, side * lat, stand * 0.5, 0.82, stand, 0.82);
+          // the ties that make the pair a trestle rather than two stilts
+          const ties = Math.max(1, Math.floor(stand / 5));
+          for (let i = 1; i <= ties; i++) {
+            this.spot(s, side * (IN + OUT) * 0.5, stand * (i / (ties + 1)),
+              OUT - IN + 0.8, 0.42, 0.42);
+          }
+        }
+        /* The transverse beam the deck sits on, and only where there is room
+           under it: at the foot of the climb the deck IS the floor, and a beam
+           below that is a beam in the ground. */
+        if (y > 4.2) this.spot(s, 0, y - 1.85, OUT * 2 + 1.6, 0.55, 0.95);
+      }
+
+      // --- the kerbs, and the light on them -------------------------------
+      /* Outboard of the barrier at twenty, so they are a boundary the eye
+         reads rather than a wall the car finds. */
+      const kerb = (s0, s1, w) => {
+        for (const side of [-1, 1]) {
+          use(this.hazardPaint);
+          this.deckSweep(s0, s1, side * (w * 0.5 - 1.5), 2.4, 0.55,
+            (s) => yAt(s) + 0.55, 7);
+          use(this.steel);
+          this.deckSweep(s0, s1, side * (w * 0.5 - 0.5), 0.5, 1.5,
+            (s) => yAt(s) + 1.5, 7);
+        }
+      };
+      kerb(R.foot - 7, R.deck, DECK_W - 6);
+      kerb(R.deck, R.edge, DECK_W);
+      kerb(R.edge, R.floor + 7, DECK_W - 6);
+
+      // the edge tube, which is the one thing on this structure that is lit
+      use(this.cyan);
+      for (const side of [-1, 1]) {
+        this.deckSweep(R.foot - 6, R.floor + 6, side * (DECK_W * 0.5 - 2.6), 0.30, 0.30,
+          (s) => yAt(s) + 0.62, 9);
+      }
+
+      /* CHEVRONS, up the climb and down the slope. They are the reason a
+         player reads the ramp as a thing to take rather than as scenery, and
+         they are only on the two pitched sections - a flat roof does not need
+         telling you which way is up. */
+      use(this.yellow);
+      for (const [s0, s1] of [[R.foot + 6, R.deck - 4], [R.edge + 6, R.floor - 4]]) {
+        for (let s = S(14, s0); s < Math.min(b, s1); s += 14) {
+          for (let i = -1; i <= 1; i++) {
+            this.spot(s, i * 9.5, yAt(s) + 0.05, 7.0, 0.06, 1.5);
+            this.spot(s + 1.6, i * 9.5, yAt(s + 1.6) + 0.05, 4.2, 0.06, 1.5);
+          }
+        }
+      }
+
+      // --- what is on the roof --------------------------------------------
+      /* Plant, all of it outboard of twenty-two: the car is held inside
+         eighteen by the same barrier it has everywhere else, so nothing here
+         can be hit - it is there to make a roof read as a roof rather than as
+         a wide grey road in the sky. */
+      for (let s = S(56, R.deck); s < Math.min(b, R.edge); s += 56) {
+        const k = (s / 56) | 0;
+        for (const side of [-1, 1]) {
+          if ((k + (side > 0 ? 1 : 0)) % 2 === 0) {
+            // an air handling unit on its frame
+            use(this.aurora); this.spot(s, side * 24.2, R.h + 1.9, 4.6, 2.8, 7.4);
+            use(this.steel);
+            this.spot(s, side * 24.2, R.h + 3.5, 4.0, 0.5, 6.6);
+            this.spot(s - 2.6, side * 24.2, R.h + 4.4, 1.5, 1.6, 1.5);
+            use(this.green); this.spot(s + 3.0, side * 24.2, R.h + 1.6, 0.3, 0.4, 0.4);
+          } else {
+            // an extract cowl and a run of duct going nowhere
+            use(this.duct);
+            this.spot(s, side * 23.6, R.h + 1.4, 2.4, 2.0, 2.4);
+            this.spot(s + 6, side * 23.6, R.h + 2.3, 1.5, 1.5, 9.0);
+            use(this.steel); this.spot(s, side * 23.6, R.h + 2.8, 3.0, 0.4, 3.0);
+          }
+        }
+      }
+      /* Aviation lamps, because the building has an outside now and something
+         a kilometre long with a flat top on it carries them. 0.4 Hz, which is
+         a beacon rather than a strobe - the same ceiling every other light in
+         this game keeps. */
+      for (let s = S(130, R.deck); s < Math.min(b, R.edge); s += 130) {
+        use(this.steel);
+        for (const side of [-1, 1]) this.spot(s, side * 26.6, R.h + 2.2, 0.34, 4.4, 0.34);
+        use(this.red);
+        for (const side of [-1, 1]) this.spot(s, side * 26.6, R.h + 4.5, 0.75, 0.6, 0.75);
+      }
+      /* THE SIGN. One of them, facing the way the cars arrive, which is what
+         makes the top of the building a place rather than a surface. */
+      if (R.deck + 150 >= this._lo && R.deck + 150 < this._hi) {
+        const s = R.deck + 150;
+        use(this.steel);
+        for (const side of [-1, 1]) this.spot(s, side * 21.5, R.h + 5.4, 0.55, 10.6, 0.55);
+        this.spot(s, 0, R.h + 10.4, 44, 0.6, 0.6);
+        use(this.aurora); this.spot(s, 0, R.h + 8.2, 40, 3.4, 0.55);
+        use(this.sign); this.spot(s - 0.35, 0, R.h + 8.2, 33, 1.6, 0.30);
+      }
+
+      /* GRATINGS. Four openings in the deck, hard outboard, where the hall
+         below shows through - the one thing that says what the car is driving
+         on top of. Outside the barrier, so they are a view rather than a
+         hazard. */
+      use(this.tray);
+      for (let s = S(180, R.deck + 60); s < Math.min(b, R.edge - 40); s += 180) {
+        for (const side of [-1, 1]) {
+          this.spot(s, side * 23.0, R.h - 0.72, 6.0, 0.16, 12.0);
+          for (let i = -2; i <= 2; i++) this.spot(s + i * 2.4, side * 23.0, R.h - 0.55, 6.2, 0.30, 0.22);
+        }
+      }
+    }
+
+    /* ------------------------------------------------ the end portals ----
+     *
+     * Both mouths of the hall, and they are the same structure mirrored.
+     *
+     * Aurora Forge used to simply BEGIN: nineteen kilometres of production
+     * hall whose first bay was identical to its four hundredth, so arriving
+     * at it read as the fog thinning rather than as entering a building. A
+     * portal is the cheapest thing in architecture and the most effective -
+     * a frame, a lintel deep enough to throw a shadow, the company's name on
+     * it and a light either side saying whether you may come in.
+     */
+    buildPortal(s, dir, use) {
+      if (s < this._lo || s >= this._hi) return;
+      this._raw = true;
+      try { this._portal(s, dir, use); } finally { this._raw = false; }
+    }
+
+    _portal(s, dir, use) {
+      const B = (ds, lat, y, w, h, len, roll) => this.box(s + ds * dir, lat, y, w, h, len, roll);
+
+      /* The head beam, and it is DEEP. A portal that is the same thickness as
+         the wall it is cut into is a doorway; one with a metre and a half of
+         structure over it is an entrance, and the depth is what the headlights
+         rake across on the way in. */
+      use(this.aurora);
+      B(0, 0, 19.4, 64, 7.0, 7.0);
+      B(0, -30.5, 9.0, 7.0, 14.0, 7.0);
+      B(0, 30.5, 9.0, 7.0, 14.0, 7.0);
+      /* The reveal: a second, slightly smaller frame set back inside the
+         first, so the opening has a thickness rather than an edge. */
+      use(this.concrete);
+      B(-5.2, 0, 18.1, 58, 3.4, 2.4);
+      for (const side of [-1, 1]) B(-5.2, side * 27.6, 8.6, 3.0, 16.0, 2.4);
+
+      // the lintel's underside, lit, which is what puts the arch on the road
+      use(this.cyan);
+      B(-1.2, 0, 16.15, 54, 0.34, 0.9);
+      for (const side of [-1, 1]) B(-1.2, side * 26.4, 8.4, 0.34, 15.2, 0.9);
+
+      /* HAZARD BANDING down both jambs. Real, and the only warning a building
+         this size gives a driver about how wide its door is. */
+      use(this.hazardPaint);
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 9; i++) {
+          B(-2.0, side * 28.6, 1.4 + i * 1.75, 0.5, 0.95, 2.0, 0.5);
+        }
+      }
+
+      // the name, on the beam, facing the way the cars come
+      use(this.steel);
+      B(-3.6, 0, 22.4, 46, 0.7, 0.7);
+      B(-3.6, 0, 26.0, 46, 0.7, 0.7);
+      use(this.aurora);
+      B(-3.7, 0, 24.2, 42, 3.2, 0.6);
+      use(this.sign);
+      B(-4.05, 0, 24.2, 34, 1.5, 0.30);
+      /* ...and a second, smaller plate under it. Two lines of type is a
+         company; one is a label. */
+      use(this.amber);
+      B(-4.05, -14.5, 21.6, 5.0, 0.55, 0.28);
+      B(-4.05, 14.5, 21.6, 5.0, 0.55, 0.28);
+
+      /* THE SIGNALS. One either side, at the height a driver looks, and they
+         are the thing that makes a portal read as controlled access rather
+         than as a hole. Green on the way in, red behind. */
+      use(this.steel);
+      for (const side of [-1, 1]) {
+        B(3.4, side * 24.6, 5.2, 1.1, 10.4, 1.1);
+        B(3.4, side * 22.9, 9.6, 3.4, 1.9, 1.4);
+      }
+      use(dir > 0 ? this.green : this.red);
+      for (const side of [-1, 1]) B(3.2, side * 22.9, 9.6, 2.4, 1.1, 0.4);
+
+      /* The apron: a painted threshold across the road, which is what tells
+         you the surface under the car has just changed owner. */
+      use(this.hazardPaint);
+      for (let i = -1; i <= 1; i += 2) B(i * 3.2, 0, 0.05, 44, 0.10, 1.6);
+      use(this.yellow);
+      B(0, 0, 0.06, 44, 0.10, 0.7);
+    }
+
     drawStatic(s,back,fwd){
       this.gl.bindVertexArray(this.vao);
       this.drawBatches(this.batches,s,back===undefined?620:back,fwd===undefined?1150:fwd);
@@ -2587,6 +3008,12 @@
       const lo=Math.floor((s-500)/180)*180,hi=s+900;
       for(let q=lo;q<=hi;q+=180){
         if(q<HALL_FROM||q>HALL_TO)continue;
+        /* AND NOTHING MOVING IN THE BREACH.
+           A gantry crane straddles the hall at twelve units and runs its
+           carriage out to fifteen either side; the car is eighteen units up
+           and directly over it. The margin covers the crane's own travel,
+           which carries it 120 units past the bay it belongs to. */
+        if(q>ROOF.clearFrom-220&&q<ROOF.clearTo+220)continue;
         const bay=(q/180)|0;
         if(bay%2===0){
           /* A gantry crane straddling the hall with a body shell on the hoist.
@@ -2765,6 +3192,24 @@
      * silhouette - which is the whole difference between a trial and a tell.
      */
     crushers(g) {
+      /* THE FRAME IS SHARED, AND IT STANDS WHERE A COLUMN CAN STAND.
+         Four column lines - the two chute walls and the two road edges -
+         carrying one gantry roof and the hydraulics for all three machines.
+         Each baler used to bring its own pair of legs at +-8.4 from its own
+         centre and its own roof at 18.4 wide, which put two of the six legs
+         and two of the six ram cylinders inside the CENTRE bay at windscreen
+         height, another four 0.9 into the outer bays, and three coplanar
+         roofs on top of each other. None of it had a collider - see
+         obstacles() - so the car drove through all of it. */
+      const s = g.s + 150;
+      for (const lp of [-COLUMN, -DIVIDER, DIVIDER, COLUMN]) {
+        for (const o of [-15, 15]) this.at(s + o, lp, 6.2, 1.9, 12.4, 1.9, this.deck);
+        // the ram cylinder, buried in the wall the ram pushes off
+        this.at(s, lp, 3.9, 2.6, 3.0, 3.0, this.steel);
+      }
+      // one roof over the whole floor, rather than three fighting for the pixel
+      this.at(s, 0, 12.6, 2 * COLUMN + 1.9, 1.6, 34, this.deck);
+      this.at(s, 0, 13.5, 2 * COLUMN - 2.4, .34, 30, this.hazard);
       for (let i = 0; i < 3; i++) this.crusher(g, i);
     }
     /* One baler. `live` decides whether it is LIT and whether it crushes. It
@@ -2781,30 +3226,58 @@
         :(cyc<.34?smooth(cyc/.34):cyc<.62?1:1-smooth((cyc-.62)/.38));
       const side=(live&&g.crush)?smooth(clamp((g.crushT-.5)/1.1,0,1)):jaw*.30;
       const top=(live&&g.crush)?smooth(clamp((g.crushT-1.55)/1.05,0,1)):jaw*.26;
-      this.at(s,x,.55,17,1.1,34,this.concrete);
-      for(const o of[-15,15])for(const q of[-1,1])this.at(s+o,x+q*8.4,6.2,1.9,12.4,1.9,this.deck);
-      this.at(s,x,12.6,18.4,1.6,34,this.deck);
-      this.at(s,x,13.5,16.0,.34,30,this.hazard);
-      for(const q of[-1,1]){
-        this.at(s,x+q*(6.6-side*3.1),3.0,1.5,4.6,26,this.steel);
-        this.at(s,x+q*(8.0-side*1.6),3.0,2.6,3.0,3.0,this.steel);
-      }
-      this.at(s,x,10.4-top*7.2,15.4,1.7,28,this.steel);
-      this.at(s,x,9.4-top*7.2,14.2,.30,26,this.hazard);
-      this.at(s-19,x,1.1+jaw*3.4,15.0,2.2,1.6,this.steel);
-      /* THE JAW PLATE IS THE READ. Hot red on the machine that is about to
-         take a car, cold steel on the two that are not - on a part that sits
-         at y=1.1..4.5, which is BELOW the 4.62 chute wall. It can only be seen
-         by looking down the bore, which is the whole point. */
-      this.at(s-19,x,1.1+jaw*3.4,14.0,.34,1.9,live?this.red:this.steel);
+      /* THE FLOOR OF THE BORE IS THE ROAD.
+         It used to be a slab standing 1.1 above it, seventeen wide and
+         thirty-four long, with no collider in it - a kerb the car could see
+         and went straight through, in the one place on this road where the
+         player is looking hardest at what is directly in front of them. It is
+         a painted apron now, flush with the tarmac, exactly like the bay paint
+         that leads into it. The threshold at each end is PAINTED rather than
+         proud: nothing on this machine has a collider, so anything standing
+         above the tarmac is something the car is going to pass through, and a
+         small lip is only a small version of the bug. A hazard band on the
+         deck says where the bore starts and costs the suspension nothing. */
+      this.at(s,x,.055,BORE_W,.11,34,this.concrete);
+      for(const q of[-1,1])this.at(s+q*16.2,x,.13,BORE_W,.06,2.4,this.hazard);
+      /* THE BORE IS A CLEAR TUBE TO BORE_CLEAR, and the shoes swing above it.
+         They used to swing at y=0.7..5.3 with their cylinders at 1.5..4.5 and
+         a unit and a half of that inside the NEXT bay along - so two of the
+         three chutes, the two the trial requires a car to be able to drive
+         all the way through, had a moving steel plate at chest height in them.
+         The cylinders are on the frame now, see crushers(); this is the
+         pressing face, and it starts above anything that can be driven. */
+      const[fl,fr]=BORE_FACE[chute];
+      this.at(s,fl-.75+side*3.1,4.3,1.5,4.4,26,this.steel);
+      this.at(s,fr+.75-side*3.1,4.3,1.5,4.4,26,this.steel);
+      this.at(s,x,10.4-top*7.2,BORE_W+.4,1.7,28,this.steel);
+      /* Buried 0.06 into the platen rather than flush under it. Flush is two
+         faces on the same plane thirty units long, which is a sheet of
+         flickering hazard stripe across the top of the hall. */
+      this.at(s,x,9.46-top*7.2,BORE_W-.8,.30,26,this.hazard);
+      /* THE JAW COMES DOWN, AND AT REST IT HANGS CLEAR.
+         It was CENTRED on 1.1 with 2.2 of height on it - y=0..2.2, which is on
+         the road and through the car, in the mouth of all three bores at once.
+         The note beside it claimed y=1.1..4.5, which is what that number would
+         have meant if it had been the underside rather than the middle.
+
+         THE JAW PLATE IS STILL THE READ: hot red on the machine that is about
+         to take a car, cold steel on the two that are not, and its whole
+         travel stays under the 4.62 chute wall, so it can only be had by
+         looking down the bore. What is new is that the idle stroke stops at
+         BORE_CLEAR. A baler only puts its jaw on the floor when the trial
+         says it has a car in it. */
+      const low=(live&&g.crush)?.62:BORE_CLEAR+.6;
+      const jy=JAW_HIGH-jaw*(JAW_HIGH-low);
+      this.at(s-19,x,jy,BORE_W,1.2,1.6,this.steel);
+      this.at(s-19,x,jy,BORE_W-1.0,.30,1.9,live?this.red:this.steel);
       /* Work lamps inside the chamber, and only in the live one. Without them
          the machine is a black box with a car somewhere in it: the hall's high
          bays are outside and the platen shuts out what little reaches in. Lit
          is therefore both the lighting and the tell, and it is contained
          entirely inside a bore that is 34 units deep. */
       if(live)for(const q of[-1,1])for(const o of[-9,0,9]){
-        this.at(s+o,x+q*7.4,8.6,.7,.5,3.4,this.lamp);
-        this.at(s+o,x+q*7.4,8.15,1.1,.22,3.0,this.lamp);
+        this.at(s+o,x+q*5.6,8.6,.7,.5,3.4,this.lamp);
+        this.at(s+o,x+q*5.6,8.15,1.1,.22,3.0,this.lamp);
       }
       /* The interlock beacon. It stands at 14.1 - the highest thing on the
          machine and well clear of the 4.62 wall - so it is the one part of
@@ -3041,6 +3514,14 @@
     }
   }
 
+  /* The hall, published for tools/checkforge.js. The structure is the one
+     thing about the broken roof no unit test can reach - the solver's profile
+     is checked by cargo and the table by tools/checkramps.js, and whether the
+     DECK is where the car will be is a question about vertices. Same reason
+     __SYNX_LEVEL7__ is published a few thousand lines below. */
+  global.__SYNX_FACTORY_WORLD__ = FactoryWorld;
+
+
   /* Aurora's driver-link handshake. Four glyphs, on 1-4.
 
      The press cells used to ask arithmetic - "99 x 6 = ?" - which is a quiz
@@ -3063,7 +3544,7 @@
     reset(){
       // ...and on a restart too. See beginGhost for why this is not optional.
       if(this.g.driver)this.g.driver.paceScale=1;
-      this.started=false;this.phase='idle';this.phaseTime=0;this.roundTime=0;this.rewinds=0;this.chapterLost=false;this.prevS=START;this.strikes=0;this.invertTime=0;this.question=null;this.questionIndex=0;this.failTimer=0;this.raceModeActive=false;this.raceModeTimer=0;this.raceModeCooldown=0;this.reserveLoaded=false;this.truckCleared=false;this.truckClearT=0;this.truckPrompt=false;this.activationTime=0;this.skillFlash=0;this.finalStarted=false;
+      this.started=false;this.phase='idle';this.phaseTime=0;this.roundTime=0;this.rewinds=0;this.chapterLost=false;this.handedOver=false;this.lostCardDown=false;this.lostTimer=0;this.javasWarnT=-9;this.prevS=START;this.strikes=0;this.invertTime=0;this.question=null;this.questionIndex=0;this.failTimer=0;this.raceModeActive=false;this.raceModeTimer=0;this.raceModeCooldown=0;this.reserveLoaded=false;this.truckCleared=false;this.truckClearT=0;this.truckPrompt=false;this.activationTime=0;this.skillFlash=0;this.finalStarted=false;
       this.gates=[
         {s:112760,gap:-8,gapW:7,open:false,checked:false,live:false,pop:0},{s:113410,gap:8,gapW:7,open:false,checked:false,live:false,pop:0},
         {s:114060,gap:-6,gapW:7,open:false,checked:false,live:false,pop:0},{s:114710,gap:7,gapW:7,open:false,checked:false,live:false,pop:0},
@@ -3450,7 +3931,13 @@
        cabin now and this is not a thing to do to one on camera. */
     beginCrush(g){
       if(this.phase==='crush')return;
-      this.phase='crush';this.crushGate=g;this.crushT=0;g.crush=true;g.crushT=0;
+      /* THE BEATS ARE ONE-SHOT FLAGS AND NOBODY WAS PUTTING THEM BACK.
+         A second wrong chute at the same gate replayed the whole set piece in
+         silence - no impacts, no sparks, no shake, and no UNIT SCRAPPED card,
+         because b1..b4 were still set from the first one. Cleared here as well
+         as in rewind(), since either can be the thing that comes first. */
+      this.phase='crush';this.crushGate=g;this.crushT=0;
+      g.crush=true;g.crushT=0;g.b1=0;g.b2=0;g.b3=0;g.b4=0;
       this.crushS=g.s+140;this.crushLat=CHUTE[g.live];
       this.g.state='story';this.g.story.mode='level6Special';
       this.g.story.setLayer(this.g.story.ui.raceMeta,false);
@@ -3519,6 +4006,14 @@
       if(t>=4.2){
         this.g.carSquash=null;if(this.g.scene)this.g.scene.drivers=true;
         this.ui.fatal.classList.remove('show');this.ui.fatal.setAttribute('aria-hidden','true');
+        /* A CRUSH COSTS A RUN, LIKE EVERY OTHER FAILURE IN THIS CHAPTER.
+           This called rewind() directly, so the sorting floor was the one
+           trial with no budget on it: a player could guess wrong at the same
+           chute for as long as they liked while a missed handshake three doors
+           back cost them the chapter. Same counter, same ceiling, and it goes
+           through the shared loss path when it runs out. */
+        this.rewinds=(this.rewinds||0)+1;
+        if(this.rewinds>3){this.loseChapter('SCRAPPED // NO RUNS LEFT');return true;}
         /* Back in front of the chute you got wrong, not back at the start of
            the route. A one-in-three guess that costs eight minutes is not a
            trial, it is a punishment for having played. */
@@ -3686,6 +4181,14 @@
             if(this.g.fx&&this.g.fx.sparks)this.g.fx.sparks(car,1.0);
             this.g.hud.toast('PREDICTED // CLAMP FIRED','#ff3b1e');
             if(this.ghostClamped>=3){
+              /* ...AND SO DOES BEING READ THREE TIMES. rewind() puts
+                 ghostClamped back to whatever the checkpoint held, which on
+                 this trial is zero - so three clamps sent the player back to
+                 a state from which three more clamps sent them back again,
+                 with nothing counting and no way out but to win. The budget
+                 is the same one every other failure here spends. */
+              this.rewinds=(this.rewinds||0)+1;
+              if(this.rewinds>3){this.loseChapter('THE MODEL READ YOU EVERY TIME // NO RUNS LEFT');return;}
               this.g.story.showCompact('JAVAS','calm','Three. It has your number. Again - and do not give it the same answer twice.',4.0);
               if(this.cp&&this.rewind())return;
             }else{
@@ -3757,7 +4260,8 @@
       this.questionIndex=cp.questionIndex;this.strikes=cp.strikes;this.ghostBroken=cp.ghostBroken;
       this.ghostClamped=cp.ghostClamped||0;this.ghostHabit=cp.ghostHabit||0;
       this.machines.forEach((m,i)=>{m.open=cp.machines[i];});
-      this.sortGates.forEach((x,i)=>{x.resolved=cp.gates[i];x.armed=cp.gates[i];x.crush=false;x.crushT=0;});
+      this.sortGates.forEach((x,i)=>{x.resolved=cp.gates[i];x.armed=cp.gates[i];x.crush=false;x.crushT=0;
+        x.b1=0;x.b2=0;x.b3=0;x.b4=0;});
       this.arches.forEach((a,i)=>{a.done=cp.arches[i];a.armed=cp.arches[i];a.hit=false;
         a.committed=cp.arches[i];a.predicted=0;a.aim=0;a.lock=0;});
       this.gates.forEach((x,i)=>{x.checked=cp.gaps[i];x.open=cp.gaps[i];x.live=false;x.pop=0;});
@@ -3803,31 +4307,48 @@
      * whole game shares. See loseRace in js/story.js. */
     loseChapter(reason){
       if(this.chapterLost)return;
+      const g=this.g;
+      /* The run is already over - the line was crossed, or something else
+         ended it. There is nothing left to take away and finishing twice
+         would run the whole end-of-race sequence on top of itself. */
+      if(g.raceOver)return;
       this.chapterLost=true;
       this.phase='lost';
-      const g=this.g;
+      this.lostTimer=LOST_CARD;
       this.ui.fatalReason.textContent=reason;
       this.ui.fatal.classList.add('show');
       this.ui.fatal.setAttribute('aria-hidden','false');
       g.car.vLong=0;g.car.vLat=0;
       if(g.audio&&g.audio.crash)g.audio.crash(1);
       g.story.hideCompact();
-      if(g.story.loseRace)g.story.loseRace('JAVAS');
-      else{g.won=false;g.finish();}
+      /* THE LOSS HAS TO BE ACCEPTED, AND IT WAS NOT ALWAYS BEING ACCEPTED.
+         `loseRace` refuses anything that is not the race mode, and so does
+         `handleFinish` behind it - but this only ever checked that the method
+         EXISTED. Raised from a phase that had put the story in
+         'level6Special' - a rewind, the ability cinematic, the unlock - the
+         call returned false, nothing finished the run, and the card sat there
+         over a game that had quietly stopped having an ending. Put the story
+         back in the mode the loss path is written for, then hand it over. */
+      g.story.mode='race';
+      this.handedOver=!!(g.story.loseRace&&g.story.loseRace('JAVAS'));
+      if(!this.handedOver){g.won=false;g.finish();}
     }
 
-    /* Has Javas finished the line the player is still on? */
-    javasAhead(){
+    /* Has Javas finished the line the player is still on?
+       0 = in the fight, 1 = about to be gone, 2 = gone. */
+    javasNear(){
       const g=this.g,r=g.rival;
-      if(!r||this.chapterLost)return false;
+      if(!r||this.chapterLost)return 0;
       /* He reached the end of the trials first, which is the plainest way to
          lose a race and was the one this chapter did not implement. */
-      if(r.sTrack>=GHOST_END&&g.car.sTrack<GHOST_END)return true;
+      if(r.sTrack>=GHOST_END&&g.car.sTrack<GHOST_END)return 2;
       /* ...or he is simply gone. Half a kilometre of road, which he can only
          open up if the player has stopped, crashed or been rewound - he is
          capped under them for the whole of the line. */
-      return r.sTrack-g.car.sTrack>680;
+      const gap=r.sTrack-g.car.sTrack;
+      return gap>JAVAS_GONE?2:gap>JAVAS_WARN?1:0;
     }
+    javasAhead(){return this.javasNear()>=2;}
 
     fail(reason){
       if(this.phase==='fail'||this.phase==='crush'||this.phase==='lost')return;
@@ -3913,8 +4434,39 @@
       if(!this.reserveLoaded&&car.boost<=.021){this.reserveLoaded=true;car.boost=.50;this.g.raceModeBlueFuel=true;this.g.hud.toast('BLUE RESERVE // FLOW RESTORED','#39c7ff');this.g.audio.checkpoint();}
       if((this.reserveLoaded&&car.boost<=.012)||this.raceModeTimer<=0)this.finishRaceMode();
     }
+    /* THE CALIBRATION IS PASSED, AND THE CHAPTER HAS TO SAY SO.
+     *
+     * This is the bug that made BROKEN CIRCUIT the last chapter anybody could
+     * play. Chapter 6 does not end at a finish line - it ends when the blue
+     * reserve runs out on the calibration run, about a kilometre short of one
+     * - so it never passes through the two lines in Game.update that decide a
+     * race, and `won` was still false from resetCar when its closing
+     * conversation handed over to completeChapter.
+     *
+     * completeChapter has a door on it: a chapter completes when the player
+     * WON it, or when it is the one chapter whose written ending is a defeat
+     * and that defeat was earned. Chapter 6 is neither. So every successful
+     * run of the Forge reached the last line of Javas congratulating the
+     * player, logged "tried to complete without being won" to a console
+     * nobody has open, and was recorded as a loss - which meant chapter 6 was
+     * never added to completedChapters, NEON HORIZON was never unlocked, and
+     * the campaign stopped there.
+     *
+     * The door is right and stays. What was missing is the chapter answering
+     * it. Chapter 5 already does exactly this for the opposite case - it sets
+     * `won = false` and `canonicalEarned = true` because its ending is a
+     * defeat that still completes; see startFinish above. This is the same
+     * statement for a chapter that is simply won.
+     *
+     * `raceOver` goes with it. Nothing reaches the finish line from here -
+     * the state is about to become 'story', and `simulating` is false there -
+     * but a trial that has been passed is a race that is over, and saying so
+     * is what stops any later path through this chapter firing a second,
+     * ordinary finish underneath the ending. */
     finishRaceMode(){
-      if(this.finalStarted)return;this.finalStarted=true;this.raceModeActive=false;this.g.raceModeActive=false;this.g.raceModeBlueFuel=false;this.g.car.raceModeMultiplier=1;global.document.body.classList.remove('forge6-racemode');this.phase='finalDialogue';this.g.state='story';this.g.story.mode='level6Special';this.g.car.vLong*=.35;this.g.car.vLat=0;this.g.story.setLayer(this.g.story.ui.letterbox,true);global.document.body.classList.add('story-cinematic');
+      if(this.finalStarted)return;this.finalStarted=true;
+      this.g.won=true;this.g.raceOver=true;
+      this.raceModeActive=false;this.g.raceModeActive=false;this.g.raceModeBlueFuel=false;this.g.car.raceModeMultiplier=1;global.document.body.classList.remove('forge6-racemode');this.phase='finalDialogue';this.g.state='story';this.g.story.mode='level6Special';this.g.car.vLong*=.35;this.g.car.vLat=0;this.g.story.setLayer(this.g.story.ui.letterbox,true);global.document.body.classList.add('story-cinematic');
       this.g.story.dialogue.play([
         {speaker:'NOVA',expression:'calm',text:'Blue reserve is empty. Link stayed clean.',shot:'player'},
         {speaker:'PLAYER',expression:'race',text:'It felt like the car got lighter.',shot:'player'},
@@ -3929,12 +4481,39 @@
       if(!this.isChapter())return false;
       if(this.phase==='crush')return this.updateCrush(dt);
       if(this.phase==='lost'){
-        /* The card is up and js/story.js is running the loss from here: the
-           conversation, then the retry. Nothing in this director drives any
-           more, which is what stops a lost chapter rewinding itself. */
-        this.g.story.baseTick(dt,false);
-        this.g.story.cameraCar(this.g.car,'hero',58);
-        return true;
+        /* THE CARD IS A BEAT, NOT A DESTINATION.
+           It holds for a second and a half so the player can read why the run
+           ended, and then THE FRAME GOES BACK to js/story.js, which owns
+           everything after that: the finish roll, Javas' line, and the retry.
+
+           Returning true forever is what froze it. This director is the OUTER
+           update wrapper - js/chapters.js patches Game.update after
+           js/story.js does, see the bottom of both files - so an exclusive
+           frame here never reaches story.update, and story.update is the only
+           thing that advances the loss. The card came up and the game stopped,
+           permanently, with every key still being read by a director that had
+           decided it was finished driving. */
+        this.lostTimer-=dt;
+        if(this.lostTimer>0){
+          this.g.story.baseTick(dt,false);
+          this.g.story.cameraCar(this.g.car,'hero',58);
+          return true;
+        }
+        if(!this.lostCardDown){
+          this.lostCardDown=true;
+          this.ui.fatal.classList.remove('show');
+          this.ui.fatal.setAttribute('aria-hidden','true');
+          if(!this.handedOver){
+            /* js/story.js would not take the loss - there is no chapter under
+               it, or the run had already ended. Go to the retry directly
+               rather than sit on a card with nothing behind it. */
+            this.handedOver=true;
+            this.g.story.pendingRetryChapter=6;
+            this.g.story.retryChapterRace();
+            return true;
+          }
+        }
+        return false;
       }
       if(this.phase==='fail'){
         this.g.story.baseTick(dt,false);this.g.story.cameraCar(this.g.car,'hero',58);this.failTimer-=dt;
@@ -3970,11 +4549,25 @@
       const cap=this.capFor();
       if(cap>0){this.cap(this.g.car,cap);this.cap(this.g.rival,cap*.97);}
       /* He is on this road too, and until now nothing ever looked at where he
-         was. Checked on every trial phase and not during the calibration run
-         at the end, which is the player alone on Straight 07. */
-      if(this.phase!=='test'&&this.phase!=='lost'&&this.javasAhead()){
-        this.loseChapter('JAVAS TOOK THE LINE');
-        return;
+         was. Asked only on the phases the player is actually DRIVING - not on
+         the calibration run at the end, which is the player alone on Straight
+         07, and not while a rewind, a cinematic or a conversation has the car
+         parked. Those last three were the ones that hurt: the car is held
+         still for two and a bit seconds after a fail while Javas keeps going,
+         so a rewind could hand out the loss for the crash it was forgiving.
+         And the loss it handed out from there was the one the story refused,
+         which is the frozen card. See loseChapter. */
+      if(LIVE_PHASES.has(this.phase)){
+        /* AND HE IS SEEN COMING. A run that ends the instant a number crosses
+           a threshold the player was never shown is a run that ends unfairly;
+           the last two hundred metres of the gap are a warning instead. */
+        const near=this.javasNear();
+        if(near>=2){this.loseChapter('JAVAS TOOK THE LINE');return;}
+        if(near===1&&this.g.time-(this.javasWarnT||-9)>3.4){
+          this.javasWarnT=this.g.time;
+          this.g.hud.toast('JAVAS IS PULLING AWAY','#ff8a3a');
+          this.g.story.showCompact('NOVA','calculating','He is gone if you lose any more of this.',2.6);
+        }
       }
       if(this.phase==='lightning'){this.armGates(dt);this.checkGates();if(this.g.car.sTrack>=ELECTRIC_END)this.beginMachinery();}
       else if(this.phase==='machinery')this.checkMachines(dt);

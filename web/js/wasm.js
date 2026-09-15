@@ -40,7 +40,7 @@
   /** The ABI this file was written against. The module refuses to load if the
       .wasm disagrees, which turns "a stale build" from a mystery into a line
       of text. */
-  const WANT_ABI = 17;
+  const WANT_ABI = 18;
 
   let wasm = null;      // the instance's exports
   let buffer = null;    // the ArrayBuffer the current views were made over
@@ -419,6 +419,17 @@
        See the note above `Ramp` in crates/synx-core/src/vehicle.rs. */
     armRampDeck(s0, s1, s2, h, lip) {
       M().synx_veh_arm_ramp_deck(this._id, s0 || 0, s1 || 0, s2 || 0, h || 0, lip || 0);
+      return this;
+    }
+    /* ...and one that comes back DOWN, which is a different thing again.
+       A wedge launches you and a crest gets you over something; this climbs to
+       a deck, runs along it and then puts the car back on the road at the far
+       end under its own wheels. Aurora Forge's broken roof is the only
+       structure on the course that wants it - a car eighteen units up that is
+       meant to end on the factory floor cannot get there by being thrown off
+       the edge. `s3 <= s2` is exactly `armRampDeck`. */
+    armRampRoad(s0, s1, s2, s3, h, lip) {
+      M().synx_veh_arm_ramp_road(this._id, s0 || 0, s1 || 0, s2 || 0, s3 || 0, h || 0, lip || 0);
       return this;
     }
     clearRamp() { return this.armRamp(0, 0, 0); }
@@ -1031,6 +1042,13 @@
   NR.NetCore = Net;
 
   // -------------------------------------------------------------- exports --
+
+  /* THE RECORDER IS NOT WIRED THROUGH HERE ANY MORE.
+     It had a seam in this file because this file owns the wasm instance -
+     but the encoder is its own module now, loaded by its own thread, and the
+     only code that touches it is web/js/recworker.js. Keeping a bridge here
+     to a set of exports the core no longer has would be ninety lines that
+     can only ever return null. See crates/synx-rec/src/abi.rs. */
 
   NR.Track = Track;
   NR.Vehicle = Vehicle;

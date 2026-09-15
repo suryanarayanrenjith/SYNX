@@ -469,11 +469,34 @@
        the archive and half from loose paths.
 
        Neither depends on the other, so they run together. */
+    /* WHAT THE BAR IS MADE OF.
+     *
+     * Every phase of the boot reports its own fraction into NR.Boot and the
+     * cold open draws the total - see js/boot.js for why that is the only way
+     * a loading bar can be honest about a wait that four different files are
+     * each responsible for a quarter of.
+     *
+     * The archive is the one part of this with a real denominator: it is a
+     * transfer, so it can be counted in bytes. Everything after it is work,
+     * and work can only be weighted. */
+    const MB = 1048576;
+    const onPack = (got, total, exact) => {
+      NR.Boot.set('archive', total > 0 ? got / total : 0,
+        exact ? (got / MB).toFixed(1) + ' / ' + (total / MB).toFixed(1) + ' MB'
+          /* No declared length, so there is no denominator to print. The bar
+             is still driven against what the pack is expected to weigh, but
+             the caption says only what has actually arrived - printing
+             "44.0 / 42.3 MB" because the estimate was low is worse than
+             printing nothing at all. */
+          : (got / MB).toFixed(1) + ' MB');
+    };
+
     Promise.all([
       NR.Host ? NR.Host.load() : Promise.resolve(false),
-      NR.Pak.load('data/synx.pak?v=rust-1'),
+      NR.Pak.load('data/synx.pak?v=rust-1', onPack),
     ])
       .then(function () {
+        NR.Boot.complete('archive', '');
         // the handful of portraits the title and hub markup carries statically
         NR.Pak.resolveDom();
         /* The typefaces are declared in css/style.css now, against the same
@@ -482,32 +505,44 @@
         return NR.loadCore('wasm/synx_core.wasm?v=rust-1');
       })
       .then(function () {
-        const game = new NR.Game({
-          canvas: document.getElementById('glCanvas'),
-          hudCanvas: document.getElementById('hudCanvas'),
-          gameData: window.NR_GAME || {},
+        NR.Boot.complete('core');
+        /* THE CONSTRUCTOR IS THE PIPELINE.
+           Nineteen shader programs are compiled and linked in here, and a
+           link is where a driver actually translates a shader - so this one
+           statement is the whole of the RENDER PIPELINE phase, and on a cold
+           shader cache it is a second of it. It cannot be broken up, so the
+           bar is moved either side of it rather than through it. */
+        return NR.Boot.breathe().then(function () {
+          const game = new NR.Game({
+            canvas: document.getElementById('glCanvas'),
+            hudCanvas: document.getElementById('hudCanvas'),
+            gameData: window.NR_GAME || {},
+          });
+          window.__nr = game;
+          NR.Boot.complete('pipeline');
+          game.run();
+          return game.load();
         });
-        window.__nr = game;
-        game.run();
-        return game.load();
       })
       .then(function () {
-        /* Everything that wanted an asset has one, so the archive's own buffer
-           can go. The blobs cut from it stay - the radio streams from them for
-           the whole session - but the forty-five megabytes they were sliced
-           out of do not need to stay resident as well. */
-        const freed = NR.Pak.compact();
-        if (freed) console.info('SYNX: released ' + (freed / 1048576).toFixed(1) + ' MB of pack buffer');
-
         /* THE ENGINE MAY STOP. Everything that was going to compete with the
            notice for the main thread has finished competing: the pack is
            decoded, the core is compiled, the course is built and the first
            frame is on the canvas. Ignition holds its last note until this
            line and then hands over - see the note on the opening above. */
         if (NR.Ignition) NR.Ignition.ready();
-        /* The window has been hidden since launch so the player never sees an
-           unstyled page or a white flash. The first real frame has been drawn
-           by the time load() resolves, so this is where it may be shown. */
+        /* THE WINDOW IS ALREADY OPEN, and this is the safety net rather than
+           the mechanism.
+
+           It used to be the mechanism, and that was the "the game takes ages
+           to start" report in full: the host creates its window hidden and
+           reveals it when the page says it has drawn, this was the call that
+           said so, and it is at the END of the load - so a direct launch gave
+           the player a good ten seconds of no window at all, and every frame
+           of the cold open covering that wait was drawn where nobody could
+           see it. The first frame of the cold open makes this call now. It is
+           idempotent, and this stays for the path where there is no cold open
+           to make it: a machine with no 2D context, or reduced motion. */
         if (NR.Host) NR.Host.ready();
 
         /* ...and the benchmark, if the launcher asked for one. Everything
@@ -521,6 +556,39 @@
            could start. That is the whole of why the button appeared to do
            nothing and why the warning screen stopped appearing afterwards. */
         if (NR.Bench && NR.Bench.autorun && window.__nr) NR.Bench.autorun(window.__nr);
+
+        /* THE REPLAY BUFFER IS ATTACHED HERE AND STARTED BY NOBODY.
+           It is OFF unless the player has turned it on - F8, or the row on the
+           launcher - because a recorder costs a readback on every captured
+           frame and up to a few hundred megabytes of ring, and neither is
+           something to spend on somebody who has not asked. Attaching is free:
+           no worker is started and nothing is allocated until it is switched
+           on. See web/js/record.js. */
+        if (NR.Record && window.__nr) {
+          NR.Record.attach(window.__nr);
+          if (window.__nr.applyRecorderSettings) window.__nr.applyRecorderSettings();
+          else NR.Record.configure(NR.Record.defaults);
+        }
+
+        /* AND THE ARCHIVE GOES, AFTER THE OPENING HAS ITS FRAMES.
+         *
+         * Everything that wanted an asset has one, so the buffer the pack was
+         * read into can be released - the blobs cut from it stay, because the
+         * radio streams from them for the whole session, but the forty-two
+         * megabytes they were sliced out of do not need to stay resident too.
+         *
+         * It happens LAST, and a chunk at a time. Cutting a hundred blobs is
+         * one synchronous pass over the whole archive, and it used to run on
+         * the frame the load finished - which is the frame the cold open
+         * begins its closing move, so the sequence ended on a stutter. It is
+         * spread over a few frames now and nothing waits for it. */
+        NR.Pak.compactAsync(NR.Boot.breathe).then(function (freed) {
+          if (freed) console.info('SYNX: released ' + (freed / 1048576).toFixed(1) + ' MB of pack buffer');
+        }).catch(function () {
+          /* Failing to give memory back is not a failure to run. It is off the
+             main chain deliberately - an unhandled rejection here would be
+             reported against a game that is already on the title screen. */
+        });
       })
       .catch(function (e) {
         /* ...and a load that failed is still a load that finished. Without

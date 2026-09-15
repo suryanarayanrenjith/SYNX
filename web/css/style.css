@@ -4451,8 +4451,9 @@ body.pointer-fallback [role="button"] { cursor: pointer !important; }
   display: grid;
   place-items: center;
   background:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, .022) 0 1px, transparent 1px 3px),
     radial-gradient(120% 90% at 50% 45%, rgba(30, 10, 62, .86), transparent 70%),
-    rgba(3, 1, 12, .93);
+    rgba(3, 1, 12, .94);
   opacity: 0;
   pointer-events: none;
   transition: opacity 200ms ease;
@@ -4460,12 +4461,27 @@ body.pointer-fallback [role="button"] { cursor: pointer !important; }
 .stage-cover.is-on { opacity: 1; pointer-events: auto; }
 .stage-cover.is-out { opacity: 0; pointer-events: none; }
 
+/* The panel. It borrows .synx-cut from the primitives above rather than
+   inventing a shape of its own, so the screen that covers a mode change is
+   made of the same thing every other screen in the game is made of - and
+   both of its layers are painted once and never touched, which is the one
+   constraint this card has. */
 .stage-inner {
+  --cut: 16px;
+  --edge: var(--cyan);
   display: grid;
   justify-items: center;
-  gap: .9em;
+  gap: .8em;
   width: min(420px, 76vw);
+  padding: clamp(22px, 3.4vw, 38px) clamp(20px, 3vw, 34px) clamp(24px, 3.6vw, 36px);
   text-align: center;
+}
+.stage-inner > * { position: relative; z-index: 1; }
+.stage-kicker {
+  color: var(--ink-mute);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .34em;
 }
 
 /* The dial. A ring, and a needle sweeping inside it - the same idea as the
@@ -4482,8 +4498,18 @@ body.pointer-fallback [role="button"] { cursor: pointer !important; }
   border-radius: 50%;
   border: 2px solid rgba(120, 160, 220, .18);
   border-top-color: var(--cyan, #39e6ff);
-  border-right-color: var(--magenta, #ff2e88);
+  border-right-color: var(--pink, #ff2e88);
   animation: stageSpin 1.5s linear infinite;
+}
+/* A second ring inside the first, turning the other way and more slowly.
+   One ring is a spinner; two rings running against each other read as a
+   mechanism, and it costs one element and one more composited transform. */
+.stage-arc-in {
+  inset: 13px;
+  border-width: 1px;
+  border-color: rgba(120, 160, 220, .10);
+  border-bottom-color: rgba(139, 92, 246, .85);
+  animation: stageSpinBack 2.6s linear infinite;
 }
 .stage-needle::before {
   content: "";
@@ -4502,6 +4528,7 @@ body.pointer-fallback [role="button"] { cursor: pointer !important; }
   animation: stageSweep 1.9s cubic-bezier(.5, 0, .35, 1) infinite;
 }
 @keyframes stageSpin { to { transform: rotate(360deg); } }
+@keyframes stageSpinBack { to { transform: rotate(-360deg); } }
 @keyframes stageSweep {
   0%   { transform: rotate(-128deg); }
   46%  { transform: rotate(120deg); }
@@ -4548,7 +4575,7 @@ body.pointer-fallback [role="button"] { cursor: pointer !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .stage-arc, .stage-needle, .stage-rail > i { animation: none !important; }
+  .stage-arc, .stage-arc-in, .stage-needle, .stage-rail > i { animation: none !important; }
 }
 
 /* ====================================================== IGNITION ========
@@ -4572,6 +4599,43 @@ body.pointer-fallback [role="button"] { cursor: pointer !important; }
   transition: opacity 520ms ease;
 }
 .ign-veil canvas { display: block; width: 100%; height: 100%; }
+
+/* THE HEARTBEAT.
+
+   Every other pixel on this screen is drawn by script into a canvas, and
+   script runs on exactly the thread the load is blocking - so a long
+   synchronous pass freezes the needle. Most of that is answered by the
+   yields in js/scene.js; this is the backstop for whatever is left.
+
+   It moves on `transform` and NOTHING else, which is the one property a
+   compositing browser advances off its own thread: the bar keeps travelling
+   at sixty through a stall in which no JavaScript runs at all. The same
+   reasoning, and the same constraint, as .stage-cover - see the long note
+   above it and js/staging.js. */
+.ign-beat {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: block;
+  height: 2px;
+  overflow: hidden;
+  background: rgba(120, 160, 220, .10);
+  pointer-events: none;
+}
+.ign-beat::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg,
+    transparent, var(--cyan, #39e6ff), var(--pink, #ff2e88), transparent);
+  animation: ignBeat 1.55s linear infinite;
+}
+@keyframes ignBeat {
+  0%   { transform: translateX(-44%) scaleX(.42); }
+  100% { transform: translateX(240%) scaleX(.42); }
+}
 /* The cut. The canvas has already flashed white by the time this runs, so
    what the fade actually crosses is white to the notice underneath. */
 .ign-veil.ign-out { opacity: 0; pointer-events: none; }
@@ -4636,20 +4700,68 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
   to   { opacity: 1; letter-spacing: .16em; }
 }
 
-.intro-line {
-  margin: 1.1em 0 0;
+/* The line under the wordmark. The same words the title screen carries a
+   moment later, so the two read as one arrival rather than as a splash
+   followed by a menu. */
+.intro-tag {
+  margin: .85em 0 0;
+  color: var(--ink-mute);
+  font-size: clamp(9px, 1.15vw, 12px);
+  font-weight: 700;
+  letter-spacing: .46em;
+  animation: introTag 700ms var(--ease-out) 180ms both;
+}
+@keyframes introTag {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* THE LEDGER. Four rows that fill up and stay, each signed off as it
+   completes - see nextLine in js/intro.js for why one reused paragraph was
+   a status line rather than a boot. */
+.intro-lines {
+  margin: 1.5em 0 0;
+  display: grid;
+  gap: .5em;
+}
+.intro-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1.4em;
   min-height: 1.5em;
+  /* A hairline under each row, lit once the row is signed off. It is what
+     turns four sentences into a table of results. */
+  border-bottom: 1px solid rgba(120, 160, 220, .10);
+  padding-bottom: .34em;
+  transition: border-color var(--t-base) var(--ease);
+}
+.intro-row.is-done { border-bottom-color: rgba(57, 230, 255, .26); }
+.intro-line {
+  margin: 0;
   color: var(--cyan);
   font-size: clamp(10px, 1.35vw, 13px);
   font-weight: 700;
   letter-spacing: .2em;
   text-shadow: 0 0 16px rgba(57, 230, 255, .45);
 }
+.intro-ok {
+  flex: none;
+  color: #5affc0;
+  font-size: clamp(9px, 1.05vw, 11px);
+  font-weight: 900;
+  letter-spacing: .3em;
+  text-shadow: 0 0 14px rgba(90, 255, 192, .6);
+  opacity: 0;
+  transform: translateX(6px);
+  transition: opacity var(--t-fast) var(--ease-out), transform var(--t-fast) var(--ease-out);
+}
+.intro-row.is-done .intro-ok { opacity: 1; transform: translateX(0); }
 
 /* THE RAIL, under the boot lines: how many of them have landed. */
 .intro-rail {
   position: relative;
-  margin-top: 1.6em;
+  margin-top: 1.5em;
   height: 2px;
   background: rgba(120, 160, 220, .16);
   overflow: hidden;
@@ -4740,9 +4852,9 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
 @keyframes introSkip { 0%, 100% { opacity: .35; } 50% { opacity: .8; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .intro-veil, .intro-mark, .intro-skip, .intro-ready,
-  .intro-mark::before, .intro-mark::after, .intro-rail > i,
-  .ign-veil { animation: none !important; transition: none !important; }
+  .intro-veil, .intro-mark, .intro-skip, .intro-ready, .intro-tag,
+  .intro-mark::before, .intro-mark::after, .intro-rail > i, .intro-ok, .intro-row,
+  .ign-veil, .ign-beat::before { animation: none !important; transition: none !important; }
   .intro-mark::before, .intro-mark::after { display: none; }
 }
 

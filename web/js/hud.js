@@ -14,6 +14,10 @@
   const PINK = '#ff2e88';
   const WHITE = '#f2f0ff';
   const VIOLET = '#8b5cf6';
+  /* The one red in the interface. It is a WARNING colour and nothing else -
+     the redline band, the ticks inside it, the needle over it - so it is
+     never used for a value that is merely large. */
+  const RED = '#ff2a3c';
   const VW = 1280;
   /* Where the position/gap group starts on the left flank, and how wide it
      runs. Both are constants because the toast clamp has to know them too - if
@@ -27,6 +31,45 @@
   const RIVAL_X = -330;
   const RIVAL_W = 150;               // the gap rail, which is its widest part
   const VH = 720;
+
+  /* ------------------------------------------------------- THE SPEEDOMETER
+   *
+   * Where the instrument sits, in the 1280x720 virtual space, and how far
+   * round it sweeps. It is placed rather than laid out from the shipped
+   * widget boxes because those describe a 180x102 bitmap from a different
+   * game's dashboard - see the long note above Hud.speedo.
+   *
+   * At the smallest window the host allows, the bezel's outer edge lands 26
+   * units inside the bottom of the frame and 64 inside the right, which is
+   * the tightest this ever gets: the virtual frame is fitted in BOTH axes, so
+   * every other aspect ratio has more room, not less.
+   */
+  const SPD = { x: 468, y: -226, r: 90 };
+  /* A car's dial is not a circle: it is about two hundred and forty degrees
+     with a gap at the bottom, and the gap is what makes the ends of the scale
+     read as ends. The same sweep as the cold open's tachometer, deliberately -
+     they are two instruments in one car. */
+  const SPD_A0 = Math.PI * 0.75, SPD_A1 = Math.PI * 2.25;
+  /* How much wider than the dial the cached face has to be: the bezel reaches
+     1.20 and its lit rim throws a blur past that. */
+  const SPD_PAD = 1.42;
+  /* Where the scale goes red - the last seventh of what the car has. */
+  const SPD_HOT = 0.86;
+  /* The shift-light strip, over the top of the bezel and clear of it. */
+  const SPD_LED0 = Math.PI * 1.18, SPD_LED1 = Math.PI * 1.82;
+  /* The ramp the swept arc, the needle and the readout all run along. See
+     Hud.speedTint for why it goes through violet and not through amber. */
+  const SPD_RAMP = [[0.00, CYAN], [0.52, VIOLET], [0.84, PINK], [1.00, RED]];
+
+  /* THE BOOST METER. The shipped widget is 512x64 at the bottom centre, which
+     is a third of the frame's width for one number - so this is narrower and
+     much shallower, in the same slot. `n` is the segment count: the reserve is
+     spent in discrete bursts and latches when it empties, so what the player
+     reads off it is a count rather than a length. See Hud.boostMeter. */
+  /* y is six units above the shipped widget's: the caption under the bar and
+     the record readout between the two chequered flags at y -315 were sharing
+     a line at the old height, and two centred readouts that touch read as one. */
+  const BST = { x: 0, y: -268, w: 380, h: 17, n: 24 };
 
   // The chrome ramp the 80s logo treatment is built on: white highlight,
   // violet mid, a hard specular break, then warm gold into magenta.
@@ -47,6 +90,33 @@
     topFor(n) { return ML.midpoint + (n - 1) * ML.gap / 2; },
     yFor(i, n) { return ML.topFor(n) - i * ML.gap; },
   };
+
+  /* Blend two colours that may be #rrggbb OR the rgb() string mixHex itself
+     returns. The ramp chains - violet into the state colour, then that into
+     the hot colour - and the second link is handed the first link's output,
+     which mixHex cannot parse. */
+  function mixHex2(a, b, t) {
+    const rd = (c) => {
+      if (c[0] === '#') {
+        /* Three-digit shorthand is expanded rather than parsed as a number:
+           #fff is 4095, and 4095 read as three bytes is a dark blue. */
+        const h = c.length === 4 ? c[1] + c[1] + c[2] + c[2] + c[3] + c[3] : c.slice(1, 7);
+        const p = parseInt(h, 16);
+        return [(p >> 16) & 255, (p >> 8) & 255, p & 255];
+      }
+      /* Read without a regular expression, so the two brackets cannot be
+         mistaken for a capture group by anything that rewrites this file. */
+      const o = c.indexOf('('), e = c.indexOf(')', o + 1);
+      if (o < 0 || e < 0) return [255, 255, 255];
+      const v = c.slice(o + 1, e).split(',').map(x => parseFloat(x) | 0);
+      return v.length >= 3 ? v : [255, 255, 255];
+    };
+    const pa = rd(a), pb = rd(b);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return 'rgb(' + Math.round(pa[0] * (1 - t) + pb[0] * t) + ','
+      + Math.round(pa[1] * (1 - t) + pb[1] * t) + ','
+      + Math.round(pa[2] * (1 - t) + pb[2] * t) + ')';
+  }
 
   /** Blend two #rrggbb strings; used for the speed readout's heat tint. */
   function mixHex(a, b, t) {
@@ -464,8 +534,21 @@
 
     // ------------------------------------------- retro-futuristic bits --
 
-    /** Chrome-ramp headline with an outer neon glow and a bevelled edge. */
-    chrome(txt, x, y, size, glow, alpha) {
+    /** Chrome-ramp headline with an outer neon glow and a bevelled edge.
+     *
+     * `glint` is an optional 0..1 position for a specular band travelling
+     * across the letters, and it is the one thing a chrome logo does that a
+     * gradient cannot: a ramp is a still, and what makes chrome read as METAL
+     * is a highlight moving over it. It is drawn as another fill of the same
+     * text with a mostly-transparent gradient, so it is clipped to the glyphs
+     * for free and costs one more fillText - there is no text-to-path in a 2D
+     * context, and compositing it any other way would paint through the road
+     * underneath.
+     *
+     * Undefined, or outside 0..1, means no glint at all. Only the title screen
+     * asks for one: a story card that is on screen for two seconds should not
+     * be waiting for a highlight to cross it. */
+    chrome(txt, x, y, size, glow, alpha, glint) {
       const c = this.ctx;
       const px = this.vs(size);
       const sx = this.vx(x), sy = this.vy(y);
@@ -494,6 +577,24 @@
 
       // horizontal cut lines, the way the era's airbrushed logos were done
       const w = c.measureText(txt).width;
+
+      /* The specular band, before the cut lines so they slice it too - a
+         highlight that runs over the gaps in the logo is a highlight sitting
+         on top of it rather than in it. */
+      if (glint >= 0 && glint <= 1) {
+        const band = 0.13;
+        const lo = Math.max(0, Math.min(1, glint - band));
+        const hi = Math.max(0, Math.min(1, glint + band));
+        const mid = Math.max(lo, Math.min(hi, glint));
+        const sweep = c.createLinearGradient(sx - w / 2 - 6, 0, sx + w / 2 + 6, 0);
+        sweep.addColorStop(0, 'rgba(255,255,255,0)');
+        if (lo > 0) sweep.addColorStop(lo, 'rgba(255,255,255,0)');
+        sweep.addColorStop(mid, 'rgba(255,255,255,0.78)');
+        if (hi < 1) sweep.addColorStop(hi, 'rgba(255,255,255,0)');
+        sweep.addColorStop(1, 'rgba(255,255,255,0)');
+        c.fillStyle = sweep;
+        c.fillText(txt, sx, sy);
+      }
       c.globalCompositeOperation = 'destination-out';
       const step = Math.max(2, px * 0.11);
       for (let ly = sy - px * 0.55; ly < sy + px * 0.55; ly += step) {
@@ -888,6 +989,696 @@
       hRestore(c);
     }
 
+    /* ================================================== THE SPEEDOMETER ==
+     *
+     * WHAT IT REPLACED, AND WHY A SPRITE COULD NOT BE FIXED.
+     *
+     * It shipped as two atlas sprites called `speed`: one drawn at 7% opacity
+     * as a background and the same bitmap drawn over it with `drawImage`'s
+     * source rectangle CLIPPED to the fraction of top speed the car was
+     * doing. That is not a dial. It is a picture of a dial with a hard
+     * vertical edge travelling across it, so the "needle" is a straight cut
+     * through the artwork, the numbers on the face are painted into a 180x102
+     * bitmap that is upscaled on every machine with more than a 720p window,
+     * and the scale cannot re-draw itself when the car's ceiling changes -
+     * which it does, twice, over the campaign.
+     *
+     * Nothing about that can be repaired by drawing the same sprite better.
+     * The instrument has to know what it is showing, so it is drawn.
+     *
+     * WHAT IS ON IT
+     *
+     *   THE SCALE re-derives itself from the ceiling the solver will actually
+     *   enforce on this car as it is fitted right now, in the unit the player
+     *   chose - so fitting the Forge rebuild in Chapter 6 re-numbers the dial
+     *   rather than pegging the needle at the end of its travel for the whole
+     *   of Chapter 7. Majors are a round number of the unit, never a fraction
+     *   of the top speed, because 26.8 MPH is not a number anybody can read a
+     *   dial by.
+     *
+     *   THE NEEDLE has mass. It is driven towards the speed rather than set to
+     *   it, hard enough to keep up and soft enough that a kerb strike reads as
+     *   a flick rather than a jump - the single cheapest thing that separates
+     *   an instrument from a bar chart.
+     *
+     *   THE SHIFT LIGHTS are the arc over the top of the bezel. They are the
+     *   same drivetrain the DRIVETRAIN panel's rev bar is reading, and they
+     *   are here because this is where the eye already is at the moment the
+     *   question "do I lift?" is being asked. Dim until three quarters, amber,
+     *   then the whole strip goes magenta at the upshift.
+     *
+     *   THE PEAK MARK is the fastest this run, left on the scale. It costs one
+     *   tick and it is the reason a run has a shape.
+     *
+     * AND IT IS CACHED. Everything that cannot change between two frames - the
+     * bezel, the dish, the glass, forty-odd ticks, its numerals and the unit -
+     * is rendered once into an offscreen canvas and blitted, because this file
+     * is on the CPU's critical path and re-rasterising eleven numerals sixty
+     * times a second to show a number that has not changed is exactly the kind
+     * of cost the rest of this file already goes to some trouble to avoid.
+     * The cache is keyed on everything the face depends on, so there is no way
+     * to change one of them and be shown a stale dial.
+     */
+
+    /* THE SCALE, DECIDED ONCE.
+     *
+     * Two things read this - the cached face draws the ticks and the live half
+     * works out where the needle goes - and if they ever disagreed by a single
+     * unit the needle would point between the numbers. It was computed twice,
+     * which is the shape of that bug waiting to happen, so it is one function.
+     *
+     * MAJORS COME OFF A LADDER, NOT OFF THE CEILING. A step chosen as a
+     * fraction of the top speed gives you a dial labelled 26.8; a step chosen
+     * from round numbers gives you a dial. The ladder is walked until the
+     * whole scale fits in eight labels, because ten of them at this size
+     * collide - which is exactly what the rebuilt engine's 225 mph dial did,
+     * printing "100 125" as one word across the top of the instrument.
+     *
+     * The top is then rounded UP to a whole major, so the scale ends on a
+     * labelled tick rather than three-fifths of the way between two.
+     */
+    speedoScale(raw, metric) {
+      const ladder = metric ? [20, 25, 40, 50, 100] : [10, 20, 25, 50];
+      let major = ladder[ladder.length - 1];
+      for (const step of ladder) {
+        if (Math.ceil(raw / step) <= 8) { major = step; break; }
+      }
+      const top = Math.max(major, Math.ceil(raw / major) * major);
+      return { top, major, minor: major / (major % 4 === 0 ? 4 : 5) };
+    }
+
+    /** The face, rendered once per (size, scale, unit, glow). */
+    speedoFace(top, metric) {
+      const key = this.k.toFixed(4) + '|' + top + '|' + (metric ? 'M' : 'I') + '|' + GLOW.toFixed(2);
+      if (this._spdKey === key && this._spdFace) return this._spdFace;
+
+      const dpr = this.dpr || 1;
+      const side = this.vs(SPD.r * 2 * SPD_PAD);
+      const px = Math.max(8, Math.ceil(side * dpr));
+      if (!this._spdFace) this._spdFace = document.createElement('canvas');
+      const cv = this._spdFace;
+      cv.width = px; cv.height = px;
+      const c = cv.getContext('2d');
+      if (!c) { this._spdFace = null; return null; }
+      /* Assigning width resets the context to its defaults, font included,
+         and the font cache is a property ON the context - so it has to be
+         told, or the first numeral is drawn at whatever size the last build
+         happened to leave cached. See the note on hRestore. */
+      c.__f = '';
+      c.setTransform(dpr, 0, 0, dpr, 0, 0);
+      c.clearRect(0, 0, side, side);
+      c.translate(side / 2, side / 2);
+      const r = this.vs(SPD.r);
+      const { major, minor } = this.speedoScale(top, metric);
+      const aOf = (v) => SPD_A0 + (SPD_A1 - SPD_A0) * Math.max(0, Math.min(1, v / top));
+      const hot = top * SPD_HOT;
+
+      /* ---------------------------------------------------- THE HOUSING --
+       *
+       * IT IS NOT A CAR DIAL. The first version of this was: a turned metal
+       * bezel, white ticks, white numerals, a green sweep running to red. Put
+       * next to the rest of this interface it read as an instrument borrowed
+       * from a different game - because every one of those choices is what a
+       * real gauge does, and nothing in this game is trying to look real. The
+       * road is neon tubes, the panels are cut corners over dark glass, and
+       * the only greens in the palette are an indicator lamp.
+       *
+       * So the ring is not metal, it is two TUBES: a wide violet one holding
+       * the outside and a thin bright cyan one just inside the scale, which is
+       * exactly how the road's own verges are drawn. What sits between them is
+       * dark glass with the same one-in-four scanline wash the panels carry.
+       */
+      const dish = c.createRadialGradient(0, -r * 0.35, r * 0.05, 0, 0, r * 1.16);
+      dish.addColorStop(0, 'rgba(26,12,56,0.62)');
+      dish.addColorStop(0.62, 'rgba(10,3,30,0.74)');
+      dish.addColorStop(1, 'rgba(4,1,16,0.86)');
+      c.fillStyle = dish;
+      c.beginPath();
+      c.arc(0, 0, r * 1.18, 0, Math.PI * 2);
+      c.fill();
+
+      /* The wash and the glass, both clipped to the disc. */
+      c.save();
+      c.beginPath();
+      c.arc(0, 0, r * 1.18, 0, Math.PI * 2);
+      c.clip();
+      c.globalAlpha = 0.5;
+      c.fillStyle = 'rgba(255,255,255,0.030)';
+      const lineH = Math.max(1, this.vs(1));
+      for (let y = -r * 1.2; y < r * 1.2; y += lineH * 4) c.fillRect(-r * 1.2, y, r * 2.4, lineH);
+      c.globalAlpha = 1;
+      const sheen = c.createLinearGradient(-r, -r * 1.05, r * 0.35, r * 0.45);
+      sheen.addColorStop(0, 'rgba(180,230,255,0.10)');
+      sheen.addColorStop(0.5, 'rgba(180,230,255,0.018)');
+      sheen.addColorStop(1, 'rgba(180,230,255,0)');
+      c.fillStyle = sheen;
+      c.beginPath();
+      c.ellipse(-r * 0.26, -r * 0.52, r * 1.05, r * 0.6, -0.38, 0, Math.PI * 2);
+      c.fill();
+      c.restore();
+
+      // the outer tube: wide, violet, and holding the whole instrument
+      this.tube(c, r * 1.205, 0, Math.PI * 2, VIOLET, r * 0.030, 0.62);
+      // ...and the inner one, bright cyan, just outside the numerals
+      this.tube(c, r * 1.045, SPD_A0, SPD_A1, CYAN, r * 0.018, 0.85);
+
+      /* THE LAST OF WHAT THE CAR HAS, as a band rather than as a number. A
+         driver reads "how much is left" off the shape of the dial, not off a
+         figure - which is the one thing the shipped sprite could never say,
+         because its scale was painted on. */
+      this.tube(c, r * 1.045, aOf(hot), aOf(top), RED, r * 0.030, 0.9);
+
+      /* ------------------------------------------------------ THE SCALE -- */
+      for (let v = 0; v <= top + 0.001; v += minor) {
+        const isMajor = Math.abs(v / major - Math.round(v / major)) < 1e-6;
+        const a = aOf(v);
+        const warm = v >= hot;
+        const col = warm ? RED : CYAN;
+        c.save();
+        c.globalAlpha = isMajor ? 0.95 : 0.30;
+        c.strokeStyle = col;
+        c.lineWidth = isMajor ? Math.max(1.6, r * 0.024) : Math.max(1, r * 0.010);
+        c.lineCap = 'butt';
+        c.shadowColor = col;
+        c.shadowBlur = gb(r * (isMajor ? 0.10 : 0.04));
+        c.beginPath();
+        const inner = isMajor ? r * 0.83 : r * 0.915;
+        c.moveTo(Math.cos(a) * inner, Math.sin(a) * inner);
+        c.lineTo(Math.cos(a) * r * 0.985, Math.sin(a) * r * 0.985);
+        c.stroke();
+        c.restore();
+        if (!isMajor) continue;
+        c.save();
+        c.globalAlpha = 0.95;
+        /* Ice rather than white. A pure white numeral on a violet ground is
+           the one value in this interface with no hue in it at all, and the
+           eye finds it before it finds the needle. */
+        c.fillStyle = warm ? '#ffb8c2' : '#dceeff';
+        setFont(c, '600 ' + Math.round(r * 0.14) + 'px "Orbitron", system-ui, sans-serif');
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.shadowColor = warm ? RED : CYAN;
+        c.shadowBlur = gb(r * 0.13);
+        c.fillText(String(Math.round(v)), Math.cos(a) * r * 0.665, Math.sin(a) * r * 0.665);
+        hRestore(c);
+      }
+
+      // the unit, under the readout, where the needle cannot reach
+      c.save();
+      c.globalAlpha = 0.72;
+      c.fillStyle = PINK;
+      setFont(c, '700 ' + Math.round(r * 0.12) + 'px "Orbitron", system-ui, sans-serif');
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.shadowColor = PINK;
+      c.shadowBlur = gb(r * 0.18);
+      c.fillText(metric ? 'KM/H' : 'MPH', 0, r * 0.62);
+      hRestore(c);
+
+      this._spdKey = key;
+      return cv;
+    }
+
+    /** A neon tube: one wide soft pass and one thin bright core. */
+    tube(c, radius, from, to, colour, width, alpha) {
+      c.save();
+      c.lineCap = 'round';
+      c.strokeStyle = colour;
+      c.shadowColor = colour;
+      c.globalAlpha = alpha * 0.35;
+      c.lineWidth = Math.max(1, width * 2.6);
+      c.shadowBlur = gb(width * 3.4);
+      c.beginPath();
+      c.arc(0, 0, radius, from, to);
+      c.stroke();
+      c.globalAlpha = alpha;
+      c.lineWidth = Math.max(1, width);
+      c.shadowBlur = gb(width * 1.6);
+      c.stroke();
+      c.restore();
+    }
+
+    /* Where a reading sits on the interface's own colour ramp.
+     *
+     * Cyan through violet into magenta and only then into red. The first
+     * version of this went cyan to amber, which passes through GREEN at about
+     * half throttle - and green is the one hue this game never uses, so the
+     * instrument spent most of a normal drive being the only thing on screen
+     * that was not part of the palette. Violet is what cyan and magenta mix
+     * to, so the whole sweep now stays inside the three colours the world is
+     * lit with and goes to the warning colour at the end. */
+    speedTint(t) {
+      const stops = SPD_RAMP;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      for (let i = 1; i < stops.length; i++) {
+        if (t > stops[i][0] && i < stops.length - 1) continue;
+        const [a0, ca] = stops[i - 1], [a1, cb] = stops[i];
+        return mixHex(ca, cb, a1 === a0 ? 0 : (t - a0) / (a1 - a0));
+      }
+      return stops[stops.length - 1][1];
+    }
+
+    /** The instrument, drawn. `quiet` is the handover card's dimming. */
+    speedo(g, quiet) {
+      const c = this.ctx;
+      const car = g.car;
+
+      /* THE DIAL SWEEPS AGAINST THE CAR'S OWN CEILING.
+       *
+       * It has to be in the unit it is showing, and it has to be THIS car's.
+       * 134 mph is the street block's top speed and nothing else's: Chapter 6
+       * ends by fitting the Forge rebuild, and from that moment - the whole of
+       * Chapter 7 and all of Free Roam, which fits the same engine - the car
+       * pulls 144 on its own and 200 on raceMode. Against a fixed dial the
+       * needle pegs at the end of its travel and stays there, so the one
+       * instrument whose entire job is to say how much is left stops answering
+       * exactly when the answer starts to matter.
+       *
+       * `ceilingMph` is what the solver will actually enforce on this car as
+       * it is fitted right now - see Vehicle.ceilingUnits in js/wasm.js - so
+       * the dial re-scales when the engine is swapped and at no other time.
+       * The floor is there so a car with no engine record yet, which is one
+       * frame on a fresh load, cannot divide by zero. */
+      const ceiling = g.useMetric ? car.ceilingKmh : car.ceilingMph;
+      const raw = Math.max(g.useMetric ? 120 : 75, ceiling || (g.useMetric ? 215 : 134));
+      const top = this.speedoScale(raw, !!g.useMetric).top;
+
+      const shown = Math.max(0, g.useMetric ? car.speedKmh : car.speedMph);
+      const face = this.speedoFace(top, !!g.useMetric);
+      const R = this.vs(SPD.r);
+      const cx = this.vx(SPD.x), cy = this.vy(SPD.y);
+
+      /* THE NEEDLE HAS MASS. Not much - it has to keep up with a car that can
+         lose forty miles an hour against a barrier - but enough that it
+         settles rather than snapping, which is the difference between an
+         instrument and a readout with a line on it. On the wall clock, so it
+         behaves identically at every frame rate. */
+      /* THE UNIT CAN CHANGE UNDER BOTH OF THEM.
+         The damped needle and the peak mark are stored in whatever unit was
+         in force when they were written, and the options screen can switch
+         MPH to KM/H in the middle of a run - which left the needle to settle
+         from a number that was 60% wrong and the peak mark pinned at a
+         reading that never happened. Converted rather than cleared, because a
+         run's fastest is a fact about the run and not about the unit it
+         happened to be displayed in. */
+      const unit = g.useMetric ? 1 : 0;
+      if (this.spdUnit !== unit) {
+        if (this.spdUnit !== undefined) {
+          const conv = unit ? 1.609344 : 1 / 1.609344;
+          this.peakSpeed = (this.peakSpeed || 0) * conv;
+          this.spdShown = (this.spdShown || 0) * conv;
+        }
+        this.spdUnit = unit;
+      }
+
+      const dt = Math.min(0.05, this._dt || 0.016);
+      if (this.spdShown === undefined || !isFinite(this.spdShown)) this.spdShown = shown;
+      this.spdShown += (shown - this.spdShown) * (1 - Math.exp(-13 * dt));
+      const value = Math.max(0, Math.min(top, this.spdShown));
+
+      // the fastest this run, which is left on the scale where it happened
+      if (shown > (this.peakSpeed || 0)) this.peakSpeed = shown;
+
+      const aOf = (v) => SPD_A0 + (SPD_A1 - SPD_A0) * Math.max(0, Math.min(1, v / top));
+      const frac = value / top;
+
+      c.save();
+      c.globalAlpha = quiet === undefined ? 1 : quiet;
+
+      if (face) {
+        const side = this.vs(SPD.r * 2 * SPD_PAD);
+        c.drawImage(face, cx - side / 2, cy - side / 2, side, side);
+      }
+
+      c.translate(cx, cy);
+
+      /* THE INSTRUMENT IS LIT FROM INSIDE.
+       *
+       * One radial wash in whatever colour the reading is, clipped to the
+       * glass and scaled by how hard the car is working. It is the difference
+       * between a dial with a lit needle on it and a dial that is itself a
+       * light - which is what everything else in this game is. At a standstill
+       * it is not there at all. */
+      const tint = g.raceModeActive ? '#45d7ff' : (car.boosting ? PINK : this.speedTint(frac));
+      if (frac > 0.02) {
+        c.save();
+        c.beginPath();
+        c.arc(0, 0, R * 1.17, 0, Math.PI * 2);
+        c.clip();
+        const pool = c.createRadialGradient(0, 0, 0, 0, 0, R * 1.17);
+        pool.addColorStop(0, this._alpha(tint, 0.20 * frac));
+        pool.addColorStop(0.55, this._alpha(tint, 0.07 * frac));
+        pool.addColorStop(1, this._alpha(tint, 0));
+        c.fillStyle = pool;
+        c.fillRect(-R * 1.2, -R * 1.2, R * 2.4, R * 2.4);
+        c.restore();
+      }
+
+      /* THE SWEPT ARC. Everything the needle has passed is lit, so the dial
+         can be read from the corner of an eye at the speed it moves - and it
+         runs cyan through violet into magenta as the car uses up what it has,
+         which is the road's own palette rather than a rev counter's. */
+      if (frac > 0.004) {
+        c.save();
+        c.strokeStyle = tint;
+        c.lineWidth = Math.max(2, R * 0.080);
+        c.lineCap = 'round';
+        c.shadowColor = tint;
+        c.shadowBlur = gb(R * 0.26);
+        c.beginPath();
+        c.arc(0, 0, R * 0.745, SPD_A0, aOf(value));
+        c.stroke();
+        // a brighter filament down the middle of it
+        c.globalAlpha = (quiet === undefined ? 1 : quiet) * 0.55;
+        c.strokeStyle = '#f2fbff';
+        c.lineWidth = Math.max(1, R * 0.024);
+        c.shadowBlur = gb(R * 0.09);
+        c.stroke();
+        c.restore();
+      }
+
+      /* THE PEAK. One tick, left where the run's best was. */
+      const peak = Math.min(top, this.peakSpeed || 0);
+      if (peak > top * 0.08 && peak > value + top * 0.015) {
+        const pa = aOf(peak);
+        c.save();
+        c.globalAlpha = (quiet === undefined ? 1 : quiet) * 0.8;
+        c.strokeStyle = '#dceeff';
+        c.lineWidth = Math.max(1, R * 0.018);
+        c.shadowColor = CYAN;
+        c.shadowBlur = gb(R * 0.12);
+        c.beginPath();
+        c.moveTo(Math.cos(pa) * R * 0.695, Math.sin(pa) * R * 0.695);
+        c.lineTo(Math.cos(pa) * R * 0.805, Math.sin(pa) * R * 0.805);
+        c.stroke();
+        c.restore();
+      }
+
+      /* THE SHIFT LIGHTS, over the top of the housing. The same 0..1 the
+         DRIVETRAIN rev bar reads and the same upshift point marked on it, put
+         where the eye already is when the question is being asked. They run
+         cyan, amber, magenta - a real car's green-amber-red would put the one
+         hue this palette does not contain in the brightest thing on screen. */
+      const rev = Math.max(0, Math.min(1, car.rpm || 0));
+      const N = 9;
+      for (let i = 0; i < N; i++) {
+        const t = i / (N - 1);
+        const la = SPD_LED0 + (SPD_LED1 - SPD_LED0) * t;
+        const on = rev > 0.42 + t * 0.52;
+        const col = rev >= 0.90 ? PINK : (t > 0.66 ? PINK : (t > 0.33 ? AMBER : CYAN));
+        const lx = Math.cos(la) * R * 1.325, ly = Math.sin(la) * R * 1.325;
+        c.save();
+        c.globalAlpha = (quiet === undefined ? 1 : quiet) * (on ? 1 : 0.18);
+        c.fillStyle = on ? col : 'rgba(139,92,246,0.7)';
+        if (on) { c.shadowColor = col; c.shadowBlur = gb(R * 0.20); }
+        c.beginPath();
+        c.arc(lx, ly, R * 0.043, 0, Math.PI * 2);
+        c.fill();
+        c.restore();
+      }
+
+      /* THE NEEDLE. Its shadow first and a touch off-axis, which is what puts
+         it ABOVE the face rather than printed on it. */
+      const a = aOf(value);
+      const over = frac >= SPD_HOT;
+      const nc = g.raceModeActive ? '#45d7ff' : (over ? RED : PINK);
+      c.save();
+      c.rotate(a);
+      c.save();
+      c.globalAlpha = (quiet === undefined ? 1 : quiet) * 0.5;
+      c.fillStyle = '#04010c';
+      c.beginPath();
+      c.moveTo(-R * 0.19, -R * 0.026 + R * 0.022);
+      c.lineTo(R * 0.905, -R * 0.008 + R * 0.022);
+      c.lineTo(R * 0.905, R * 0.010 + R * 0.022);
+      c.lineTo(-R * 0.19, R * 0.030 + R * 0.022);
+      c.closePath();
+      c.fill();
+      c.restore();
+      c.fillStyle = nc;
+      c.shadowColor = nc;
+      c.shadowBlur = gb(R * 0.30);
+      c.beginPath();
+      c.moveTo(-R * 0.19, -R * 0.028);
+      c.lineTo(R * 0.91, -R * 0.009);
+      c.lineTo(R * 0.91, R * 0.009);
+      c.lineTo(-R * 0.19, R * 0.028);
+      c.closePath();
+      c.fill();
+      c.globalAlpha = (quiet === undefined ? 1 : quiet) * 0.95;
+      c.fillStyle = '#ffffff';
+      c.beginPath();
+      c.moveTo(R * 0.70, -R * 0.010);
+      c.lineTo(R * 0.91, -R * 0.006);
+      c.lineTo(R * 0.91, R * 0.006);
+      c.lineTo(R * 0.70, R * 0.010);
+      c.closePath();
+      c.fill();
+      c.restore();
+
+      // the hub, over the tail of the needle
+      c.save();
+      const hub = c.createRadialGradient(0, -R * 0.05, 0, 0, 0, R * 0.16);
+      hub.addColorStop(0, 'rgba(112,92,190,0.98)');
+      hub.addColorStop(1, 'rgba(12,5,28,0.98)');
+      c.fillStyle = hub;
+      c.beginPath();
+      c.arc(0, 0, R * 0.13, 0, Math.PI * 2);
+      c.fill();
+      c.strokeStyle = nc;
+      c.lineWidth = Math.max(1, R * 0.022);
+      c.shadowColor = nc;
+      c.shadowBlur = gb(R * 0.18);
+      c.stroke();
+      c.restore();
+
+      hRestore(c);
+
+      /* THE FRAME. The same corner ticks the boost meter, the rival rail and
+         every DOM panel in the game carry, so the one round thing on screen is
+         still obviously part of the set. It goes magenta at the redline, which
+         is the instrument answering rather than decorating. */
+      this.brackets(SPD.x, SPD.y, SPD.r * 2.72, SPD.r * 2.72,
+        over ? PINK : 'rgba(139,92,246,0.75)', 22,
+        (quiet === undefined ? 1 : quiet) * (over ? 0.55 + 0.45 * Math.sin(g.time * 6) : 0.5));
+
+      /* THE READOUT, in the instrument face's own seven-segment type. The
+         ghost 888 underneath is what makes it read as a lit display rather
+         than as a number floating on glass.
+
+         It heats over the last of THIS car's range rather than of a constant
+         one - on the rebuilt engine a fixed threshold had the digits running
+         red from 74 mph onward, permanently, since the car cruises well past
+         it, so the one cue that says "near the limit" said it all the time
+         and therefore said nothing. */
+      const digitY = SPD.y - SPD.r * 0.26;
+      const size = SPD.r * 0.46;
+      /* FIXED CELLS, so the ghost sits exactly under the number.
+         Both runs are centred, so a two-digit reading over a three-digit ghost
+         puts every lit segment half a cell off the dark one behind it - which
+         is the one thing a seven-segment display never does. Padding the
+         reading to the ghost's width lines the cells up, and the bitmap font
+         advances an unknown glyph without drawing anything, so a leading space
+         is an empty cell rather than a missing one. */
+      const read = String(Math.round(shown));
+      const cells = Math.max(3, read.length);
+      this.digits('8'.repeat(cells), SPD.x, digitY, size, 'center',
+        (quiet === undefined ? 1 : quiet) * 0.12);
+      this.digits(read.padStart(cells, ' '), SPD.x, digitY, size, 'center', quiet,
+        frac > 0.18 ? tint : AMBER);
+    }
+
+    /* ==================================================== THE BOOST METER ==
+     *
+     * The other thing on this screen that was a bitmap being stretched.
+     *
+     * It shipped as three sprites out of atlas205 - a 512x64 border, a 512x64
+     * fill clipped to the reserve, and a small `turbo` badge - drawn at their
+     * authored size dead centre along the bottom of the frame. At 1080p that
+     * is a 512-pixel-wide texture covering 768 pixels of screen, so its edges
+     * are soft, its corners are rounded by the upscale, and the "fill" is the
+     * same soft artwork with a hard vertical cut through it. It is the single
+     * largest object in the interface and it was the least sharp thing in the
+     * frame.
+     *
+     * AND IT HAD FOUR STATES DRAWN FOUR WAYS. Normal boost was the sprite;
+     * raceMode's blue reserve was a hand-rolled segmented bar drawn over the
+     * top of the sprite because the shipped atlas bakes its fuel segments red
+     * and a tint cannot remove red; spent-and-recharging was the sprite plus a
+     * caption; and full was the sprite plus a different bracket. One meter,
+     * four renderers, and only one of them looked like the rest of the game.
+     *
+     * So it is one meter with four readings. The segments are drawn, so they
+     * are sharp at every resolution and their colour is a property of the
+     * state rather than of an atlas; the frame is the same cut-cornered,
+     * lit-edged panel the DRIVETRAIN readout and every DOM card in the game
+     * use; and the caption under it says which of the four things is true.
+     *
+     * WHY SEGMENTS RATHER THAN A CONTINUOUS BAR. The reserve is spent in
+     * discrete bursts and it LATCHES when it empties - it will not fire again
+     * until there is a burn's worth back in it, see car.boostLocked - so what
+     * the player needs to read is "how many goes have I got", which is a count
+     * and not a length.
+     */
+    boostMeter(g, quiet) {
+      const c = this.ctx;
+      const car = g.car;
+      const q = quiet === undefined ? 1 : quiet;
+      const fill = Math.max(0, Math.min(1, car.boost || 0));
+      const blue = !!g.raceModeBlueFuel;
+
+      /* WHAT THE METER IS SAYING, decided once. Four states, in the order they
+         take precedence: a burn in progress beats everything, then the latch,
+         then a full reserve, then simply having some. */
+      const arm = 0.34;                       // the latch's re-arm threshold
+      let state, edge, hot, cool, caption;
+      if (car.boosting) {
+        state = 'live';
+        edge = blue ? '#45d7ff' : PINK;
+        hot = blue ? '#a8f4ff' : '#ff8fd0';
+        cool = blue ? '#078cff' : PINK;
+        caption = blue ? 'SYNCHRONIZED' : 'BOOSTING';
+      } else if (car.boostLocked) {
+        state = 'charging';
+        edge = '#ff8a3a';
+        hot = '#ffd9a8';
+        cool = '#c85f18';
+        caption = 'CHARGING  ' + Math.round(Math.min(1, fill / arm) * 100) + '%';
+      } else if (fill > 0.98) {
+        state = 'ready';
+        edge = blue ? '#38bfff' : CYAN;
+        hot = '#ffffff';
+        cool = blue ? '#078cff' : CYAN;
+        caption = blue ? 'BLUE RESERVE  //  FULL' : 'BOOST READY  //  SHIFT';
+      } else {
+        state = 'part';
+        edge = blue ? '#38bfff' : 'rgba(120,190,240,0.55)';
+        hot = blue ? '#6eeaff' : '#ff6fb4';
+        cool = blue ? '#078cff' : '#b3277a';
+        caption = blue ? 'BLUE RESERVE' : 'BOOST';
+      }
+
+      /* A burn is the one thing here that pulses, at four hertz - fast enough
+         to read as urgent, slow enough to sit inside the 3 Hz-ish ceiling the
+         rest of this interface keeps for the photosensitivity notice's sake.
+         READY breathes instead, much slower, because it is an invitation
+         rather than an alarm. */
+      const pulse = state === 'live' ? 0.80 + 0.20 * Math.sin(g.time * 26)
+        : state === 'ready' ? 0.86 + 0.14 * Math.sin(g.time * 3)
+        : state === 'charging' ? 0.72 + 0.28 * Math.sin(g.time * 6)
+        : 1;
+
+      const X = this.vx(BST.x - BST.w / 2), Y = this.vy(BST.y + BST.h / 2);
+      const W = this.vs(BST.w), H = this.vs(BST.h);
+      const cut = this.vs(6);
+
+      // the housing: the same cut-cornered glass every other panel is made of
+      c.save();
+      c.globalAlpha = q;
+      c.beginPath();
+      c.moveTo(X + cut, Y);
+      c.lineTo(X + W, Y);
+      c.lineTo(X + W, Y + H - cut);
+      c.lineTo(X + W - cut, Y + H);
+      c.lineTo(X, Y + H);
+      c.lineTo(X, Y + cut);
+      c.closePath();
+      const glass = c.createLinearGradient(X, Y, X, Y + H);
+      glass.addColorStop(0, 'rgba(10,3,26,0.58)');
+      glass.addColorStop(1, 'rgba(5,1,16,0.72)');
+      c.fillStyle = glass;
+      c.fill();
+
+      /* THE SEGMENTS, clipped to the housing so a lit one cannot bleed past
+         the frame that is supposed to contain it. */
+      c.save();
+      c.clip();
+      const pad = this.vs(3);
+      const inner = W - pad * 2;
+      const gap = this.vs(2.2);
+      const seg = (inner - gap * (BST.n - 1)) / BST.n;
+      const live = fill * BST.n;
+      for (let i = 0; i < BST.n; i++) {
+        /* The leading segment is drawn at partial brightness rather than
+           either on or off, so a reserve that is draining reads as continuous
+           at the head and as a count everywhere else. */
+        const k = Math.max(0, Math.min(1, live - i));
+        const sx = X + pad + i * (seg + gap);
+        if (k <= 0.001) {
+          /* An empty cell is a dark tube, not a grey block: it is the same
+             segment with nothing in it, which is what makes the lit ones read
+             as light rather than as paint. */
+          c.globalAlpha = q * 0.28;
+          c.fillStyle = 'rgba(96,74,168,0.55)';
+          /* ...and the shadow has to be put back, or every empty segment to
+             the right of the fill inherits the glow of the last lit one and
+             the meter reads as full. */
+          c.shadowBlur = 0;
+          c.fillRect(sx, Y + pad, seg, H - pad * 2);
+          continue;
+        }
+        /* THE RUN RAMPS ALONG ITS OWN LENGTH rather than switching colour at
+           one segment. A meter whose last quarter is a different flat colour
+           reads as two meters; one that warms towards the end reads as a
+           reserve filling up, which is what it is. Violet at the root is the
+           same violet the speedometer's ring and the road's verges use. */
+        const t = i / (BST.n - 1);
+        const col = mixHex2(VIOLET, cool, Math.min(1, t / 0.7));
+        const lit = t > 0.80 ? mixHex2(cool, hot, (t - 0.80) / 0.20) : col;
+        c.globalAlpha = q * (0.45 + 0.55 * k) * pulse;
+        c.fillStyle = lit;
+        c.shadowColor = lit;
+        c.shadowBlur = gb(this.vs(9));
+        c.fillRect(sx, Y + pad, seg, H - pad * 2);
+      }
+      /* A highlight down the top half of the lit run, which is what makes the
+         segments read as tubes rather than as coloured rectangles. */
+      if (fill > 0.01) {
+        c.globalAlpha = q * 0.30;
+        c.shadowBlur = 0;
+        const sheen = c.createLinearGradient(0, Y, 0, Y + H);
+        sheen.addColorStop(0, 'rgba(255,255,255,0.85)');
+        sheen.addColorStop(0.5, 'rgba(255,255,255,0.05)');
+        sheen.addColorStop(1, 'rgba(255,255,255,0)');
+        c.fillStyle = sheen;
+        c.fillRect(X + pad, Y + pad, inner * fill, (H - pad * 2) * 0.5);
+      }
+      hRestore(c);          // the housing's clip
+
+      // ...and the lit edge of the housing, over the segments
+      c.globalAlpha = q * (state === 'part' ? 0.7 : pulse);
+      c.strokeStyle = edge;
+      c.lineWidth = Math.max(1, this.vs(1.4));
+      c.shadowColor = edge;
+      c.shadowBlur = gb(this.vs(state === 'part' ? 6 : 11));
+      c.stroke();
+      hRestore(c);
+
+      /* THE LATCH, MARKED ON THE METER ITSELF.
+         The reserve will not fire again until it is back past `arm`, and
+         without a mark on the bar that is a rule the player can only learn by
+         being refused. One hairline, and CHARGING nn% is measured against it. */
+      if (state === 'charging' || (state === 'part' && fill < arm)) {
+        const ax = X + this.vs(3) + (W - this.vs(6)) * arm;
+        c.save();
+        c.globalAlpha = q * 0.75;
+        c.fillStyle = '#ffd9a8';
+        c.shadowColor = '#ff8a3a';
+        c.shadowBlur = gb(this.vs(6));
+        c.fillRect(ax, Y - this.vs(2), Math.max(1, this.vs(1.4)), H + this.vs(4));
+        hRestore(c);
+      }
+
+      // the reading, under the bar and out of the record row's way
+      this.label(caption, BST.x, BST.y - BST.h * 0.5 - 10, 10,
+        state === 'part' ? INK.mute : edge, 'center', 800, q * (state === 'part' ? 0.7 : 0.95));
+
+      // corner ticks, and only while there is something to spend
+      if (state === 'live' || state === 'ready' || blue) {
+        this.brackets(BST.x, BST.y, BST.w + 26, BST.h + 20, edge, 16, q * pulse);
+      }
+    }
+
     /** A neon rule with a diamond at each end. */
     rule(x, y, w, color, alpha) {
       const c = this.ctx;
@@ -1070,6 +1861,12 @@
         const resumed = from === 'paused' || from === 'confirm' || from === 'finished';
         if (g.state === 'countdown' || (g.state === 'racing' && !resumed)) {
           this.reveal = 0;
+          /* ...and the speedometer's peak mark, which is a property of a RUN
+             and not of a session. Cleared on the same condition the entrance
+             is, so a resumed pause keeps the mark it earned and a fresh start
+             does not inherit the last route's. */
+          this.peakSpeed = 0;
+          this.spdShown = 0;
         } else if (g.state === 'racing') {
           this.reveal = 1;
         }
@@ -1196,29 +1993,49 @@
       this.label('MIN ' + low, -620, 310, 13, hue(low), 'left', 700, 0.85);
     }
 
+    /* THE FALLBACK LOADING SCREEN.
+     *
+     * The cold open in js/ignition.js is what a player normally sees while the
+     * game comes up, and it covers this completely - see the gate in
+     * Game.draw. This is what is left when the cold open declined to run: a
+     * machine with no 2D context of its own, or somebody who has asked for
+     * reduced motion and should not be shown a shaking needle.
+     *
+     * It reads the SAME number the cold open does. It used to read
+     * `g.loadProgress`, which is the scene loader's own fraction and therefore
+     * sits at zero for the whole of the archive read - the first third of the
+     * wait - and then races. NR.Boot is the whole boot, weighted, and every
+     * phase reports into it. See js/boot.js. */
     drawLoading(g) {
       const c = this.ctx;
       c.save();
       c.fillStyle = '#05010f';
       c.fillRect(0, 0, this.w, this.h);
       hRestore(c);
+      this.gridFloor(g, -150, 0.22);
       this.chrome('SYNX', 0, 78, 62, PINK);
       this.neon('S Y N T H W A V E   e X T R E M E   R A C I N G', 0, 22, 18, CYAN, 'center', 900);
-      this.label('LOADING', 0, -40, 18, CYAN, 'center', 700,
-        0.5 + 0.5 * Math.sin(g.time * 5));
+
+      const B = global.NR.Boot;
+      const p = Math.max(0, Math.min(1, B ? B.progress : (g.loadProgress || 0)));
+      this.label(B ? B.label : 'LOADING', 0, -40, 15, CYAN, 'center', 700, 0.92);
+
       const pw = 360;
-      const c2 = this.ctx;
-      c2.save();
-      c2.strokeStyle = 'rgba(140,90,220,0.6)';
-      c2.lineWidth = Math.max(1, this.vs(1.5));
-      c2.strokeRect(this.vx(-pw / 2), this.vy(-90), this.vs(pw), this.vs(10));
-      c2.fillStyle = PINK;
-      c2.shadowColor = PINK;
-      c2.shadowBlur = gb(this.vs(12));
-      c2.fillRect(this.vx(-pw / 2) + 1, this.vy(-90) + 1,
-        (this.vs(pw) - 2) * (g.loadProgress || 0), this.vs(10) - 2);
-      hRestore(c2);
-      this.digits(Math.round((g.loadProgress || 0) * 100) + '%', 0, -130, 26, 'center');
+      c.save();
+      c.strokeStyle = 'rgba(140,90,220,0.6)';
+      c.lineWidth = Math.max(1, this.vs(1.5));
+      c.strokeRect(this.vx(-pw / 2), this.vy(-90), this.vs(pw), this.vs(10));
+      const grad = c.createLinearGradient(this.vx(-pw / 2), 0, this.vx(pw / 2), 0);
+      grad.addColorStop(0, PINK);
+      grad.addColorStop(1, CYAN);
+      c.fillStyle = grad;
+      c.shadowColor = CYAN;
+      c.shadowBlur = gb(this.vs(12));
+      c.fillRect(this.vx(-pw / 2) + 1, this.vy(-90) + 1,
+        Math.max(0, (this.vs(pw) - 2) * p), this.vs(10) - 2);
+      hRestore(c);
+      this.digits(Math.round(p * 100) + '%', 0, -130, 26, 'center');
+      if (B && B.detail) this.label(B.detail, 0, -168, 12, INK.mute, 'center', 600, 0.7);
     }
 
     // ---------------------------------------------------------- menu -----
@@ -1263,7 +2080,11 @@
          exactly what is drawn here, and two copies of a layout drift. */
       const menuGap = ML.gap;
       const menuTop = ML.topFor(g.menuItems.length);
-      this.chrome('SYNX', 0, titleY + bob, 96, PINK);
+      /* One sweep every six seconds, taking a second and a bit of it. Long
+         enough apart that it reads as a highlight catching the logo rather
+         than as an animation looping on it. */
+      const cyc = (g.time % 6.2) / 1.15;
+      this.chrome('SYNX', 0, titleY + bob, 96, PINK, undefined, cyc <= 1 ? cyc : -1);
       this.neon('S Y N T H W A V E   e X T R E M E   R A C I N G', 0, subtitleY + bob, 18, CYAN, 'center', 900);
       /* Clear of the first row's selection brackets, which reach 93. At 92
          the rule was drawn straight through the top edge of START's frame
@@ -1350,52 +2171,10 @@
         quiet = 1 - Math.max(0, Math.min(1, a)) * 0.76;
       }
 
-      // speedometer: the 'speed' dial, its fill clipped by road speed
-      this.placeSprite('SpeedMeterBG', 0, 0.55);
-      /* THE DIAL SWEEPS AGAINST THE CAR'S OWN CEILING.
-       *
-       * It has to be in the unit it is showing - it used to divide MPH by 290,
-       * the top speed in km/h, so the needle only ever reached two thirds of
-       * the way round even flat out - and it has to be THIS car's, which is
-       * the half that was still wrong.
-       *
-       * 134 mph is the street block's top speed and nothing else's. Chapter 6
-       * ends by fitting the Forge rebuild, and from the moment it does - for
-       * the whole of Chapter 7 and all of Free Roam, which fits the same
-       * engine - the car pulls 144 on its own and 200 on raceMode against a
-       * dial that stops at 134. The needle pegs at the end of its travel and
-       * stays there: the one instrument whose entire job is to tell you how
-       * much is left stops answering exactly when the answer starts to matter,
-       * and the rebuild the chapter is ABOUT does not show up on the
-       * instrument that would say so.
-       *
-       * `ceilingMph` is what the solver will actually enforce on this car as
-       * it is fitted right now - see Vehicle.ceilingUnits in js/wasm.js - so
-       * the dial re-scales when the engine is swapped and at no other time.
-       * On the street block it lands on 132, which is where it always was.
-       *
-       * The floor is there so a car with no engine record yet - one frame on a
-       * fresh load - does not divide by zero and peg the needle. */
-      const ceiling = g.useMetric ? car.ceilingKmh : car.ceilingMph;
-      const top = Math.max(g.useMetric ? 120 : 75, ceiling || (g.useMetric ? 215 : 134));
-      const shown = g.useMetric ? car.speedKmh : car.speedMph;
-      this.placeSprite('SpeedMeter', 0, 1, Math.max(0, Math.min(1, shown / top)));
-      const spd = Math.round(g.useMetric ? car.speedKmh : car.speedMph);
-      this.placeDigits('txt_speed_bg', '888', 0, 0.12);
-      // the readout heats up as the car nears its limit, and flares on boost
-      // the readout heats up over the last third of the range
-      /* ...and the readout heats over the last third of THAT range, not of a
-         constant one. On the rebuilt engine the old constant had the digits
-         running red from 74 mph onward - permanently, since the car cruises
-         well past it - so the one cue that says "this is near the limit" said
-         it all the time and therefore said nothing. */
-      const heat = Math.max(0, Math.min(1, (shown / top - 0.55) / 0.45));
-      const tint = g.raceModeActive ? '#45d7ff' : car.boosting ? '#ff4bd8'
-        : (heat > 0.02 ? mixHex('#ffb400', '#ff3b3b', heat) : null);
-      this.placeDigits('txt_speed', String(spd), 0, undefined, tint);
-      if (!this.placeSprite('MPH')) {
-        this.placeDigits('txt_mph', g.useMetric ? 'KM/H' : 'MPH', 0, 1, PINK);
-      }
+      /* THE SPEEDOMETER, which is drawn rather than blitted. Everything about
+         it - the scale, the needle, the shift lights, why the two shipped
+         'speed' sprites could not be repaired - is in Hud.speedo. */
+      this.speedo(g, quiet);
 
       // timer
       this.catScope(g);
@@ -1408,47 +2187,11 @@
         this.label('TIME', p.x - 14, p.y, tt.h * 0.9, CYAN, 'center', 600);
       }
 
-      // boost meter
-      const pulse = car.boosting ? 0.75 + 0.25 * Math.sin(g.time * 26) : 1;
-      if (g.raceModeBlueFuel) this.placeSpriteTinted('Overlay',0,(car.boosting?1:.92)*pulse,car.boost,'#008cff');
-      else this.placeSprite('Overlay', 0, (car.boosting ? 1 : 0.9) * pulse, car.boost);
-      if(g.raceModeBlueFuel)this.placeSpriteTinted('BoostBar',0,1,1,'#078cff');
-      else this.placeSprite('BoostBar');
-      if(g.raceModeBlueFuel)this.placeSpriteTinted('Sprite',0,car.boosting?pulse:.72,1,'#64eaff');
-      else this.placeSprite('Sprite', 0, car.boosting ? pulse : 0.5);
-      // a bracket around the meter that lights up when there is boost to spend
-      const bw = this.wgt('BoostBar');
-      if (bw) {
-        const bp = this.centre(bw);
-        if (g.raceModeBlueFuel) {
-          // The shipped atlas bakes its normal fuel segments red. Draw the
-          // synchronized reservoir last as real cyan segments so no red atlas
-          // layer can cover or colour-contaminate the raceMode fuel.
-          const c=this.ctx,n=18,fullW=this.vs(bw.w*.88),barH=this.vs(Math.max(8,bw.h*.34));
-          const left=this.vx(bp.x)-fullW*.5,top=this.vy(bp.y)-barH*.5,gap=this.vs(2.4),seg=(fullW-gap*(n-1))/n;
-          c.save();c.fillStyle='rgba(2,27,55,.94)';c.fillRect(left,top,fullW,barH);
-          c.shadowColor='#00aaff';c.shadowBlur = gb(this.vs(12));
-          const live=Math.ceil(Math.max(0,Math.min(1,car.boost))*n);
-          for(let i=0;i<n;i++){c.fillStyle=i<live?(i>n*.72?'#6eeaff':'#078cff'):'rgba(18,74,112,.52)';c.fillRect(left+i*(seg+gap),top,seg,barH);}
-          hRestore(c);
-          this.brackets(bp.x, bp.y, bw.w + 34, bw.h + 24, '#38bfff', 16, .88);
-          this.label('BLUE RESERVE', bp.x, bp.y + bw.h * .5 + 16, 10,
-            '#75e8ff', 'center', 800, .92);
-        } else if (car.boosting) this.brackets(bp.x, bp.y, bw.w + 26, bw.h + 18, PINK, 14, pulse);
-        else if (car.boostLocked) {
-          /* Spent. The reservoir latches when it empties and will not fire
-             again until there is a burn's worth back in it, so the bar has to
-             read as CHARGING rather than as a boost that has stopped working. */
-          const arm = 0.34, f = Math.max(0, Math.min(1, car.boost / arm));
-          this.brackets(bp.x, bp.y, bw.w + 26, bw.h + 18, '#ff8a3a', 14,
-            0.30 + 0.30 * Math.sin(g.time * 6));
-          this.label('CHARGING  ' + Math.round(f * 100) + '%',
-            bp.x, bp.y + bw.h * 0.5 + 16, 10, '#ffb46a', 'center', 800, 0.9);
-        } else if (car.boost > 0.98) {
-          this.brackets(bp.x, bp.y, bw.w + 26, bw.h + 18, CYAN, 14,
-            0.25 + 0.25 * Math.sin(g.time * 3));
-        }
-      }
+      /* THE BOOST METER. One meter with four readings, drawn rather than
+         blitted - see Hud.boostMeter for what the three shipped sprites were
+         doing to the middle of the frame, and why the blue reserve needed a
+         renderer of its own before this. */
+      this.boostMeter(g, quiet);
 
       // Race flags and the record readout. This is a time trial, so the
       // record is what shows between them.

@@ -64,9 +64,16 @@
       card = doc.createElement('div');
       card.className = 'stage-cover';
       card.setAttribute('aria-hidden', 'true');
+      /* The same panel language as every other screen in the game - a kicker,
+         a cut-cornered frame, corner ticks - so a mode change reads as the
+         grid doing something rather than as a loading interstitial that
+         belongs to a different program. None of it is animated: it is painted
+         once and then only transform and opacity move. See the note above. */
       card.innerHTML =
-        '<div class="stage-inner">'
-        + '<div class="stage-dial"><i class="stage-arc"></i><i class="stage-needle"></i></div>'
+        '<div class="stage-inner synx-cut">'
+        + '<small class="stage-kicker">SYNX GRID // STAGING</small>'
+        + '<div class="stage-dial"><i class="stage-arc"></i><i class="stage-arc stage-arc-in"></i>'
+        + '<i class="stage-needle"></i></div>'
         + '<b class="stage-label"></b>'
         + '<small class="stage-sub"></small>'
         + '<div class="stage-rail"><i></i></div>'

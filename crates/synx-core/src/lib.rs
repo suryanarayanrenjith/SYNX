@@ -20,6 +20,13 @@
 //! `js/wasm.js` re-derives its views whenever `memory.buffer` changes.
 
 pub mod abi;
+/* THE RECORDER IS NOT HERE ANY MORE, and that is the point of it.
+   It used to be a module of this crate, which put a ninety-six megabyte ring
+   of JPEG frames in the SAME linear memory as the simulation - so filling it
+   grew the core's memory and detached every typed-array view the page holds
+   over it, and encoding a frame ran on the thread that was trying to draw the
+   next one. It is its own wasm module now, loaded by a Web Worker, with its
+   own heap and its own thread: crates/synx-rec, web/js/recworker.js. */
 pub mod ai;
 pub mod driver;
 pub mod math;
@@ -118,9 +125,15 @@ pub unsafe extern "C" fn synx_free(ptr: *mut u8) {
 ///      is share the spawn cursor, and the two would then take turns
 ///      overwriting each other's newest particles. Bumped rather than
 ///      feature-sniffed for exactly that reason.
+/// v18: `synx_veh_arm_ramp_road` - a ramp with a DESCENT off the far end, for
+///      Aurora Forge's roof run. A stale wasm does not export it, and the
+///      symbol is reached from inside the frame loop the moment the car comes
+///      up on the breach, so the failure would be a TypeError thrown mid-race
+///      on one particular kilometre of one route. That is precisely the class
+///      of break this version guard exists to turn into a message at load.
 #[no_mangle]
 pub extern "C" fn synx_abi_version() -> u32 {
-    17
+    18
 }
 
 // ------------------------------------------------------------------ world ---

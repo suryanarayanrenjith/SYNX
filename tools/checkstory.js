@@ -526,10 +526,123 @@ function checkFlow(ctx) {
   if (!problems) ok('every path terminates, paces and lands the ending it earned');
 }
 
+/* ---------------------------------------------------------------------------
+ * CHAPTERS THAT FINISH ON THEIR OWN TERMS
+ *
+ * Five of the seven chapters end at a finish line: the car crosses it, two
+ * lines in Game.update decide who won, and js/story.js runs the ending. The
+ * flow walk above resolves every chapter that way - it sets `won` itself and
+ * calls handleFinish - which is exactly why it cannot see the other kind: a
+ * chapter whose DIRECTOR decides the result and then calls completeChapter.
+ *
+ * completeChapter has a door on it. A chapter completes when the player won
+ * it, or when it is the one chapter whose written ending is a defeat and that
+ * defeat was earned. A director that calls it having declared neither has
+ * written an ending the door then throws away: the conversation plays, the
+ * chapter is recorded as a loss, and the next track never unlocks.
+ *
+ * That is not hypothetical - it is what BROKEN CIRCUIT did. Chapter 6 ends on
+ * the calibration run rather than at a line, about a kilometre short of one,
+ * so `won` was still false from resetCar when Javas finished congratulating
+ * the player. Every successful run of the Forge was recorded as a loss, NEON
+ * HORIZON was never unlocked, and the only symptom was one console warning
+ * nobody has a console open to read.
+ *
+ * IT READS CODE, NOT PROSE. The first version of this grepped the class body
+ * and passed on the broken build, because the comment explaining the fix
+ * contains the very words it was grepping for. Everything below runs against a
+ * copy with the comments and string bodies taken out - which is also what
+ * makes the class spans right rather than right by luck.
+ * ------------------------------------------------------------------------- */
+
+/** The source with comments and string contents removed, newlines preserved. */
+function codeOnly(src) {
+  const TICK = String.fromCharCode(96);
+  let out = '', i = 0;
+  const n = src.length;
+  let mode = 0;   // 0 code, 1 line comment, 2 block comment, 3 ' 4 " 5 backtick
+  while (i < n) {
+    const c = src[i], d = src[i + 1];
+    if (mode === 0) {
+      if (c === '/' && d === '/') { mode = 1; i += 2; continue; }
+      if (c === '/' && d === '*') { mode = 2; i += 2; continue; }
+      if (c === "'" || c === '"' || c === TICK) {
+        mode = c === "'" ? 3 : c === '"' ? 4 : 5;
+        out += c; i++; continue;
+      }
+      out += c; i++; continue;
+    }
+    if (mode === 1) { if (c === '\n') { mode = 0; out += '\n'; } i++; continue; }
+    if (mode === 2) {
+      if (c === '*' && d === '/') { mode = 0; i += 2; } else { if (c === '\n') out += '\n'; i++; }
+      continue;
+    }
+    if (c === '\\') { i += 2; continue; }            // an escape inside a string
+    if ((mode === 3 && c === "'") || (mode === 4 && c === '"') || (mode === 5 && c === TICK)) {
+      mode = 0; out += c; i++; continue;
+    }
+    if (c === '\n') out += '\n';
+    i++;
+  }
+  return out;
+}
+
+function checkDoors() {
+  console.log('\n=== CHAPTERS THAT FINISH ON THEIR OWN TERMS ===');
+  const code = codeOnly(fs.readFileSync(path.join(ROOT, 'web/js/chapters.js'), 'utf8'));
+  const lines = code.split('\n');
+
+  /* Every class in the file, by the span of its body. The braces are counted
+     on the stripped copy, so a comment or a string that contains one cannot
+     move the end of a class. */
+  const classes = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^\s*class\s+([A-Za-z0-9_$]+)/);
+    if (!m) continue;
+    let depth = 0, end = i;
+    for (let j = i; j < lines.length; j++) {
+      for (const ch of lines[j]) { if (ch === '{') depth++; else if (ch === '}') depth--; }
+      if (depth === 0 && j > i) { end = j; break; }
+    }
+    classes.push({ name: m[1], from: i, to: end, body: lines.slice(i, end + 1).join('\n') });
+  }
+
+  let callers = 0, bad = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (!/\.completeChapter\s*\(/.test(lines[i])) continue;
+    callers++;
+    /* The innermost class containing the call. */
+    const owner = classes.filter((c) => i >= c.from && i <= c.to)
+      .sort((a, b) => (a.to - a.from) - (b.to - b.from))[0];
+    if (!owner) {
+      fail('completeChapter is called at js/chapters.js:' + (i + 1) + ' outside any director');
+      bad++;
+      continue;
+    }
+    const win = /\bwon\s*=\s*true/.test(owner.body);
+    const loss = /\bcanonicalEarned\s*=\s*true/.test(owner.body);
+    const says = [win ? 'a win' : null, loss ? 'an earned loss' : null].filter(Boolean);
+    console.log('  ' + owner.name.padEnd(18) + ' completes at line ' + String(i + 1).padStart(5)
+      + '   declares ' + (says.length ? says.join(' and ') : 'NOTHING'));
+    if (!says.length) {
+      bad++;
+      fail(owner.name + ' calls completeChapter without ever setting won = true or'
+        + ' canonicalEarned = true - the door in js/story.js records the chapter as a'
+        + ' loss, so the chapter cannot be completed and the next track never unlocks');
+    }
+  }
+  if (!callers) {
+    fail('no director calls completeChapter any more; this check is reading the wrong thing');
+  } else if (!bad) {
+    ok(callers + ' director-driven completion(s), each declaring a result');
+  }
+}
+
 function main() {
   const ctx = load();
   checkScript(ctx.NR);
   checkFlow(ctx);
+  checkDoors();
   console.log('\n' + (problems
     ? problems + ' problem(s) in the campaign\n'
     : 'the campaign is complete, both paths resolve and both endings land\n'));

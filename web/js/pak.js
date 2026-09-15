@@ -49,11 +49,37 @@
     /**
      * Read the archive. Resolves either way: a missing pack is not an error,
      * it just means the game falls back to loose files.
+     *
+     * IT IS READ AS A STREAM, because it is forty-two megabytes and it is the
+     * first third of the wait.
+     *
+     * `arrayBuffer()` hands back one promise that settles when the last byte
+     * has arrived and says nothing at all before that, so the loading screen
+     * had no way to know whether the archive was half in or had not started.
+     * The reader gives a byte count per chunk, which is the only honest
+     * progress in the whole boot - everything after it is work, and work can
+     * only be estimated.
+     *
+     * `content-length` is the denominator when the transport sends one. The
+     * desktop host serves this out of the executable's own memory over a
+     * custom protocol and may not, so a missing length is not a failure: the
+     * bar is driven against the size the pack is expected to be and the caller
+     * is told the real byte count either way. A body that cannot be streamed
+     * at all falls straight back to `arrayBuffer`, and the only thing lost is
+     * the progress.
      */
-    load(url) {
+    load(url, onProgress) {
       url = url || 'data/synx.pak';
       return fetch(url)
-        .then(r => (r.ok ? r.arrayBuffer() : Promise.reject(new Error('no pack'))))
+        .then(r => {
+          if (!r.ok) throw new Error('no pack');
+          if (!onProgress || !r.body || typeof r.body.getReader !== 'function') {
+            return r.arrayBuffer();
+          }
+          const header = Number(r.headers.get('content-length') || 0);
+          const total = header > 0 ? header : EXPECT_BYTES;
+          return stream(r.body.getReader(), total, header > 0, onProgress);
+        })
         .then(buf => {
           const head = new Uint8Array(buf, 0, 8);
           let magic = '';
@@ -126,6 +152,40 @@
     },
 
     /**
+     * The same thing, a few entries at a time.
+     *
+     * `compact` is one synchronous pass that copies forty-two megabytes out of
+     * the archive into a hundred blobs, and it used to run at exactly the
+     * worst moment: the frame the load finished, which is the frame the cold
+     * open starts its closing move. The whole sequence therefore ended with a
+     * stutter, on the one screen in the game whose entire job is to make a
+     * wait look like a machine working.
+     *
+     * Nothing about the work changes - the same entries are cut and the
+     * archive still goes - it is simply spread across a handful of frames,
+     * with `yield` called between chunks so the needle keeps moving through
+     * it. `yield` is NR.Boot.breathe; it is passed in rather than reached for
+     * so this file keeps having no dependencies.
+     */
+    compactAsync(yieldFn) {
+      if (!this._buf) return Promise.resolve(0);
+      const keys = Object.keys(this.toc).filter(k => !this._urls[k]);
+      const wait = yieldFn || (() => Promise.resolve());
+      const CHUNK = 12;
+      let at = 0;
+      const step = () => {
+        if (!this._buf) return Promise.resolve(0);
+        const end = Math.min(keys.length, at + CHUNK);
+        for (; at < end; at++) this.url(keys[at]);
+        if (at < keys.length) return wait().then(step);
+        const freed = this._buf.byteLength;
+        this._buf = null;
+        return Promise.resolve(freed);
+      };
+      return step();
+    },
+
+    /**
      * The raw bytes of an entry, as a view on the archive.
      *
      * For the things that are DATA rather than a resource with a URL - the
@@ -158,6 +218,42 @@
       this._urls = Object.create(null);
     },
   };
+
+  /* What the pack is expected to weigh, for a transport that will not say.
+     It is only ever a denominator for the bar: the bytes reported to the
+     caller are always the real ones, and a pack that turns out to be bigger
+     simply pins the bar at the end of the phase rather than reporting more
+     than everything. Update it when the pack changes size by a lot; nothing
+     breaks if it is stale, the bar is just less even. */
+  const EXPECT_BYTES = 42.3 * 1048576;
+
+  /* Pull the body down a chunk at a time, counting as it goes.
+     The chunks are kept and joined once rather than copied into a
+     pre-allocated buffer, because the length a server declares is the length
+     of what it SENT - a transfer that was encoded on the way over does not
+     match it, and writing into a buffer sized from that header is how you get
+     an archive that is silently truncated. */
+  function stream(reader, total, exact, onProgress) {
+    const chunks = [];
+    let got = 0;
+    return new Promise((resolve, reject) => {
+      const pump = () => reader.read().then(({ done, value }) => {
+        if (done) {
+          const out = new Uint8Array(got);
+          let at = 0;
+          for (let i = 0; i < chunks.length; i++) { out.set(chunks[i], at); at += chunks[i].length; }
+          chunks.length = 0;
+          resolve(out.buffer);
+          return;
+        }
+        chunks.push(value);
+        got += value.length;
+        try { onProgress(got, total, exact); } catch (e) { /* never let the bar break the load */ }
+        pump();
+      }).catch(reject);
+      pump();
+    });
+  }
 
   /* The game writes paths a few different ways - with and without a leading
      slash, and with the cache-busting query the script tags use. The archive

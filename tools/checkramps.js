@@ -86,6 +86,11 @@ const fail = (m) => { console.log('  PROBLEM: ' + m); bad++; };
   const RAMPS = context.NR.COURSE_RAMPS;
   const TELE = context.NR.RAMP_TELEGRAPH || 280;
   const PAST = -14;
+  /* WHERE A RAMP ENDS, which is not always its lip. A ramp with a DESCENT is
+     still the one the car is on all the way down the slope; letting the search
+     step past it at the top would take the window off the solver with the car
+     eighteen units up. Same rule as `rampEnd` in js/game.js. */
+  const endOf = (r) => r.s + (r.drop || 0);
   const K = sceneConstants();
 
   // ------------------------------------------------ who builds each one --
@@ -98,7 +103,13 @@ const fail = (m) => { console.log('  PROBLEM: ' + m); bad++; };
     const s1 = r.crest ? r.s - r.crest : r.s;
 
     let owner, g0, g1;
-    if (r.crest) {
+    if (r.drop) {
+      /* The Forge roof: js/chapters.js sweeps the running surface from the
+         foot of the climb to the bottom of the slope, against exactly the
+         marks NR.FORGE_ROOF publishes. */
+      owner = 'forge breach';
+      g0 = r.s - r.len - r.crest; g1 = endOf(r);
+    } else if (r.crest) {
       // the set piece: rampTop runs (len + crest) back from the lip
       owner = 'bore set piece';
       g0 = r.s - r.len - r.crest; g1 = r.s;
@@ -114,7 +125,7 @@ const fail = (m) => { console.log('  PROBLEM: ' + m); bad++; };
       owner = 'generic wedge';
       g0 = r.s - r.len; g1 = r.s;
     }
-    const armedEnd = r.crest ? r.s : s1;
+    const armedEnd = r.drop ? endOf(r) : (r.crest ? r.s : s1);
     const off = Math.abs(g0 - s0) + Math.abs(g1 - armedEnd);
     console.log('  ' + r.id.padEnd(11) + ' L' + r.level + '  ' + owner.padEnd(15)
       + ' draws ' + g0.toFixed(0) + '..' + g1.toFixed(0)
@@ -166,7 +177,7 @@ const fail = (m) => { console.log('  PROBLEM: ' + m); bad++; };
   for (const e of (context.NR.ATTRACT_REEL || [])) {
     const inside = RAMPS.filter((r) => {
       const foot = r.s - (r.crest || 0) - r.len;
-      return foot < e.to && r.s > e.from - 40;
+      return foot < e.to && endOf(r) > e.from - 40;
     });
     const kind = e.kind || 'drift';
     console.log('  ' + String(e.from).padStart(6) + '..' + String(e.to).padEnd(6)
@@ -205,25 +216,36 @@ const fail = (m) => { console.log('  PROBLEM: ' + m); bad++; };
     car.reset(from, 0);
     let armed = null, wasAir = false, launchS = 0, peak = 0;
     const flights = [];
+    const driven = {};
     const maxF = Math.round((to - from) / 30 / dt);
     for (let f = 0; f < maxF && car.sTrack < to; f++) {
       // the same arming the game does, from the same table
       let next = null;
       for (const r of RAMPS) {
-        if (r.s - car.sTrack < PAST) continue;
+        if (endOf(r) - car.sTrack < PAST) continue;
         if (!next || r.s < next.s) next = r;
       }
       const span = next ? next.len + (next.crest || 0) : 0;
-      const arm = !!next && (next.s - car.sTrack) < TELE + span && (next.s - car.sTrack) > PAST;
+      const arm = !!next && (next.s - car.sTrack) < TELE + span
+        && (endOf(next) - car.sTrack) > PAST;
       if (arm) {
         if (armed !== next.id) {
           armed = next.id;
-          if (next.crest) {
+          if (next.drop) {
+            car.armRampRoad(next.s - next.crest - next.len, next.s - next.crest,
+              next.s, endOf(next), next.h, next.lip || next.h);
+          } else if (next.crest) {
             car.armRampDeck(next.s - next.crest - next.len, next.s - next.crest,
               next.s, next.h, next.lip || next.h);
           } else car.armRamp(next.s - next.len, next.s, next.h);
         }
       } else if (armed) { armed = null; car.clearRamp(); }
+      /* How high the car got without leaving the ground, per ramp. A road
+         ramp proves itself by CLIMBING rather than by flying, and nothing
+         else on the course should ever be off the road on its wheels. */
+      if (armed && !car.airborne && (car.airY || 0) > 0.05) {
+        driven[armed] = Math.max(driven[armed] || 0, car.airY || 0);
+      }
 
       car.update(dt, driver.drive(dt, car, { raceOn: true }), true);
       const air = !!car.airborne;
@@ -245,6 +267,22 @@ const fail = (m) => { console.log('  PROBLEM: ' + m); bad++; };
       }
     }
     for (const r of here) {
+      if (r.drop) {
+        /* A ROAD RAMP MUST NOT FLY, AND MUST CLIMB.
+           Its whole reason for existing is that the car ends the section on
+           the floor under its own wheels; a launch off the far end is the
+           eighteen-unit drop this replaced. */
+        const up = driven[r.id] || 0;
+        console.log('        ' + r.id.padEnd(11) + ' driven to ' + up.toFixed(1)
+          + 'u without leaving the ground');
+        if (up < r.h - 0.3) {
+          fail(r.id + ' only climbed ' + up.toFixed(1) + 'u of its ' + r.h + 'u deck');
+        }
+        if (flights.some((fl) => fl.a > r.s - r.len - r.crest - 10 && fl.a < endOf(r) + 10)) {
+          fail(r.id + ' launched the car - a ramp with a descent must not');
+        }
+        continue;
+      }
       if (!flights.some((fl) => Math.abs(fl.a - r.s) < r.len + (r.crest || 0) + 10)) {
         fail(r.id + ' at ' + r.s + ' was never taken');
       }

@@ -46,62 +46,18 @@
  */
 const fs = require('fs');
 const path = require('path');
-const zlib = require('zlib');
+const PNG = require('./lib/png.js');
 
 const OUT = path.join(__dirname, '..', 'assets-src', 'textures');
 const FORCE = process.argv.includes('--force');
 
 // ------------------------------------------------------------------ png ---
-const CRC_TABLE = (() => {
-  const t = new Int32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    t[n] = c;
-  }
-  return t;
-})();
-
-function crc32(buf) {
-  let c = -1;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
-  return (c ^ -1) >>> 0;
-}
-
-function chunk(type, data) {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length, 0);
-  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(body), 0);
-  return Buffer.concat([len, body, crc]);
-}
-
-/** `rgb` is a Uint8Array of w*h*3. */
+/** `rgb` is a Uint8Array or Buffer of w*h*3, written through the shared
+    encoder - which searches the filter per row, so a generated normal map
+    comes out smaller than the filter-0 writer this file used to carry. */
 function writePng(file, w, h, rgb) {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(w, 0);
-  ihdr.writeUInt32BE(h, 4);
-  ihdr[8] = 8;        // bit depth
-  ihdr[9] = 2;        // colour type 2: truecolour, no alpha
-  ihdr[10] = 0;       // deflate
-  ihdr[11] = 0;       // adaptive filtering
-  ihdr[12] = 0;       // no interlace
-
-  // one filter byte (0 = None) per scanline, then the row
-  const raw = Buffer.alloc(h * (1 + w * 3));
-  for (let y = 0; y < h; y++) {
-    const o = y * (1 + w * 3);
-    raw[o] = 0;
-    rgb.copy ? rgb.copy(raw, o + 1, y * w * 3, (y + 1) * w * 3)
-             : Buffer.from(rgb.buffer, y * w * 3, w * 3).copy(raw, o + 1);
-  }
-  const png = Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
-    chunk('IHDR', ihdr),
-    chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
-    chunk('IEND', Buffer.alloc(0)),
-  ]);
+  const body = Buffer.isBuffer(rgb) ? rgb : Buffer.from(rgb.buffer, rgb.byteOffset, rgb.byteLength);
+  const png = PNG.encode(PNG.fromRaw(w, h, 3, body));
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, png);
   console.log('  ' + String(png.length).padStart(8) + '  ' +

@@ -46,6 +46,7 @@
 //! It is the only setting on that screen that costs a restart, and it is the
 //! only one that says so.
 
+mod clips;
 mod diag;
 mod launcher;
 mod platform;
@@ -597,6 +598,100 @@ fn resize_on_main(app: &tauri::AppHandle, window: &WebviewWindow, t: Target) {
 /// Read the save. One file rather than a key per file: the game writes several
 /// keys together at the end of a chapter, and a partial set on disk is worse
 /// than none.
+/* ------------------------------------------------------------- RECORDING --
+ *
+ * The clip arrives here already encoded - the whole of that work happens in
+ * the webview's own process, in the recorder's worker thread, so a frame never
+ * crosses this boundary. What crosses is one finished file per save.
+ *
+ * # It is a RAW BODY, and that is the fix
+ *
+ * This used to take `bytes: Vec<u8>`, which is an ordinary command argument
+ * and therefore arrives as JSON. The page had to call `Array.from` on the
+ * clip to produce it: a twenty-five megabyte picture became twenty-five
+ * MILLION boxed JavaScript numbers, then a string about three times that size,
+ * then a serde parse back into bytes on this side. That is seconds of a
+ * completely unresponsive game on every save, and it was the whole of the
+ * reported freeze.
+ *
+ * `tauri::ipc::Request` hands over the request body untouched instead, so the
+ * page posts the `Uint8Array` itself and this reads the same bytes. The label
+ * comes in a header, because the body is the file.
+ */
+#[tauri::command]
+fn clip_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("the clip must be sent as a raw body, not as JSON".into());
+    };
+    if bytes.len() < 64 {
+        return Err("the clip was empty".into());
+    }
+    /* The name is rebuilt HERE rather than trusted: it arrived from the page,
+       and a string from the page that reaches a path is a string that gets
+       checked on this side of the boundary. See clips::file_name. */
+    let name = request
+        .headers()
+        .get("x-synx-clip")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let fallback = app.path().app_data_dir().ok();
+    let dir = clips::dir(fallback.as_deref()).ok_or("nowhere to write clips")?;
+    let stamp = stamp_now();
+    let safe = clips::file_name(name, &stamp);
+    clips::write(&dir, &safe, bytes)
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| format!("could not write the clip: {e}"))
+}
+
+/// Where clips go, for the options screen to print.
+#[tauri::command]
+fn clips_dir(app: tauri::AppHandle) -> String {
+    let fallback = app.path().app_data_dir().ok();
+    clips::dir(fallback.as_deref())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Show the folder in the platform's file manager.
+#[tauri::command]
+fn clips_open(app: tauri::AppHandle) -> bool {
+    let fallback = app.path().app_data_dir().ok();
+    let Some(dir) = clips::dir(fallback.as_deref()) else { return false };
+    #[cfg(target_os = "windows")]
+    let cmd = { let mut c = std::process::Command::new("explorer"); c.arg(&dir); c };
+    #[cfg(target_os = "macos")]
+    let cmd = { let mut c = std::process::Command::new("open"); c.arg(&dir); c };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let cmd = { let mut c = std::process::Command::new("xdg-open"); c.arg(&dir); c };
+    diag::quiet(cmd).spawn().is_ok()
+}
+
+/// A sortable stamp, to the second, without pulling in a date library.
+fn stamp_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    /* Days since the epoch, converted with the civil-from-days algorithm - the
+       same arithmetic every date library uses, and four lines of it. */
+    let days = (secs / 86_400) as i64;
+    let tod = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02}-{:02}{:02}{:02}",
+        y, m, d, tod / 3600, (tod % 3600) / 60, tod % 60
+    )
+}
+
 #[tauri::command]
 fn save_load(app: tauri::AppHandle) -> serde_json::Value {
     serde_json::Value::Object(save::load(&app).entries)
@@ -727,6 +822,9 @@ fn main() {
             diag_previous,
             diag_clear,
             diag_open,
+            clip_write,
+            clips_dir,
+            clips_open,
             save_load,
             save_store,
             save_clear,

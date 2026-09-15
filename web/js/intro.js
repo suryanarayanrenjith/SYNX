@@ -47,7 +47,8 @@
     'ROUTE // 175 KM OF COURSE RESIDENT',
   ];
 
-  let veil = null, line = null, writer = null, at = 0;
+  let veil = null, writer = null, at = 0;
+  let rows = [], lines = [];
   let rail = null, fill = null, stamp = null;
   let running = false, done = false, timer = 0;
 
@@ -68,9 +69,45 @@
     // the two offset slices are ::before/::after, and they need the string
     mark.setAttribute('data-text', 'SYNX');
     term.appendChild(mark);
-    line = doc.createElement('p');
-    line.className = 'intro-line';
-    term.appendChild(line);
+    /* The wordmark on its own is a logo. The line under it is what the logo is
+       FOR, and it is the same line the title screen carries a moment later -
+       so the two screens read as one thing arriving rather than as a splash
+       followed by a menu. */
+    const tag = doc.createElement('p');
+    tag.className = 'intro-tag';
+    tag.textContent = 'SYNTHWAVE eXTREME RACING';
+    term.appendChild(tag);
+
+    /* EVERY LINE STAYS, AND EACH ONE IS SIGNED OFF.
+     *
+     * There used to be one paragraph that was emptied and retyped four times,
+     * which is a status line rather than a boot: three quarters of what the
+     * machine had reported was gone by the time the fourth line arrived, and
+     * nothing on screen said any of it had succeeded. A ledger that fills up,
+     * with an OK landing on each row as it completes, is what a system coming
+     * up actually looks like - and it is the same four strings.
+     *
+     * The tag is a sibling rather than a ::after on the row, because the
+     * typewriter's caret is already a ::after and two of them on one element
+     * is one of them not existing. */
+    const list = doc.createElement('div');
+    list.className = 'intro-lines';
+    rows = []; lines = [];
+    for (let i = 0; i < BOOT.length; i++) {
+      const row = doc.createElement('div');
+      row.className = 'intro-row';
+      const p = doc.createElement('p');
+      p.className = 'intro-line';
+      const ok = doc.createElement('b');
+      ok.className = 'intro-ok';
+      ok.textContent = 'OK';
+      row.appendChild(p);
+      row.appendChild(ok);
+      list.appendChild(row);
+      rows.push(row);
+      lines.push(p);
+    }
+    term.appendChild(list);
     veil.appendChild(term);
 
     /* THE RAIL. Four boot lines with nothing under them is four sentences;
@@ -83,6 +120,7 @@
     fill = doc.createElement('i');
     rail.appendChild(fill);
     term.appendChild(rail);
+    if (fill) fill.style.transform = 'scaleX(0)';
 
     /* ...and the stamp that lands on the last line. A sequence that simply
        stops has no end; one that says the word and THEN wipes has a beat, and
@@ -101,9 +139,11 @@
   }
 
   function nextLine() {
-    if (done || !line) return;
+    if (done || !lines.length) return;
     if (at >= BOOT.length) { arrive(); return; }
-    const text = BOOT[at++];
+    const i = at++;
+    const line = lines[i];
+    const text = BOOT[i];
     if (fill) fill.style.transform = 'scaleX(' + (at / BOOT.length) + ')';
     /* FASTER THAN IT WAS, because it is no longer waiting for anything.
 
@@ -117,7 +157,13 @@
        A hundred and thirty characters a second, and a shorter gap: the whole
        terminal is about two seconds instead of four, which is a title
        sequence rather than a progress report. */
-    writer = NR.UI.type(line, text, { cps: 132, done: () => { timer = setTimeout(nextLine, 130); } });
+    writer = NR.UI.type(line, text, {
+      cps: 132,
+      done: () => {
+        if (rows[i]) rows[i].classList.add('is-done');
+        timer = setTimeout(nextLine, 118);
+      },
+    });
   }
 
   /* The beat between the last line and the wipe. */
@@ -153,7 +199,41 @@
      the case where a player skips the cold open - the load is not skipped by
      that and can still be in flight here. */
   const WAIT_MS = 12000;
-  let waitedFrom = 0;
+  /* ...AND A MUCH SHORTER ONE FOR THE MUSIC.
+   *
+   * The theme is deliberately silent through the cold open and the
+   * photosensitivity notice so that it can start WITH the opening shot - see
+   * onMusic in js/game.js. That only pays off if it can actually start on the
+   * frame it is asked to, and a media element cannot until it has buffered.
+   *
+   * On a cold cache that buffer very often lands a few hundred milliseconds
+   * after this point, so the shot began in silence and the score arrived over
+   * the middle of it, which is the whole of the "the music is out of sync"
+   * report. Waiting a beat for it costs nothing anybody can perceive - the
+   * boot lines are still on screen - and it is what makes the first bar and
+   * the first frame the same moment.
+   *
+   * It is a short wait and it is capped, because a track that is not coming
+   * must not be able to hold the game on a black screen. Past the cap the
+   * shot starts anyway and the music joins it, exactly as it used to. */
+  const MUSIC_WAIT_MS = 1400;
+  let waitedFrom = 0, musicFrom = 0;
+
+  /** Is the score able to start this frame, or is there nothing to wait for? */
+  function scoreReady(g) {
+    const a = g && g.audio;
+    if (!a || !a.trackReady) return true;
+    if (a.muted) return true;            // no music at all; nothing to sync to
+    /* A SUSPENDED CONTEXT IS THE WORST CASE, not a harmless one.
+       Once the element is wired into the graph its stream is consumed whether
+       or not the context is running, so cueing a track into a suspended
+       context does not delay the music - it plays it, silently, and hands
+       back a song that is several seconds in by the time the browser lets the
+       sound out. That is out of sync in the most literal way there is. */
+    if (!a.running) return false;
+    return a.trackReady('menu');
+  }
+
   function lift() {
     if (done) return;
     const g = global.__nr;
@@ -161,12 +241,20 @@
     if (!ready) {
       if (!waitedFrom) waitedFrom = Date.now();
       if (Date.now() - waitedFrom < WAIT_MS) {
-        if (line) line.textContent = BOOT[BOOT.length - 1];
         timer = setTimeout(lift, 120);
+        return;
+      }
+    } else if (!scoreReady(g)) {
+      if (!musicFrom) musicFrom = Date.now();
+      if (Date.now() - musicFrom < MUSIC_WAIT_MS) {
+        timer = setTimeout(lift, 60);
         return;
       }
     }
     veil.classList.add('intro-lift');
+    /* The same frame, on purpose: the wipe, the camera move and the first bar
+       of the theme. Starting any of the three after the others reads as three
+       sequences rather than one. */
     if (g && g.startIntro) g.startIntro();
     timer = setTimeout(finish, 900);
   }
@@ -174,6 +262,11 @@
   function finish() {
     done = true;
     running = false;
+    /* WHEREVER THIS ENDED, THE MUSIC STARTS. The lift has usually done it
+       already and releaseMusic is a no-op then; what this catches is the
+       player who skipped, for whom nothing else ever would. */
+    const gm = global.__nr;
+    if (gm && gm.releaseMusic) gm.releaseMusic();
     if (writer) writer.stop();
     global.clearTimeout(timer);
     for (const type of EVENTS) doc.removeEventListener(type, onAny, true);
@@ -234,6 +327,11 @@
        a camera move. They get the title screen, settled, immediately. */
     if (!NR.UI || NR.UI.reduced()) {
       done = true;
+      /* ...and the score still starts. There is no veil to lift here and so
+         nothing that would otherwise have released the hold, which left a
+         reduced-motion player on a silent title screen. */
+      const gm = global.__nr;
+      if (gm && gm.releaseMusic) gm.releaseMusic();
       // ...and the gate still shuts, or reduced motion becomes a fast path
       // into the mode terminal for anybody holding ENTER. See finish().
       if (NR.Gate) NR.Gate.lock(420);

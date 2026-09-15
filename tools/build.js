@@ -9,11 +9,15 @@
  *     node tools/build.js --bundle        ...and an installer
  *     node tools/build.js --run           ...and launch it when it is done
  *
- * TWO ARTEFACTS, IN THIS ORDER, because the first goes inside the second:
+ * THREE ARTEFACTS, IN THIS ORDER, because the first two go inside the third:
  *
  *   1. crates/synx-core  ->  web/wasm/synx_core.wasm
  *      The simulation core: course generation, world meshing, the four-wheel
  *      solver, the rival's racing line and driver.
+ *
+ *   1b. crates/synx-rec  ->  web/wasm/synx_rec.wasm
+ *      The recorder: a JPEG encoder, an AVI muxer and the replay ring. Its own
+ *      module because it runs on its own thread, in a Web Worker.
  *
  *   2. src-tauri         ->  target/release/synx[.exe]
  *      The desktop host, with the whole of web/ - scripts, shaders, textures,
@@ -107,6 +111,19 @@ if (!fs.existsSync(wasmSrc)) fail(`cargo reported success but ${wasmSrc} is not 
 fs.copyFileSync(wasmSrc, path.join(wasmOut, 'synx_core.wasm'));
 console.log(`  synx_core.wasm  ${fs.statSync(wasmSrc).size.toLocaleString()} bytes`);
 
+/* THE RECORDER IS A SECOND MODULE, and deliberately not part of the first.
+   It runs in a Web Worker - see web/js/recworker.js - so that the JPEG encode
+   and the mux happen on a thread that is not drawing the game, and so that the
+   ring's ninety-odd megabytes live in their own linear memory rather than
+   growing the core's and detaching every view the page holds over it. */
+step('Recorder -> WebAssembly');
+run('cargo', ['build', '-p', 'synx-rec', '--release', '--target', 'wasm32-unknown-unknown'],
+  'recorder build');
+const recSrc = path.join(ROOT, 'target', 'wasm32-unknown-unknown', 'release', 'synx_rec.wasm');
+if (!fs.existsSync(recSrc)) fail(`cargo reported success but ${recSrc} is not there`);
+fs.copyFileSync(recSrc, path.join(wasmOut, 'synx_rec.wasm'));
+console.log(`  synx_rec.wasm   ${fs.statSync(recSrc).size.toLocaleString()} bytes`);
+
 // -------------------------------------------------- 2. the course asset ---
 
 /* The road the multiplayer server validates against, emitted by the game's own
@@ -195,6 +212,19 @@ if (WANT.check) {
      through, and which no test then in the suite could have caught. */
   step('ramps');
   run(process.execPath, ['tools/checkramps.js'], 'ramp geometry and arming check');
+
+  /* ...and the one structure on the course the car drives OVER rather than
+     past. The ramp check proves the window and the table agree; this builds
+     the hall and drops a ray down the centreline to prove the DECK does. */
+  step('forge');
+  run(process.execPath, ['tools/checkforge.js'], 'Aurora Forge roof deck check');
+
+  /* THE RECORDER'S PLUMBING. `cargo test -p synx-rec` proves the encoder and
+     the container; this drives the worker protocol and the capture loop, which
+     are the parts that were actually broken and the parts no unit test can
+     see. It fails if anything in the capture path blocks. */
+  step('recorder');
+  run(process.execPath, ['tools/checkrec.js'], 'replay capture and encoder thread check');
 }
 
 if (WANT.smoke) {
