@@ -50,7 +50,7 @@ pub fn browser_args(r: Renderer, vsync: bool) -> String {
     ));
     /* A WAY IN, FOR THE BUILD ONLY.
 
-       `tools/checklauncher.js` drives the real host - it opens the launcher,
+       `tools/smoke.py launcher` drives the real host - it opens the launcher,
        presses PLAY and checks that the window actually becomes the game -
        and to do that it has to attach a debugger to the webview. That is the
        one thing this process cannot be asked for after it has started.

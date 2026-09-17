@@ -9,6 +9,19 @@
 (function (global) {
   'use strict';
 
+  /* WHICH KEY AN ACTION IS ON, for the few places the interface has to name
+     one. Read from the live bindings rather than written into the string,
+     because a hard-coded key name is a lie the moment somebody rebinds it -
+     and, as the boost meter proved, it can be a lie from the day it is typed.
+     Falls back to the action's own name rather than to a guess, so a missing
+     binding reads as a missing binding. */
+  function keyFor(g, action) {
+    const inp = g && g.input;
+    const label = global.NR && global.NR.bindLabel;
+    if (!inp || !inp.keysFor || !label) return String(action).toUpperCase();
+    return label(inp.keysFor(action));
+  }
+
   const AMBER = '#ffb400';
   const CYAN = '#39e6ff';
   const PINK = '#ff2e88';
@@ -60,6 +73,42 @@
   /* The ramp the swept arc, the needle and the readout all run along. See
      Hud.speedTint for why it goes through violet and not through amber. */
   const SPD_RAMP = [[0.00, CYAN], [0.52, VIOLET], [0.84, PINK], [1.00, RED]];
+
+  /* ---------------------------------------------------------- THE RADIO
+   *
+   * A WIDE, SHORT STRIP, because it sits on top of a dial and anything tall
+   * there makes the pair top-heavy. Three rows in a 72-unit box became two
+   * rows and a rule in 48: the level meter moved up beside the station name,
+   * and the tuner became the panel's own bottom edge instead of a row of its
+   * own. The top edge came down thirty-four units.
+   *
+   * ON THE DIAL'S CENTRE LINE. Aligning its right edge with the dial's cached
+   * FACE instead put its centre twenty-two units to the left of the dial's,
+   * and a strip sitting off-centre over a circle reads as having landed there
+   * rather than as having been placed. Wider than the dial on both sides is
+   * fine - that is what a stereo over an instrument looks like - but it has to
+   * be wider by the same amount on each.
+   *
+   * The dial's face reaches y -98.2. This stops at -94, which is four units of
+   * dark against the face and twenty-four against the lit bezel itself.
+   */
+  const RAD = { x: SPD.x, w: 296, h: 48, y: -70 };
+  /* The dial the needle runs along: the real FM band with half a megahertz of
+     run-off at each end, so the ticks sit where a driver expects them, adding a
+     sixth station does not move the other five, and the top station's needle
+     does not sit hard against the end of its own scale. */
+  const RAD_LO = 87.0, RAD_HI = 108.5;
+  /* How long the panel announces a new song for, and how long the words NOW
+     PLAYING stay up inside that. */
+  const RAD_CUE = 3.2, RAD_SAY = 1.7;
+  /* How many bars the spectrum is folded into. Eleven is what fits at a
+     readable width with a gap between each; the analyser is asked for exactly
+     this many and does the folding itself. */
+  const RAD_BARS = 11;
+  /* Letter-spacing for the frequency, in the same units as the type size. Ten
+     font units of the face's italic nesting is 1.67 of these at size 15; 2.2
+     clears that and leaves a hairline. */
+  const RAD_TRACK = 2.2;
 
   /* THE BOOST METER. The shipped widget is 512x64 at the bottom centre, which
      is a third of the frame's width for one number - so this is narrower and
@@ -450,6 +499,24 @@
       return true;
     }
 
+    /* How wide a run of the seven-segment face comes out.
+     *
+     * The proportional ruler cannot answer this: the two faces have different
+     * advances, and the readout that needed the answer - the MHz beside the
+     * frequency - was being backed off by a measurement of a completely
+     * different typeface. It looked close at 88.1. It would not have at
+     * 101.7. Same arithmetic as the draw below, which is the point. */
+    digitsWidth(txt, size, track) {
+      const g = this.font.glyphs || {};
+      const scale = size / (this.font.size || 90);
+      let w = 0;
+      for (const ch of String(txt)) {
+        const m = g[ch.charCodeAt(0)];
+        w += (m ? m[6] : 45) * scale + (track || 0);
+      }
+      return w;
+    }
+
     /** The shipped Digital_Italic 7-segment face. */
     /* The shipped Digital_Italic 7-segment face.
 
@@ -457,7 +524,7 @@
        source-atop fill on the live canvas paints through everything already
        drawn under the rectangle, which turned the speed meter orange as well
        as the digits. */
-    digits(txt, x, y, size, align, alpha, tint) {
+    digits(txt, x, y, size, align, alpha, tint, track) {
       const im = this.img['Digital_Italic.png'];
       const g = this.font.glyphs || {};
       txt = String(txt);
@@ -466,10 +533,24 @@
         return;
       }
       const scale = this.vs(size) / (this.font.size || 90);
+      /* TRACKING, and why it is not always zero.
+       *
+       * Measured off the atlas: every digit advances 43 font units and every
+       * digit's ink is about 53 wide, so the face nests consecutive glyphs by
+       * ten - which is what an italic seven-segment display does and is
+       * invisible on a glyph with fifty-three units of ink in it.
+       *
+       * '1' has twenty-four, hard against the right of its cell, so the same
+       * ten units of lean cover nine of them and the only stroke the glyph has
+       * disappears under its neighbour: 107.9 reads as 07.9. Anything that
+       * sets a number with a 1 in the middle of it and has no fixed box to fit
+       * asks for a little tracking here. The shipped readouts pass none and
+       * are unchanged. */
+      const kern = this.vs(track || 0);
       let width = 0;
       for (const ch of txt) {
         const m = g[ch.charCodeAt(0)];
-        width += (m ? m[6] : 45) * scale;
+        width += (m ? m[6] : 45) * scale + kern;
       }
       let pen = this.vx(x);
       if (align === 'center') pen -= width / 2;
@@ -480,7 +561,7 @@
         const c = this.ctx;
         c.save();
         if (alpha !== undefined) c.globalAlpha = alpha;
-        this.glyphRun(c, im, g, txt, pen, top, scale);
+        this.glyphRun(c, im, g, txt, pen, top, scale, kern);
         hRestore(c);
         return;
       }
@@ -502,7 +583,7 @@
       if (!sc) return;
       sc.setTransform(1, 0, 0, 1, 0, 0);
       sc.clearRect(0, 0, this.scratch.width, this.scratch.height);
-      this.glyphRun(sc, im, g, txt, padX, padY * 0.5, scale);
+      this.glyphRun(sc, im, g, txt, padX, padY * 0.5, scale, kern);
       sc.save();
       sc.globalCompositeOperation = 'source-atop';
       sc.fillStyle = tint;
@@ -521,14 +602,14 @@
     }
 
     /** Blit one run of bitmap glyphs into `c` starting at (pen, top). */
-    glyphRun(c, im, g, txt, pen, top, scale) {
+    glyphRun(c, im, g, txt, pen, top, scale, kern) {
       for (const ch of txt) {
         const m = g[ch.charCodeAt(0)];
         if (m && m[2] > 0 && m[3] > 0) {
           c.drawImage(im, m[0], m[1], m[2], m[3],
             pen + m[4] * scale, top + m[5] * scale, m[2] * scale, m[3] * scale);
         }
-        pen += (m ? m[6] : 45) * scale;
+        pen += (m ? m[6] : 45) * scale + (kern || 0);
       }
     }
 
@@ -1549,7 +1630,14 @@
         edge = blue ? '#38bfff' : CYAN;
         hot = '#ffffff';
         cool = blue ? '#078cff' : CYAN;
-        caption = blue ? 'BLUE RESERVE  //  FULL' : 'BOOST READY  //  SHIFT';
+        /* THE KEY IS ASKED FOR, NOT SPELLED OUT.
+           This said SHIFT. Boost has been bound to B for as long as the
+           CONTROLS screen has existed, so the one place in the game that
+           tells a player which key to press was telling them the wrong one -
+           and it would have gone on being wrong for anybody who rebound it
+           anyway. NR.bindLabel renders whatever the action is actually on,
+           the same way the CONTROLS rows do. */
+        caption = blue ? 'BLUE RESERVE  //  FULL' : 'BOOST READY  //  ' + keyFor(g, 'boost');
       } else {
         state = 'part';
         edge = blue ? '#38bfff' : 'rgba(120,190,240,0.55)';
@@ -1680,6 +1768,222 @@
     }
 
     /** A neon rule with a diamond at each end. */
+    /* ==================================================================
+     * THE RADIO PANEL.
+     *
+     * Everything here is drawn rather than blitted, for the same reason the
+     * speedometer is: it has to be exact at every canvas size the host allows
+     * and it has to be lit from inside, which a sprite cannot be.
+     *
+     * It draws nothing at all when there is no music - the track failed, or
+     * the Options slider is at zero. A radio panel reading SIGNAL LOST for the
+     * whole of a run that somebody deliberately made silent is clutter
+     * pretending to be information.
+     * ================================================================== */
+    radio(g) {
+      const a = g.audio;
+      if (!a || !a.nowPlaying) return;
+      const np = a.nowPlaying();
+      const dt = Math.min(0.05, this._dt || 0.016);
+
+      /* THE PANEL FADES RATHER THAN BLINKING. A cross-fade between two songs
+         passes through a moment with no current track, and a panel that
+         vanished for it would flicker once per station change. */
+      if (!np) {
+        this.radioLive = Math.max(0, (this.radioLive || 0) - dt * 2.4);
+        if (this.radioLive <= 0.002) { this.radioKey = null; return; }
+      } else {
+        this.radioLive = Math.min(1, (this.radioLive || 0) + dt * 2.2);
+      }
+      const show = this.radioLive;
+      const now = np || this.radioLast;
+      if (!now) return;
+      if (np) this.radioLast = np;
+
+      // a new song: announce it
+      if (np && this.radioKey !== np.key) {
+        this.radioKey = np.key;
+        this.radioCue = RAD_CUE;
+      }
+      this.radioCue = Math.max(0, (this.radioCue || 0) - dt);
+      const cue = this.radioCue / RAD_CUE;
+
+      const c = this.ctx;
+      const col = now.onAir ? CYAN : AMBER;
+      const x = RAD.x, y = RAD.y, w = RAD.w, h = RAD.h;
+
+      c.save();
+      c.globalAlpha = show;
+
+      /* The glass. Brighter for the length of the announcement, so a station
+         change is visible from the corner of an eye without anything moving. */
+      this.panel(x, y, w, h, col, 0.30 + 0.26 * cue);
+
+      /* ...and a sweep across it while the announcement runs: one soft band
+         travelling left to right, clipped to the panel. It is the cheapest
+         thing that reads as a signal arriving. */
+      if (cue > 0.01) {
+        c.save();
+        c.beginPath();
+        c.rect(this.vx(x - w / 2), this.vy(y + h / 2), this.vs(w), this.vs(h));
+        c.clip();
+        const k = 1 - cue;                       // 0 at the start, 1 at the end
+        const sx = x - w / 2 + w * 1.35 * k - w * 0.18;
+        const gr = c.createLinearGradient(this.vx(sx - 40), 0, this.vx(sx + 40), 0);
+        gr.addColorStop(0, this._alpha(col, 0));
+        gr.addColorStop(0.5, this._alpha(col, 0.30 * cue));
+        gr.addColorStop(1, this._alpha(col, 0));
+        c.fillStyle = gr;
+        c.fillRect(this.vx(x - w / 2), this.vy(y + h / 2), this.vs(w), this.vs(h));
+        c.restore();
+      }
+
+      const L = x - w / 2 + 12;                  // the inner left margin
+      const R = x + w / 2 - 12;
+
+      /* ------------------------------------------------ the station row -- */
+      /* A LIGHT THAT MEANS SOMETHING. It breathes while a station is on the
+         air and holds steady on a fixed score, because those are two different
+         states and a panel that looked identical in both would be lying about
+         one of them. */
+      const beat = now.onAir ? 0.55 + 0.45 * Math.sin(g.time * 3.1) : 0.9;
+      c.beginPath();
+      c.arc(this.vx(L + 3), this.vy(y + 17.5), this.vs(2.6), 0, Math.PI * 2);
+      c.fillStyle = col;
+      c.shadowColor = col;
+      c.shadowBlur = gb(this.vs(7 * beat));
+      c.globalAlpha = show * beat;
+      c.fill();
+      c.shadowBlur = 0;
+      c.globalAlpha = show;
+
+      const head = this.radioCue > RAD_CUE - RAD_SAY ? 'NOW PLAYING' : now.station;
+      this.label(head, L + 13, y + 14, 10, col, 'left', 800, show * 0.92);
+      /* The frequency, or what to say instead of one. A chapter score is not
+         on the air and the readout says so rather than inventing a number for
+         it - which is the difference between a dial and a decoration. */
+      let rowRight = R;
+      if (now.onAir) {
+        /* Tracked, because a frequency has a 1 in the middle of it more
+           often than not and the face runs the next glyph over it. See the
+           note in `digits`. */
+        const f = now.freq.toFixed(1);
+        this.digits(f, R, y + 12, 14, 'right', show, AMBER, RAD_TRACK);
+        rowRight = R - this.digitsWidth(f, 14, RAD_TRACK) - 5;
+        this.label('MHz', rowRight, y + 14, 8.5, INK.mute, 'right', 700, show * 0.7);
+        rowRight -= this.textWidth('MHz', 8.5, 700) + 8;
+      } else {
+        this.label('INTERNAL FEED', R, y + 14, 10, INK.mute, 'right', 800, show * 0.8);
+        rowRight = R - this.textWidth('INTERNAL FEED', 10, 800) - 8;
+      }
+
+      /* THE LEVEL, on the station row rather than under it. Eleven bars of the
+         music's own spectrum, from an analyser on the music bus - so if the
+         song stops, they fall. It starts clear of the longest station name
+         (AURORA FORGE) and ends clear of whatever is on the right, and it is
+         simply not drawn if a long name and a long readout leave it nowhere to
+         be, which is better than drawing it through one of them. */
+      {
+        /* It starts where the station name ENDS, not at a fixed offset. A
+           fixed one has to clear AURORA FORGE, and against SYNX FM that left
+           sixty units of hole between the two. */
+        const mx0 = L + 15 + this.textWidth(head, 10, 800) + 14, mx1 = rowRight;
+        const bars = this.radioBars || (this.radioBars = new Float32Array(RAD_BARS));
+        if (a.musicLevels) a.musicLevels(bars);
+        if (mx1 - mx0 > 40) {
+          const bw = (mx1 - mx0) / RAD_BARS;
+          for (let i = 0; i < RAD_BARS; i++) {
+            /* A FLOOR, so the meter reads as an instrument that is on rather
+               than as one that is broken. Two units of bar at silence is a row
+               of pilot lights; zero is a dead panel. */
+            const v = 0.06 + bars[i] * 0.94;
+            const bh = 2 + v * 10;
+            /* Cyan at the bottom of the meter through to magenta at the top,
+               the same ramp the dial below uses for speed - one palette for
+               the whole instrument stack. */
+            c.fillStyle = mixHex2(col, PINK, Math.max(0, v - 0.45) / 0.55);
+            c.globalAlpha = show * (0.45 + 0.55 * v);
+            c.fillRect(this.vx(mx0 + i * bw), this.vy(y + 5 + bh),
+              this.vs(bw - 1.6), this.vs(bh));
+          }
+          c.globalAlpha = show;
+        }
+      }
+
+      /* ------------------------------------------------------ the title -- */
+      /* MARQUEED, NOT TRUNCATED. NEON MIDNIGHT PURSUIT is twenty-one
+         characters and the panel is two hundred and fifty-six units wide;
+         cutting the one piece of information this exists to give would be a
+         strange way to save room. The scroll only starts when it has to, so
+         every title that fits simply sits still. */
+      /* The row is the full inner width now that the meter has moved up, so
+         every title in the pack fits at fourteen with room either side and the
+         marquee is there for a title somebody adds later. */
+      const size = 14;
+      const inner = w - 24;
+      const tw = this.textWidth(now.title, size, 900);
+      c.save();
+      c.beginPath();
+      c.rect(this.vx(L - 2), this.vy(y + 3), this.vs(inner + 4), this.vs(22));
+      c.clip();
+      if (tw <= inner) {
+        this.radioScroll = 0;
+        this.neon(now.title, L, y - 9, size, WHITE, 'left', 900, show);
+      } else {
+        const span = tw - inner + 26;            // 26 units of pause at each end
+        this.radioScroll = ((this.radioScroll || 0) + dt * 22) % (span * 2);
+        const k = this.radioScroll < span ? this.radioScroll : span * 2 - this.radioScroll;
+        this.neon(now.title, L - Math.max(0, k - 13), y - 9, size, WHITE, 'left', 900, show);
+      }
+      c.restore();
+
+      /* ------------------------------------------------------- the dial -- */
+      /* THE PANEL'S OWN BOTTOM RULE. It was a row, and a row is what made this
+         three rows tall; as the bottom edge it costs nothing and reads more
+         like a tuner than it did floating in the middle of a box. */
+      const dx0 = L, dx1 = R;
+      /* FOUR UNITS LOWER THAN IT WAS. The ticks stand above the rail and the
+         title's descenders reach y -12, so at y -18 the two leftmost stations
+         were drawn behind the word the panel exists to show. */
+      const dy = y - 20;
+      c.fillStyle = INK.faint;
+      c.fillRect(this.vx(dx0), this.vy(dy), this.vs(dx1 - dx0), this.vs(2));
+      if (now.onAir) {
+        /* A TICK PER STATION, at its own frequency on a real FM scale, so the
+           dial is a map of what is on rather than five evenly spaced marks. */
+        const at = (f) => dx0 + (dx1 - dx0)
+          * Math.max(0, Math.min(1, (f - RAD_LO) / (RAD_HI - RAD_LO)));
+        /* BRIGHT ENOUGH TO SURVIVE THE TITLE'S GLOW. The two lowest stations
+           sit under the word the panel exists to show, and `neon` draws that
+           word with a shadow blur - at a third of an alpha the marks under it
+           were simply not there. */
+        c.fillStyle = 'rgba(214,236,255,0.62)';
+        for (const f of (now.band || [])) {
+          /* ABOVE the rail, inside the panel. Drawn below it they fell outside
+             the glass now that the rail is the bottom edge. */
+          c.fillRect(this.vx(at(f)) - this.vs(0.9), this.vy(dy + 5), this.vs(1.8), this.vs(4.5));
+        }
+        /* ...and the needle, which crosses the rail rather than hanging off
+           it, because that is what a needle on a tuner does. */
+        const nx = at(now.freq);
+        c.fillStyle = AMBER;
+        c.shadowColor = AMBER;
+        c.shadowBlur = gb(this.vs(8));
+        c.fillRect(this.vx(nx) - this.vs(1), this.vy(dy + 3), this.vs(2), this.vs(6));
+        c.shadowBlur = 0;
+      } else {
+        /* No frequency, so no needle: how far through the piece the score is,
+           which is the only thing a fixed track has to say about itself. */
+        const f = Math.max(0, Math.min(1, now.progress || 0));
+        c.fillStyle = col;
+        c.shadowColor = col;
+        c.shadowBlur = gb(this.vs(6));
+        c.fillRect(this.vx(dx0), this.vy(dy), this.vs((dx1 - dx0) * f), this.vs(2));
+        c.shadowBlur = 0;
+      }
+      hRestore(c);
+    }
+
     rule(x, y, w, color, alpha) {
       const c = this.ctx;
       c.save();
@@ -1861,6 +2165,19 @@
         const resumed = from === 'paused' || from === 'confirm' || from === 'finished';
         if (g.state === 'countdown' || (g.state === 'racing' && !resumed)) {
           this.reveal = 0;
+          /* WHERE THE ENTRANCE STARTS FROM, which was the last place the two
+             halves of this still disagreed.
+             A race with lights has already faded the instruments up to the
+             ghost while the countdown ran, so the reveal carries on from
+             there and the whole thing reads as one movement. A race WITHOUT
+             lights has drawn nothing at all yet - every story chapter hands
+             control back straight into 'racing', and so does a rewind and
+             every cinematic that ends mid-route - and starting ITS reveal at
+             the ghost put the entire interface on screen at a quarter opacity
+             in a single frame and then faded the remaining three quarters in.
+             Same animation, two different openings. That is what "the reveal
+             is not consistent between the modes" looks like from the seat. */
+          this.revealFrom = from === 'countdown' ? HUD_GHOST : 0;
           /* ...and the speedometer's peak mark, which is a property of a RUN
              and not of a session. Cleared on the same condition the entrance
              is, so a resumed pause keeps the mark it earned and a fresh start
@@ -1925,7 +2242,8 @@
              ease-out. Two halves of one interface with opposite curves is
              precisely the inconsistency this is fixing. */
           const up = this.reveal === undefined ? 1 : this.reveal;
-          if (up < 1) this.veil(HUD_GHOST + (1 - HUD_GHOST) * ease(up));
+          const from0 = this.revealFrom === undefined ? HUD_GHOST : this.revealFrom;
+          if (up < 1) this.veil(from0 + (1 - from0) * ease(up));
           break;
         }
         /* A modal replaces the instruments; it does not sit on top of them.
@@ -2174,7 +2492,7 @@
       /* THE SPEEDOMETER, which is drawn rather than blitted. Everything about
          it - the scale, the needle, the shift lights, why the two shipped
          'speed' sprites could not be repaired - is in Hud.speedo. */
-      this.speedo(g, quiet);
+      this.speedo(g);
 
       // timer
       this.catScope(g);
@@ -2187,11 +2505,16 @@
         this.label('TIME', p.x - 14, p.y, tt.h * 0.9, CYAN, 'center', 600);
       }
 
+      /* ...and the radio, immediately above it. Part of the same instrument
+         stack and drawn straight after it, so anything that dims one dims the
+         other - see the veil below. */
+      this.radio(g);
+
       /* THE BOOST METER. One meter with four readings, drawn rather than
          blitted - see Hud.boostMeter for what the three shipped sprites were
          doing to the middle of the frame, and why the blue reserve needed a
          renderer of its own before this. */
-      this.boostMeter(g, quiet);
+      this.boostMeter(g);
 
       // Race flags and the record readout. This is a time trial, so the
       // record is what shows between them.
@@ -2231,9 +2554,9 @@
            clear of the widest toast the clamp in drawToasts allows, and still
            inboard of the chapter card on this flank. */
         const RX = RIVAL_X;
-        this.label(raceTotal > 2 ? 'POSITION // 4 CARS' : 'RIVAL', RX, 282, 13, INK.mute, 'left', 700, quiet);
+        this.label(raceTotal > 2 ? 'POSITION // 4 CARS' : 'RIVAL', RX, 282, 13, INK.mute, 'left', 700);
         const suffix = racePlace === 1 ? 'st' : (racePlace === 2 ? 'nd' : (racePlace === 3 ? 'rd' : 'th'));
-        this.neon(String(racePlace) + suffix, RX, 252, 30, col, 'left', 900, quiet);
+        this.neon(String(racePlace) + suffix, RX, 252, 30, col, 'left', 900);
         const txt = gap > 999 ? '999+' : gap.toFixed(0);
         this.label((lead ? '+' : '-') + txt + ' M', RX + 75, 252, 17,
           INK.body, 'left', 700, quiet);
@@ -2428,6 +2751,21 @@
             INK.mute, 'left', 600);
         }
       }
+
+      /* AND NOW THE WHOLE CLUSTER STEPS BACK, in one operation.
+         It used to be threaded as a quiet multiplier through the individual
+         draws - and only through SOME of them. The speedometer, the boost
+         meter and the rival readout dimmed for the handover card; the clock,
+         the TIME label, the DRIVETRAIN scope, the flags and the record did
+         not. Half an interface stepping back for a card and the other half
+         standing its ground is worse than neither, and it is what the report
+         meant by the reveal not being consistent.
+
+         veil() scales what is already on the canvas, so it cannot miss an
+         element the way a threaded argument can: anything drawn above this
+         line dims, anything below it does not, and the card itself is below
+         it. Nothing has to remember to opt in. */
+      if (quiet < 0.999) this.veil(quiet);
 
       /* The handover card. A Free Roam tour crosses six borders and the
          picture has already finished changing by the time it reaches one, so
@@ -3174,7 +3512,14 @@
         ['STEER', [cap('left', 'LEFT'), cap('right', 'RIGHT')], 56],
         ['DRIFT', [cap('ebrake', 'SPACE'), '+', cap('left', 'LEFT') + ' / ' + cap('right', 'RIGHT')], 2],
         ['BOOST', [cap('boost', 'B')], -52],
-        ['PAUSE / RESTART', [cap('pause', 'ESC'), cap('raceMode', 'R')], -106],
+        /* WHAT R ACTUALLY DOES HERE, which is not the same everywhere.
+           Inside a chapter it is RACE MODE and nothing else - the restart half
+           is off, because a mis-hit would throw away a run that can be thirty
+           kilometres long. See Game.quickRestartAllowed. A card that promises
+           RESTART on a key that will not restart is worse than a card that
+           does not mention it. */
+        [g.quickRestartAllowed && !g.quickRestartAllowed() ? 'PAUSE' : 'PAUSE / RESTART',
+          [cap('pause', 'ESC'), cap('raceMode', 'R')], -106],
       ];
       for (let ri = 0; ri < rows.length; ri++) {
         const [name, keys, y] = rows[ri];

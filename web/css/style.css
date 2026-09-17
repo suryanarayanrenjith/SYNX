@@ -159,7 +159,7 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
    their horizontal one.
 
    Both numbers are measured rather than chosen: see --probe cards in
-   tools/smoke.js, which resolves every one of these clamps in a real document
+   tools/smoke.py, which resolves every one of these clamps in a real document
    and holds the panels against each other AND against the HUD group. */
 #forge6Round {
   position: absolute;

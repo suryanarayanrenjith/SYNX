@@ -531,18 +531,58 @@
    * One function, so the live layer and the cached layer cannot disagree about
    * where the dial is. Everything on this screen is placed off `L`.
    */
+  /* ONE COORDINATE SYSTEM, AND EVERYTHING HUNG OFF THE DIAL.
+   *
+   * This screen was laid out twice. The dial, its ring and the outro stamp
+   * were positioned off the INSTRUMENT - `cy + r * 1.60` and the like - while
+   * the wordmark, the caption, the rail and the count were positioned off the
+   * FRAME, as fractions of its height. Those two agree at exactly one aspect
+   * ratio and drift apart everywhere else.
+   *
+   * On a 2:1 window they collided outright: `r` is clamped by height, so the
+   * stamp landed at y = 564 and the rail sat at y = 565, and the last thing
+   * the player saw before the game opened was SYSTEMS NOMINAL printed straight
+   * through the progress bar with the caption of the same name a row above it.
+   *
+   * So the block under the instrument is now stacked from the bottom of the
+   * BEZEL downward, in units of the dial's own radius. The gaps are fixed
+   * proportions of the thing they sit under, which is what keeps them apart at
+   * any shape of window - and `stampY` is in the table with the rest of them
+   * rather than being computed at the point of use.
+   */
   function layout(w, h) {
-    const r = Math.min(w * 0.30, h * 0.30);
+    /* Height-limited at 0.265 rather than 0.30. The progress RING reaches
+       1.34 radii, so at 0.30 the instrument owned down to 82% of a 2:1 window
+       and the four lines under it had a tenth of the screen to share - which
+       is how they ended up on top of each other. */
+    const r = Math.min(w * 0.30, h * 0.265);
+    const cy = h * 0.42;
+    const ring = r * 1.34;
+    /* The first line clears the progress ring, not just the bezel - the ring
+       is the outermost thing the instrument draws and the wordmark used to be
+       laid over the bottom of it. */
+    const top = cy + ring + Math.max(14, r * 0.10);
+    const step = Math.max(13, r * 0.115);
+    const markY = top + step * 1.15;
+    /* ...and if the window is short enough that the stack would run off the
+       bottom, the whole block slides up rather than falling off the screen. */
+    const lastY = markY + step * 3.3;
+    const lift = Math.max(0, lastY - h * 0.965);
     return {
       w, h, r,
       cx: w * 0.5,
-      cy: h * 0.42,
-      ring: r * 1.34,          // the progress arc, outside the bezel
-      markY: h * 0.795,        // the wordmark
-      capY: h * 0.862,         // what is being worked on
-      railY: h * 0.902,        // the bar
+      cy,
+      ring,                    // the progress arc, outside the bezel
+      markY: markY - lift,     // the wordmark
+      capY: markY + step * 1.15 - lift,   // what is being worked on
+      railY: markY + step * 2.05 - lift,  // the bar
       railW: Math.min(w * 0.44, 520),
-      detailY: h * 0.944,      // the count, when a phase has one
+      detailY: markY + step * 3.0 - lift, // the count, when a phase has one
+      /* The outro stamp REPLACES the caption and the rail - by the time it
+         lands the bar is at a hundred per cent and has nothing left to say -
+         so it sits on the caption's line rather than looking for one of its
+         own. See the fade in `progress`. */
+      stampY: markY + step * 1.45 - lift,
     };
   }
 
@@ -731,16 +771,28 @@
       c.restore();
     }
 
-    /* The unit, under the readout. The needle sweeps the whole dial and the
-       one place it can never reach is the gap at the bottom, which is where
-       the scale starts and ends - anything written anywhere else on the face
-       gets a needle through it twice a second. */
+    /* The unit, under the readout, and it is the READOUT's unit.
+       It said "x1000 r/min" directly beneath a four-digit number showing the
+       actual crank speed, so the face read 8974 x1000 r/min - nine million
+       revs a minute. The x1000 belongs to the NUMERALS on the scale, which
+       run 0 to 10; the readout is already in r/min and needs no multiplier.
+       The scale carries its own legend now, next to the numbers it applies to.
+
+       Under the readout because the needle sweeps the whole dial and the one
+       place it can never reach is the gap at the bottom, which is where the
+       scale starts and ends - anything written anywhere else on the face gets
+       a needle through it twice a second. */
     c.save();
     c.globalAlpha = 0.5;
     c.fillStyle = '#9fb6d8';
     c.font = font(r * 0.095, 600);
     c.textAlign = 'center';
-    c.fillText('x1000  r/min', 0, r * 0.60);
+    c.fillText('r/min', 0, r * 0.60);
+    /* ...and the scale's multiplier, small, level with the 0 and the 10 it
+       belongs to rather than with the readout it does not. */
+    c.globalAlpha = 0.34;
+    c.font = font(r * 0.072, 600);
+    c.fillText('x1000', 0, r * 0.745);
     c.restore();
 
     /* The track the progress arc fills, so the ring reads as an empty gauge
@@ -941,8 +993,12 @@
    * The ring, the caption, the rail and the count, and every one of them is
    * reading NR.Boot rather than a clock. See the note at the top of the file.
    */
-  function progress(c, L, p, label, detail) {
+  function progress(c, L, p, label, detail, stamp) {
     const r = L.ring;
+    /* The caption, the rail and the count all belong to WAITING. Once the
+       outro stamp is landing there is nothing left to wait for, so they go -
+       which is also what stops the stamp being printed through them. */
+    const waitK = 1 - Math.min(1, Math.max(0, (stamp || 0) * 1.6));
     if (p > 0.0015) {
       c.save();
       c.translate(L.cx, L.cy);
@@ -982,7 +1038,7 @@
     c.textBaseline = 'middle';
     const cap = Math.max(9, Math.min(L.w * 0.0125, 15));
     c.font = font(cap, 600);
-    c.globalAlpha = 0.86;
+    c.globalAlpha = 0.86 * waitK;
     c.fillStyle = '#9fc4e8';
     c.shadowColor = 'rgba(63,240,255,0.5)';
     c.shadowBlur = 12;
@@ -993,6 +1049,7 @@
     const rw = L.railW, rh = Math.max(3, L.h * 0.0055);
     const x = L.cx - rw / 2, y = L.railY - rh / 2;
     c.save();
+    c.globalAlpha = waitK;
     c.fillStyle = 'rgba(126,152,208,0.16)';
     c.fillRect(x, y, rw, rh);
     if (p > 0.001) {
@@ -1012,8 +1069,15 @@
     c.textBaseline = 'middle';
     c.font = font(Math.max(10, Math.min(L.w * 0.0125, 15)), 700);
     c.fillStyle = '#eaf6ff';
-    c.globalAlpha = 0.92;
-    c.fillText(Math.round(p * 100) + '%', x + rw, L.railY - rh * 3.4);
+    c.globalAlpha = 0.92 * waitK;
+    /* ON THE CAPTION'S LINE, right-aligned to the end of the rail.
+       It used to hang three bar-heights above the rail's right end, in the gap
+       between the caption and the bar - a number belonging to neither row,
+       close enough to the caption to crowd it and close enough to the bar to
+       look like a label that had come loose. A caption on the left of a row
+       and its number on the right of the same row is what every loader in the
+       world does, and it costs a line rather than inventing one. */
+    c.fillText(Math.round(p * 100) + '%', x + rw, L.capY);
     c.restore();
 
     if (detail) {
@@ -1021,7 +1085,7 @@
       c.textAlign = 'center';
       c.textBaseline = 'middle';
       c.font = font(Math.max(8, Math.min(L.w * 0.0098, 12)), 600);
-      c.globalAlpha = 0.5;
+      c.globalAlpha = 0.5 * waitK;
       c.fillStyle = '#7f9dc4';
       c.fillText(spaced(detail), L.cx, L.detailY);
       c.restore();
@@ -1050,7 +1114,7 @@
     c.textBaseline = 'middle';
     c.textAlign = 'left';
     c.font = font(size, 900);
-    c.translate(L.cx, L.cy + L.r * 1.60);
+    c.translate(L.cx, L.stampY);
     let total = 0;
     for (let i = 0; i < text.length; i++) total += c.measureText(text.charAt(i)).width + gap;
     total -= gap;
@@ -1153,7 +1217,7 @@
       cx.drawImage(dialFace, L.cx - side / 2, L.cy - side / 2, side, side);
     }
     dial(cx, L, shownRpm, s.live, t);
-    progress(cx, L, p, B ? B.label : 'LOADING', B ? B.detail : '');
+    progress(cx, L, p, B ? B.label : 'LOADING', B ? B.detail : '', stamp);
     wordmark(cx, L);
     edging(cx, L);
     stampOut(cx, L, stamp);
@@ -1332,7 +1396,7 @@
     begin,
     ready,
     /* THE ONLY WAY PAST IT, AND IT IS NOT A PLAYER'S.
-       tools/smoke.js drives the game with no input layer at all and has to be
+       tools/smoke.py drives the game with no input layer at all and has to be
        able to reach the thing it is testing; NR.dismissAdvisory in js/main.js
        is what calls this. Nothing a player can press reaches it. */
     skip: () => { skipped = true; flash = 1; close(); },

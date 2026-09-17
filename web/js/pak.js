@@ -1,7 +1,7 @@
 /* SYNX — the asset pack.
  *
  * Every texture, sprite and sound lives in one file, data/synx.pak, built by
- * tools/pack.js. This resolves the paths the game already uses against it.
+ * tools/assets.py. This resolves the paths the game already uses against it.
  *
  * WHY IT IS FASTER, NOT SLOWER
  * ----------------------------

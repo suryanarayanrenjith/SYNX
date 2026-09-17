@@ -24,7 +24,7 @@
   const MAX = 900;
   /* The particle field layout, mirroring `particles::f` in the core. Kept as
      one table so a spawn cannot get an offset wrong silently; the Rust side
-     owns the order and tools/checkfx.js asserts the two agree. */
+     owns the order and nothing asserts the two agree, which is a hole worth filling. */
   const PF = {
     LIFE: 0, MAX: 1, X: 2, Y: 3, Z: 4, VX: 5, VY: 6, VZ: 7,
     SIZE: 8, GROW: 9, DRAG: 10, GRAVITY: 11, STRETCH: 12, FLOOR: 13,

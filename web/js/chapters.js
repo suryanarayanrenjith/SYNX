@@ -358,21 +358,85 @@
         [ 1.02,-0.46, 2.92, 0,-.16, .10, .40, .032, .34],
         [-1.20,-0.66,-0.05, 0, .04,-.06, .09, .10, 1.70],         // side skirt
         [ 1.20,-0.66,-0.05, 0, .04, .06, .09, .10, 1.70],
-        [ 0.00,-0.60,-2.62, 0,-.22, 0, 1.24, .055, .52],          // diffuser ramp
+        /* THE DIFFUSER, PULLED IN UNDER THE CAR.
+           It used to reach z -3.14 against a tail at -2.63 - half a unit of
+           unsupported plate hanging in the air behind the bumper, which from
+           behind reads as a second wing rather than as the floor of the car.
+           A diffuser works because it is the underside; this one now ends
+           where the bodywork does. */
+        [ 0.00,-0.60,-2.42, 0,-.22, 0, 1.24, .055, .30],          // diffuser ramp
       ];
       for(const s of carbon)this.drawSpec(s,this.carbon,this.base);
-      for(const x of[-0.72,-0.24,0.24,0.72])                       // diffuser fins
-        this.drawSpec([x,-0.62,-2.58,0,-.22,0,.040,.17,.50],this.carbon,this.base);
-      // swan-neck rear wing, which rises with the propulsion boot
+      /* THE FINS, MOVED OUT OF THE EXHAUST.
+         A 0.317 nozzle at x 0.56 covers 0.24 to 0.88, and the fins were at
+         0.24 and 0.72 - the outer one entirely inside the nozzle and the inner
+         one clipping its edge. Four fins in the two channels the nozzles leave
+         either side of them, which is where a diffuser's strakes belong
+         anyway: between the outlets, not through them. */
+      for(const x of[-1.08,-0.17,0.17,1.08])
+        this.drawSpec([x,-0.62,-2.42,0,-.22,0,.040,.17,.30],this.carbon,this.base);
+
+      /* ------------------------------------------- THE REAR WING ----
+       *
+       * A BI-PLANE, AND ON PURPOSE. There was one plane with a chrome bar
+       * buried inside it - 0.28 of chrome hidden inside a 0.42 chord, doing
+       * nothing at all - and a gap under it big enough that the diffuser
+       * behind read as its lower element. If the eye is going to read two
+       * wings there, it can read two wings that are actually there: a main
+       * plane and a real lower element with a slot between them, which is what
+       * a car with this much rear downforce would carry.
+       *
+       * Both elements share the endplates, so it is one wing rather than two
+       * stacked ones, and both are pulled forward to end level with the tail.
+       */
       const rise=0.06+smooth(q)*0.20, aoa=-0.10-smooth(q)*0.16;
+      // the swan-necks, over the top of the main plane the way the name means
       for(const x of[-0.80,0.80])
-        this.drawSpec([x,0.14+rise*.5,-2.36,0,.34,0,.065,.40,.20],this.bodyTrim,this.base);
-      this.drawSpec([0,0.36+rise,-2.48,0,aoa,0,1.30,.048,.42],this.carbon,this.base);
-      this.drawSpec([0,0.33+rise,-2.30,0,aoa,0,1.22,.030,.14],this.chrome,this.base);
-      // endplates: at the plate's own ends, at the plate's own angle, and no
-      // deeper than its chord - anything else is two aerofoils and a fence
-      for(const x of[-1.30,1.30])
-        this.drawSpec([x,0.36+rise,-2.48,0,aoa,0,.032,.19,.42],this.carbon,this.base);
+        this.drawSpec([x,0.14+rise*.5,-2.30,0,.34,0,.065,.42,.18],this.bodyTrim,this.base);
+      // the main plane
+      this.drawSpec([0,0.38+rise,-2.38,0,aoa,0,1.30,.045,.38],this.carbon,this.base);
+      // ...and the lower element, in its own slot under the leading edge
+      this.drawSpec([0,0.20+rise,-2.22,0,aoa-0.06,0,1.16,.032,.22],this.carbon,this.base);
+      this.drawSpec([0,0.20+rise,-1.99,0,aoa-0.06,0,1.12,.020,.045],this.chrome,this.base);
+      /* Endplates spanning BOTH elements, which is what ties the two into one
+         wing. Tall enough to close the slot at its ends - an open-ended slot
+         is a hole, and a hole is what was being seen. */
+      for(const x of[-1.31,1.31])
+        this.drawSpec([x,0.30+rise,-2.32,0,aoa,0,.030,.30,.40],this.carbon,this.base);
+      // a gurney on the trailing edge, because this car is not subtle
+      this.drawSpec([0,0.44+rise,-2.74,0,aoa,0,1.28,.055,.020],this.chrome,this.base);
+      /* ------------------------------------------ MORE CAR ----
+       *
+       * FENDER LOUVRES, over the front arch. Air that gets into a wheel
+       * arch has to leave it somewhere, and on a car with this much front
+       * downforce it leaves through the top - which is why every serious
+       * one has slats there. Four per side, stepped back and down along
+       * the shoulder, sitting just outside the sill line at 1.29 so they
+       * lie ON the flank rather than in it.
+       */
+      for(const sgn of[-1,1])for(let i=0;i<4;i++){
+        this.drawSpec([sgn*1.305,-0.03-i*0.055,1.62-i*0.14,0,0.22,sgn*0.10,
+          .018,.055,.30],this.carbon,this.base);
+      }
+      /* A SECOND CANARD outboard of the dive plane, smaller and lower, so
+         the nose has a stack rather than a single blade. */
+      for(const sgn of[-1,1])
+        this.drawSpec([sgn*1.24,-0.60,2.78,0,-.20,sgn*.14,.26,.026,.24],
+          this.carbon,this.base);
+      /* WAKE VANES at the rear corners, standing in the air the back tyres
+         throw. They are the last thing on the car and they are what makes
+         the back of it read as WIDE from a chase camera - the wing is high
+         and the diffuser is low, and there was nothing at all between them
+         at the corners. */
+      for(const sgn of[-1,1])
+        this.drawSpec([sgn*1.22,-0.30,-2.18,0,0,sgn*.06,.022,.26,.42],
+          this.carbon,this.base);
+      /* ...and a blade along the top of each sill, which is the line a
+         chase camera sees most of and the one the shell has nothing on. */
+      for(const sgn of[-1,1])
+        this.drawSpec([sgn*1.265,-0.40,-0.05,0,0,sgn*.10,.030,.045,1.44],
+          this.carbon,this.base);
+
       // and the nose intake, recessed under the light bar
       this.drawSpec([0,-0.52,3.18,0,-.10,0,1.02,.16,.24],this.carbon,this.base);
       for(const x of[-0.86,0.86])
@@ -410,16 +474,38 @@
       for(const sgn of[-1,1])
         this.drawSpec([sgn*1.215,-0.58,-0.05,0,0,sgn*.04,.022,.030,1.62],
           this.clinePart,this.base);
-      // and the drive itself, in the diffuser
-      for(const x of [-.56,.56]){
-        this.drawSpec([x,-.34,-2.78,0,0,0,.46,.46,.46],this.ringPart,this.base);
-        this.drawSpec([x,-.34,-2.80,0,0,0,.46,.46,.46],this.corePart,this.base);
+      /* ------------------------------------- THE DRIVE, IN THE TAIL ----
+       *
+       * TWO NOZZLES SET INTO THE CAR, not two rings behind it.
+       *
+       * They used to be a ring and a hot core at the same station, z -2.78,
+       * with the shell's tail at -2.63: the whole assembly stood a fifth of a
+       * unit clear of the bodywork with nothing joining it on, and it swallowed
+       * the diffuser fins on the way past. `ringHousing` - the outer shroud
+       * that makes an exhaust look like a hole in something rather than a ring
+       * stuck on it - was built in the constructor and never drawn once.
+       *
+       * Three concentric parts at three depths now, so the eye reads INTO it:
+       * the shroud stands proud of the tail, the ring is inside that, and the
+       * core burns at the bottom of the bore. Raised out of the diffuser floor
+       * so the strakes pass underneath rather than through.
+       */
+      for(const x of [-.62,.62]){
+        this.drawSpec([x,-.13,-2.60,0,0,0,.50,.50,.34],this.housingPart,this.base);
+        this.drawSpec([x,-.13,-2.52,0,0,0,.46,.46,.30],this.ringPart,this.base);
+        this.drawSpec([x,-.13,-2.44,0,0,0,.46,.46,.26],this.corePart,this.base);
       }
       gl.depthMask(true);gl.disable(gl.BLEND);gl.bindVertexArray(sc.vao);
       sc.brakeLight=ownBrake;
       U.f(gl,sc.prog.u.uFillOn,0);
     }
   }
+
+  /* The R-IX body kit, for tools/check.py car. Every piece of it is one
+     drawSpec call, so a harness that records those instead of drawing them has
+     the whole kit as boxes and can ask what passes through what - which is how
+     the turbine outlets were found sitting inside the diffuser fins. */
+  global.__SYNX_RAPTOR_KIT__ = RaptorKit;
 
   class DynamicSetpieceWorld {
     constructor(game) {
@@ -1809,7 +1895,7 @@
      The trial caps the car at 132 km/h, which capFor turns into just about
      fifty units a second, so a commit of 62 is a window of 1.24s and one of 46
      is 0.92s. They were first written at 132..80 - between 2.6 and 1.6 seconds
-     - and tools/smoke.js --probe ghost measured what that actually bought:
+     - and tools/smoke.py --probe ghost measured what that actually bought:
      full lock inside the window moved the car nineteen units sideways against
      a five-unit clamp. Four times more room than the escape needs is not a
      window, it is a formality, which is the thing this trial was being
@@ -3514,9 +3600,9 @@
     }
   }
 
-  /* The hall, published for tools/checkforge.js. The structure is the one
+  /* The hall, published for tools/check.py forge. The structure is the one
      thing about the broken roof no unit test can reach - the solver's profile
-     is checked by cargo and the table by tools/checkramps.js, and whether the
+     is checked by cargo and the table by tools/check.py ramps, and whether the
      DECK is where the car will be is a question about vertices. Same reason
      __SYNX_LEVEL7__ is published a few thousand lines below. */
   global.__SYNX_FACTORY_WORLD__ = FactoryWorld;

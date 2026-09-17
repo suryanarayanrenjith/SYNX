@@ -38,9 +38,9 @@ loads the same files the executable embeds.
 ## Running it
 
 ```sh
-node tools/build.js            # the game
-node tools/build.js --all      # ...with tests, checkers and a browser smoke run
-node tools/build.js --run      # ...and launch it
+python tools/build.py            # the game
+python tools/build.py --all      # ...with tests, checkers and a browser smoke run
+python tools/build.py --run      # ...and launch it
 ```
 
 That produces `target/release/synx[.exe]` — one file, no installer, no runtime
@@ -86,9 +86,10 @@ is cheap. The host is a separate process and only sees the window.
 | Steer | `←` `→` / `A` `D` |
 | Throttle, brake | `↑` `↓` / `W` `S` |
 | Slide | `SPACE` — engage, hold; the wheel sets how deep |
-| Boost | `SHIFT` |
+| Boost | `B` |
+| Race mode | `R` — where a chapter has awarded it; outside the campaign it restarts the run |
 | Camera | `C` |
-| Pause | `ESC` |
+| Pause | `ESC` — and `RESTART` is on the menu behind it |
 | Recording on/off | `F8` — off until you ask |
 | Save replay | `F9` — the last thirty seconds |
 | Mark highlight | `F10` |
@@ -109,27 +110,76 @@ not happen.
 
 ## Tooling
 
-Everything under `tools/` is Node with no dependencies.
+Four programs, on a stock Python 3. There were twenty-three and they did the
+same four things twenty-three ways.
 
 | | |
 |---|---|
-| `build.js` | the whole build: core → wasm → host |
-| `pack.js` | the asset archive (`--unpack`, `--list`, `--check`) |
-| `smoke.js` | runs the game in headless Edge and reports what broke |
-| `profile.js` | CPU profile of the real GPU build, by file and by function |
-| `trimscene.js` | drops geometry from `scene.bin` that no frame draws |
-| `shrinkpng.js` | lossless PNG recompression, pixel-verified |
-| `checklauncher.js` | drives the release binary through PLAY |
-| `checkdisplay.js` | proves the game opens on the display it was told to |
-| `checkforge.js` | builds Aurora Forge's hall and drops a ray on its roof deck |
-| `trimatlas.js` | erases atlas sprites nothing draws, and un-declares them |
-| `checkdom.js`, `checkshaders.js`, `checksettings.js`, `checkupscale.js` | static checks |
+| `build.py` | the whole build: core → wasm → host |
+| `check.py` | every check that needs no browser — thirteen of them |
+| `assets.py` | the archive, the sheets, the scene and the one-shots |
+| `smoke.py` | the game in headless Edge, and the three checks that need the real host |
 
-`smoke.js --set <key>=<index>,...` drives any settings row and reports what the
-renderer made of it. `checksettings.js` proves a row is READ; only a run proves
-the value reached the other side of `applySettings`, which is the join that
-fails silently. `--exercise` walks every row on every tab and reports the ones
-that do nothing.
+```sh
+python tools/check.py                  # all of them
+python tools/check.py colour car       # or a few
+python tools/check.py --list           # what there is, and what each is for
+```
+
+| `check.py` | |
+|---|---|
+| `shaders` | a backtick inside GLSL closes the literal it lives in |
+| `dom` | every `getElementById` against the markup that has to carry it |
+| `settings` | a setting that silently does nothing is invisible everywhere |
+| `upscale` | the reconstruction kernel, against known inputs |
+| `colour` | every map decoded once, the grade with black still in it, nothing undithered |
+| `car` | no two parts of the car share a plane at the same depth |
+| `protocol` | the game's and the server's copies of the wire format |
+| `story` | seven chapters, both paths, both endings, without driving any |
+| `ramps` | the ramp you see against the ramp you hit |
+| `forge` | Aurora Forge's hall, with rays dropped through its roof deck |
+| `rec` | the capture path, which must never block the frame |
+| `radio` | five stations, and a panel that asks rather than knows |
+| `ai` | the rival, on every route, at every difficulty |
+
+| `assets.py` | |
+|---|---|
+| `pack` `unpack` `check` `list` | the asset archive |
+| `shrink` | lossless PNG recompression, pixel-verified |
+| `atlas` | erases atlas sprites nothing draws, and un-declares them |
+| `gentex` | generates the R-IX's surface maps and the shattered-glass sheet |
+| `scene` | drops geometry from `scene.bin` that no frame draws |
+| `sfx` | synthesises the landing one-shots |
+
+| `smoke.py` | |
+|---|---|
+| *(default)* | runs the game in headless Edge and reports what broke |
+| `launcher` | drives the release binary through PLAY |
+| `display` | proves the game opens on the display it was told to |
+| `profile` | CPU profile of the real GPU build, by file and by function |
+
+**What needs what.** `build.py`, `check.py`, `smoke.py` and the archive half of
+`assets.py` run on a stock interpreter with nothing installed. The commands that
+touch pixels or samples — `shrink`, `atlas`, `gentex`, `sfx` — want `numpy`, and
+`sfx` also wants `soundfile`; each says so if it is asked to run without them.
+
+**Why some of it is still JavaScript.** Six of the thirteen checks are about
+what the game's own code *does*: the story machine over thirty simulated
+minutes, the ramp table against the solver it arms, the geometry a chapter
+director builds, whether the recorder's worker gives its buffers back, how the
+rival drives. The only honest way to ask is to run it, so `tools/probes/probe.js`
+runs under Node and **measures**, and every rule about the measurements lives
+in `check.py`. A probe holds no thresholds and no pass or fail. The browser
+payload under `tools/probes/page/` is JavaScript for the same reason — it
+runs in the browser.
+
+`python tools/smoke.py --set <key>=<index>,...` drives any settings row and
+reports what the renderer made of it. `tools/check.py settings` proves a row is
+READ; only a run proves the value reached the other side of `applySettings`,
+which is the join that fails silently. `--exercise` walks every row on every tab
+and reports the ones that do nothing. `--eval "<expression>"` runs one
+expression immediately before `--shot`, which is how something that only exists
+for three seconds gets photographed on a rasteriser drawing one frame a second.
 
 `smoke.js --probe <name>` runs a targeted investigation instead of a plain run:
 `palms`, `forge6`, `jump`, `tiles`, `batch`, `fps`, `advisory`, `predator`,
@@ -145,17 +195,379 @@ The pack is the source of truth. `assets-src/` is a scratch directory, not a
 checked-in tree:
 
 ```sh
-node tools/pack.js --unpack     # write assets-src/ out of the pack
+python tools/assets.py unpack     # write assets-src/ out of the pack
 # ...edit...
-node tools/pack.js              # rebuild web/data/synx.pak
-node tools/pack.js --check      # verify every entry byte for byte
+python tools/assets.py pack              # rebuild web/data/synx.pak
+python tools/assets.py check      # verify every entry byte for byte
 ```
 
-`shrinkpng.js` re-encodes PNGs losslessly — per-row filter search plus level-9
-deflate — and decodes every result back and compares it pixel for pixel before
-writing. It does not quantise, reduce bit depth or drop channels.
+`python tools/assets.py shrink` re-encodes PNGs losslessly — per-row filter
+search plus level-9 deflate — and decodes every result back and compares it
+pixel for pixel before writing. It does not quantise, reduce bit depth or drop
+channels.
 
 ## Recent work
+
+**THE HEADLIGHT WAS THREE FAULTS, AND THE ONE THAT WAS REPORTED WAS THE SMALLEST.**
+Reported: the light looks odd and sits above the bonnet. Measured off
+`scene.bin` and the shipped sheets, because none of this is visible in a
+screenshot as a cause:
+
+- `HeadLightFlare` is two additive billboards, and each is **3.32 wide by 3.24
+  deep by 0.74 tall** — reaching 1.5 units past a nose at z 3.35 and 1.1 past a
+  flank at x 1.37, centred at y −0.22, which is the bonnet line. From any angle
+  but head-on that is an additive haze lying across the front of the car and out
+  into the air beside it. That was the reported fault.
+- `LightFrontL` and `LightFrontR`, the quads you actually see, have **degenerate
+  UVs**: all four vertices of each carry the same texture coordinate, spanning
+  four ten-thousandths. The whole quad samples one texel — and the texture it
+  samples, `light_front.png`, is a 1024×1024 image of one flat cream colour. So
+  the car's headlamps were two plain white rectangles.
+- and they were **clipped**. Measured against the tail at the same distance and
+  preset, the emitters ran to a 99th-percentile luminance of 247 where the tail
+  bar runs to 162 — half again as bright as anything on the back of the car,
+  with no shape left in them at all.
+
+`Lights.png` is a 256×128 atlas, and the tail lamp reads its red strip out of
+it. Sitting in the same sheet, used by nothing, is a pair of **fluted headlamp
+lenses with reflector detail**. So the two billboards are not deleted, they are
+repurposed: their mesh is a unit quad with proper 0..1 UVs, so it is scaled to
+lamp size, turned to face forward instead of lying flat, moved onto the lamps
+and pointed at that lens — the right-hand one, mirrored for the left, which is
+what a pair of headlamps is.
+
+Two things had to be measured rather than guessed, and both were got wrong
+first:
+
+- **The lamp's centre is not its bounding box.** The emitter quad is tilted, so
+  its box runs z 3.12..3.25 while the quad is centred at 3.170. Placing the lens
+  at 3.30 put it a tenth too far forward, and because the camera looks down on
+  the nose, a thing nearer the camera falls in the frame — so it rendered
+  visibly *below* the lamp. It reads as a misplaced lens, not as a misplaced
+  depth.
+- **`gain` is not the brightness knob here.** The emissive branch is
+  `albedo * emis * (1 + gain*4) * 5 * pulse`, and with a white albedo the five
+  alone puts it past one: at gain zero it still comes out around three, which is
+  three times clipped. The knob is `pulse`, which is exactly what the tail bar
+  uses — it sits at 0.03 until the brakes come on. The lamps now measure 165 p99
+  and 182 peak against the tail's 162 and 173, with nothing clipped.
+
+The rival and the R-IX clone these parts, so they get the same lamp in their own
+colour: cold blue for the rival, amber for the R-IX. The R-IX's arm used to
+raise the gain to *at least* 0.9, which is the same clipping one livery over.
+
+**AND THE RADIO WAS TOO TALL.** Three stacked rows in a 72-unit box, above a
+dial 256 units across — a top-heavy pair. The panel had three hundred units of
+*width* and was using 256 of them, so the level meter moved up beside the
+station name and the tuner became the panel's own bottom rule instead of a row
+of its own. **72 units to 48**, and the top edge came down from y −12 to −46.
+It is centred on the dial now rather than sharing an edge with it.
+
+The fifth station is `neon_pursuit` — **NEON PURSUIT** — because every other
+name on the dial is two words and one entry twice as long as the rest reads as
+a mistake.
+
+**TWENTY-THREE PROGRAMS BECAME FOUR, AND ALL OF THEM PYTHON.** `tools/` had a
+build script, thirteen checkers, six asset tools and a 5,400-line browser
+harness, and between them they had thirteen ways of printing the same three
+lines. The build could only tell them apart by exit code.
+
+It is `build.py`, `check.py`, `assets.py` and `smoke.py` now, and the
+consolidation is the point rather than the language: one report format, one
+place every threshold lives, one `--list` that says what there is.
+
+Two things did **not** move, and both for the same reason. Six of the checks
+are about what the game's own JavaScript *does* — a Python reimplementation of
+the story machine would pass happily while the real one was broken — so they
+keep a probe under `tools/probes/` that runs the shipped code under Node and
+writes down numbers, and every rule about those numbers is in `check.py`. The
+harness's browser payload is JavaScript because it runs in the browser; it came
+out of a 250 KB template literal into files an editor can highlight.
+
+Everything was verified against the program it replaces rather than against
+itself:
+
+- the Python packer rebuilds `synx.pak` **byte for byte identical** to the one
+  the JavaScript built;
+- the PNG codec decodes all four filter types to the **same SHA-256** as the old
+  one on every sheet in the tree, including a 4096×2048 one, and re-encodes
+  0.42 MB smaller with the pixels unchanged;
+- `gentex --force` regenerates all four generated sheets **pixel-identical**,
+  which took finding two things the metrics could not tell me: the height fields
+  are `Float32Array` on the JavaScript side, and `Math.hypot` is not
+  `sqrt(a²+b²+c²)`;
+- every check prints the same findings and the same numbers as its predecessor —
+  the Forge's worst deck disagreement is still 0.080u at s=128842, the car's
+  nine coincident part pairs are still the same nine at the same percentages.
+
+The car check got faster on the way: it compared every triangle of one part
+against every triangle of the other, which is four million pairs for the shell
+against the lining. Bucketing centroids at the distance the inner loop was
+already rejecting on takes it to about a second.
+
+**THE RADIO HAD NO FACE.** Five full-length songs, an environment-aware
+selector that cross-fades when the country under the car changes family, a
+no-immediate-repeat rule — and nothing anywhere told the player any of it was
+happening. There was no way to know what was playing, or that the music had
+just changed because the scenery had.
+
+There is a panel above the speedometer now, on the dial's own centre line and
+to the dial's own width, so the two read as one instrument stack. It shows the
+station, the title, eleven bars of the music's **own** spectrum from an analyser
+on the music bus, and an FM dial with a tick per station and a needle on the one
+that is playing. A chapter with a fixed score gets amber instead of cyan, its
+route's name instead of a station, INTERNAL FEED instead of a frequency, and a
+progress bar instead of a tuner — because it is not on the air, it is the
+building you are driving through.
+
+**AND EVERY PIECE OF MUSIC HAS A NAME NOW**, chosen from the recording rather
+than from the filename. Each track was measured in a scratch venv — key by
+chroma against the Krumhansl-Kessler profiles, tempo by autocorrelating a
+spectral-flux onset envelope under a log-normal prior, brightness by spectral
+centroid, and how alike its first and last six seconds are — and the notes
+beside each entry in `js/audio.js` are those numbers, so a title can be argued
+with rather than believed.
+
+| | | |
+|---|---|---|
+| NEON OVERTURE | the title screen | A minor, 98 BPM, centroid 3536 Hz — half its energy above 2.5 kHz, the brightest thing in the pack |
+| BETWEEN LIGHTS | conversations | D major, 145 BPM, and the only music here that never returns to where it started |
+| FORGE CYCLE | Chapter 6 | A minor at 174 BPM — a machine tempo — and the widest stereo image in the game |
+| REDLINE | Chapter 7 | A minor, 97 BPM, the *narrowest* image at 0.36 and the most weight in the mids |
+| COASTLINE DRIVE | 90.1 | D major, 97 BPM, and it builds: the first thirty seconds sit at half the level of the rest |
+| CANYON VELOCITY | 94.5 | A minor at 148 BPM, the fastest thing in the pack by fifty beats |
+| ELECTRIC HORIZON | 101.7 | C major, 97 BPM, 19% of its energy above 6 kHz — the airiest of the five |
+| MIDNIGHT CIRCUIT | 104.3 | F major, 92 BPM, and the most dynamic thing here at 17.5 dB of crest |
+| NEON PURSUIT | 107.9 | **new** — F major at 97 BPM, so it shares a key with MIDNIGHT CIRCUIT and a tempo with the coast and the mesa |
+
+The new station is filed with the night and the city on those two measurements
+rather than on its name. It carries more bass than anything else on the dial —
+21% below 150 Hz — and it is the best loop in the pack at 0.84, which matters,
+because a Free Roam tour is a hundred and twenty-seven kilometres and can
+outlast the playlist. Its fader sits at 1.05 against everything else's 1.25,
+because its master is 1.7 dB hotter and a station that is audibly louder than
+the one before it is the one thing a radio must not be.
+
+`python tools/check.py radio` guards the four ways this goes wrong silently: a
+file that is not in the pack (the element 404s, the mixer marks it broken, and
+the station simply never comes on), two stations on one frequency, a frequency
+outside the dial the panel draws, and an environment left with one usable song —
+which makes the no-immediate-repeat rule unsatisfiable. It also fails if the
+panel ever grows a copy of the table, or if the analyser gets connected onward
+and mixes the music in twice.
+
+**107.9 CAME OUT AS 07.9.** Measured off the alpha of `Digital_Italic.png`
+rather than off its metrics table, because the table cannot say this: every
+digit advances 43 units and every digit's ink is about 53 wide, so consecutive
+glyphs overlap by ten. That is deliberate — the face is italic and an italic
+seven-segment display leans the top of one digit over the bottom of the next —
+and on the nine wide glyphs it is invisible. `1` has twenty-four units of ink,
+hard against the right of its cell, so the same ten units of lean cover nine of
+them, and what they cover is the only stroke the glyph has.
+
+`digits()` takes an optional tracking now, and only the frequency passes one.
+The shipped readouts are left exactly as they are: they sit inside boxes the
+original interface sized for a monospaced run, and widening every one of them
+would be a restyle wearing a bug fix's clothes. It is worth knowing that the lap
+clock does this too, from the moment it passes one minute.
+
+**THE CAR CLIMBED RAMPS WITHOUT TILTING.** The solver measured the ramp's slope
+on every frame a car was on the structure, published it as `air_pitch` — and
+then applied it **only inside the airborne branch**. On the ramp itself nothing
+read it. The car rose with the surface and stayed dead level while it did, so
+the bonnet drove into the slope. Six degrees on a coastal kicker; eighteen on
+the blocked bore, which is the whole front of the car inside the ramp.
+
+`pitch` could not simply be added to — it is the suspension's own state,
+integrated from `pitch_v` and clamped to a tenth of a radian, less than half of
+what the steepest ramp asks for — so the ramp has a field of its own and the
+renderer adds the three: the suspension, the road's slope, and the structure
+laid on it. `cargo test the_body_tilts_with_the_ramp` proves the solver sets
+it; `checkramps` proves the renderer still adds it, and fails on any call site
+that composes an orientation by hand.
+
+The body is also **sat** on the ramp now rather than balanced on a point of it:
+the profile is sampled across the whole car and the pose is the one that leaves
+nothing under the surface. On a launch kicker that is worth six thousandths of
+a unit and on the deck ramps rather more — the first version of this was my
+guess at the bug, and the test I wrote for it passed on the unfixed code, which
+is how the real cause got found.
+
+**A JUMP ENDS IN A NOISE NOW.** `tools/mksfx.py` synthesises three takes of a
+car coming back down — the tyre slap, the springs taking the weight, the scrub
+as they find grip, and the shell settling after it — the same way every other
+sound in this game is made, so nothing has to be licensed. A big drop is louder
+and pitched down; a scruffy landing gets more of the scrub, because landing
+sideways is supposed to sound worse than landing straight. The drop and the
+quality are the solver's own numbers, the same ones the boost award and the
+replay mark read.
+
+**THE R-IX'S BACK END WAS THREE SLABS FLOATING BEHIND IT.** Measured off the
+kit's own draw calls — the car is the rival, and getting a camera on it is most
+of a day — against a tail at z −2.63: the wing reached −2.90, the diffuser
+−3.14, the nozzles −2.85. Three full-width horizontal plates stacked in the air
+behind the car, none of them touching it. From behind that is not a wing and a
+diffuser, it is **two wings with a gap between them**, which is how it was
+reported.
+
+The exhausts were worse. A 0.317 ring at x 0.56 spans 0.24 to 0.88 and there
+were diffuser strakes at 0.24 and 0.72 — the outer one *entirely inside* the
+nozzle. And `ringHousing`, the shroud that makes an exhaust read as a hole in
+something rather than a ring stuck on the back, was built in the constructor
+and **never drawn once**.
+
+So: the diffuser is pulled in under the car, the strakes moved into the
+channels the nozzles leave between them, and the exhaust is three concentric
+parts at three depths — shroud proud of the tail, ring recessed inside it, core
+burning at the bottom of the bore. The wing is a real bi-plane with a slot and
+endplates that close it, instead of one plane with a chrome bar buried inside
+its chord doing nothing. Plus fender louvres, a second canard, wake vanes and
+sill blades — the silhouette is what a chase camera actually sees, and for a
+whole chapter it was a dark saloon with a wing on it.
+
+**THE WINDOW LINING WAS A STICKER, AND STICKERS Z-FIGHT.** The trim around the
+glass flickered against the paint outside it and the moulding inside it,
+permanently, forty centimetres from the player's eye in the driving seat.
+
+It is not a separate object. Measured off `scene.bin`: **506 of `TRIM_LINES`'s
+718 triangles share a plane with the chassis to six decimal places**, and 130
+share one with the interior. `TRIM` is 73% coincident with the chassis, 72%
+with the interior and 73% with the side glass; `CAP` is 100% coincident with
+the chassis. Seven parts occupying the same millimetre. Two surfaces at the
+same depth have no correct answer — the rasteriser keeps whichever wins a
+floating-point comparison, and the winner changes when the camera moves by a
+thousandth of a unit.
+
+A depth-buffer offset per part fixes it without touching a vertex, and
+`python tools/check.py car` keeps it fixed: it measures the plane gaps the way the
+bug was found and fails if any two parts that share a plane also share an
+offset. It found `CAP` and `INTERIOR` on its first run, both of which I had
+missed by eye.
+
+**AND THE CABIN WAS LIT LIKE A BONNET.** The car carries a fill rig — a
+synthetic key so the bodywork reads against a dark road — and it was being
+applied to the inside of the cabin as enthusiastically as to the wings. The
+first two attempts at this attenuated the sky ambient and the image-based
+lighting and changed nothing, which is how the rig was found: with the
+enclosure taken to zero the dash was still the same lavender. It sits at 39%
+of the road's luminance now against 54% before. A room lit from outside has no
+inside, and the binnacle and console had nothing to be brighter than.
+
+The generated cockpit gained the things a cabin is actually made of — a
+defroster along the cowl, a recessed screen, seams down the dash, a mirror on
+the header, a five-point harness, a shifter, switchgear and door furniture.
+The first placement put four vents on the dash's front face, which from that
+seat cannot be seen at all: the top slab overhangs it completely.
+
+**`R` COULD THROW AWAY A THIRTY-KILOMETRE RUN.** It is two keys wearing one hat
+— RACE MODE where a chapter has awarded it, RESTART everywhere else — and
+chapters one to five never award it, so in five of the seven the only thing it
+could do was destroy an attempt that was going well. It sits one row above the
+arrow keys. The restart half is off inside a chapter now; the pause menu still
+has RESTART on it, and the start card stops promising one when the key will not
+give it.
+
+**AND THE BOOST METER NAMED THE WRONG KEY.** It said `SHIFT`. Boost has been
+`B` for as long as the CONTROLS screen has existed, so the one place in the
+game that tells a player which key to press was telling them the wrong one.
+It reads the live binding now, as the CONTROLS rows do — so it is also right
+for anybody who rebinds it. The README's table had the same error.
+
+**THE FREE-ROAM WHITE OVERLAY WAS THE ASCENSION GATE, FIRED BY A CAR THAT NEVER
+ARRIVED.** The air goes white and the fog closes as the tour crosses into NEON
+HORIZON, and it is keyed on distance alone — but the last region's edge *is*
+the gate, both at 132,000, so a tour that starts in the last region starts with
+the car standing inside the boundary. Measured: the black point never fell
+below `(77, 91, 104)` and the first-percentile luminance sat at 101 of 255 for
+the whole run. It is `(1, 0, 2)` and 24 now.
+
+**AND THE INTERFACE ENTERED TWO DIFFERENT WAYS.** A race with lights fades the
+instruments up to a ghost while the countdown runs and reveals from there; a
+race without lights — every chapter hands control straight into `racing`, and
+so does a rewind — started its reveal *at* the ghost, putting the whole HUD on
+screen at a quarter opacity in one frame. Same animation, two openings. The
+free-roam handover card had the matching problem: the speedometer, the boost
+meter and the rival readout stepped back for it and the clock, the DRIVETRAIN
+scope, the flags and the record did not, because the dimming was threaded
+through some draws and not others. It is one `destination-in` pass over the
+finished cluster now, so nothing has to remember to opt in.
+
+**THE SPEEDOMETER INTRO WAS LAID OUT TWICE.** The dial, its ring and the outro
+stamp were positioned off the instrument; the wordmark, caption, rail and count
+off the frame. Those agree at one aspect ratio. On a 2:1 window the stamp
+landed at y=564 and the rail sat at y=565 — SYSTEMS NOMINAL printed straight
+through the progress bar, with the caption of the same name a row above it. The
+block is stacked from the bottom of the bezel in units of the dial's own radius
+now, and the dial is height-limited a little tighter so the four lines under it
+have somewhere to go. The tachometer also read `x1000 r/min` directly under a
+four-digit readout of the actual crank speed — nine million revs a minute. The
+multiplier belongs to the numerals on the scale, and now sits with them.
+
+**THE PICTURE WAS NOT COLOUR-MANAGED, AND THE GRADE HAD NO BLACK IN IT.**
+Measured over the world band of a night frame on NEON HORIZON: the blue
+channel never once fell below 29 of 255, and **not one pixel in the frame was
+within ten per cent of neutral** — no asphalt, no concrete, no sky. A route lit
+entirely by neon whose every shadow is a lilac has nothing for the neon to be
+brighter *than*.
+
+Four things, three of them objectively wrong rather than a matter of taste.
+
+**THE DECODE HAPPENED AFTER THE FILTERING.** Every colour map was uploaded as
+plain `RGBA` and decoded with `pow(c, 2.2)` in the shader — on the value that
+came *out* of the sampler. Bilinear taps and mip levels are averages, averaging
+is linear arithmetic, and doing it to gamma-encoded bytes and decoding
+afterwards is not the same answer. It is always too **dark**, because
+`pow(x, 2.2)` is convex, and it compounds once per level. The decode lives in
+the texture unit now — an sRGB internal format, which the hardware applies to
+each texel *before* it filters — chosen per texture by whether the map is a
+picture or data, and behind a capability probe, because `generateMipmap` on
+sRGB has been refused by drivers for years.
+
+**AND THE SKY WAS THE WORST PLACE FOR IT.** Its mip chain is not decoration:
+`skyIrradiance` averages five taps of the *blurriest* level to stand in for
+integrating the hemisphere, and every rough surface reads a high mip for its
+reflection. Those levels are averages of averages, built out of gamma-encoded
+bytes, each one landing further under the truth — so ambient light arrived too
+dark and the scene ended up lit almost entirely by its own neon, taking that
+neon's colour everywhere. That is most of what "unrealistic" meant.
+
+**THE SPLIT TONE WAS A FLOOR, NOT A TINT.** `col * highs + shadows * (1 - col)`
+returns the offset itself at `col = 0`, so `shadows` was the darkest colour the
+game could produce anywhere. It multiplies now, weighted by where the pixel
+sits on the ramp — the violet shadows and cyan highlights are still exactly
+what this route is, but as a tint applied *to* the picture rather than a wash
+laid *over* it. Each tint is also divided by its own luminance, because a tint
+that is not normalised is an exposure change wearing a hue's clothes: the first
+version had a luminance of 0.87, applied over most of the frame, and on the
+storm route — where the whole picture sits under the shadow weight — it quietly
+took a quarter of the highlight range off.
+
+**AND THE SATURATION PUSH IS MEASURED.** Boosting chroma the obvious way drives
+the weakest channel of a strongly tinted pixel below zero, and the clamp turns
+that into a black hole with the wrong hue; the old code knew, and backed the
+number down to hide it, which costs the colour everywhere to protect a few
+pixels. The push now works out how far *this* pixel can go before its weakest
+channel reaches zero and takes whichever is smaller. Hue and luminance are
+preserved exactly and nothing clips to black.
+
+Plus a **triangular-PDF dither of one least-significant bit** at both
+quantisation points. Everything after the tonemapper is eight bits, a night sky
+is a shallow gradient with about forty steps to cross the frame in, and the film
+grain was covering the contouring — so turning grain off turned banding on.
+
+Measured on the same frame afterwards: the road went from **0.0% to 3.9%**
+near-neutral and its blue cast fell by a sixth; the black point reaches 0 again;
+the storm route got its highlights back (99th percentile 84 → 100).
+
+`python tools/check.py colour` keeps it that way. It reads the loader's *rule*
+rather than a copy of its answer — the naming convention, the explicit list and
+the shipped material table — and checks all forty texture bindings against it,
+then checks that the grade still multiplies rather than lifts, that both tints
+are luminance-neutral, that the saturation push is still headroom-limited, and
+that nothing reaches eight bits undithered. It found four normal maps the first
+hand-written list had missed, which is exactly the failure it exists for: an
+sRGB-decoded normal map does not look broken, it looks like the lighting is
+slightly wrong on one part.
 
 **AURORA FORGE COULD BE LOST BUT NOT FINISHED LOSING.** If Javas got far enough
 ahead the chapter put up TRIAL FAILED and stopped, for ever, with every key
@@ -202,7 +614,7 @@ other. None of it has a collider, so the car drove through all of it.
 The floor is flush paint now, the frame is four shared columns on the two chute
 walls and the two road edges under one roof, the shoes press between each bay's
 *own* faces, and the jaw hangs clear and only reaches the floor when the trial
-says it has a car. `tools/checkforge.js` samples a whole baler cycle and fails
+says it has a car. `tools/check.py forge` samples a whole baler cycle and fails
 if anything stands in a driveable bay below the roof of a car; it reports 49
 problems on the geometry it replaced.
 
@@ -281,7 +693,7 @@ the half of this the unit tests cannot prove — they check the round trip
 against a decoder written beside them, and that checks that a real player opens
 the result.
 
-`node tools/checkrec.js` is the other half, and it exists because the parts
+`python tools/check.py rec` is the other half, and it exists because the parts
 that were broken are exactly the parts a unit test cannot see. It runs the
 worker against the real `synx_rec.wasm` over the real message protocol, and the
 capture loop against a WebGL2 stub that **fails the run if anything asks it to
@@ -303,7 +715,7 @@ there for a deliberate removal.
 **The tools stopped carrying three copies of a PNG codec.** `shrinkpng` had a
 reader and a filter-searching writer, `gentex` had its own writer that put
 filter 0 on every row, and `trimatlas` reached into `shrinkpng` for the first
-one. They share `tools/lib/png.js` now, which also means `gentex`'s generated
+one. They share `tools/synx/png.py` now, which also means `gentex`'s generated
 sheets go through the per-row filter search — verified pixel-for-pixel identical
 against what shipped. Nothing under `tools/` turned out to be dead: every file
 is either run by `build.js --check`/`--smoke` or is the only source for
@@ -328,7 +740,7 @@ Chapter 5 already makes the opposite statement - `won = false` and
 `canonicalEarned = true`, because its ending is a defeat that still completes -
 and Chapter 6 now makes the plain one where the calibration is passed.
 
-**And the checker could not see it.** `tools/checkstory.js` walks the whole
+**And the checker could not see it.** `tools/check.py story` walks the whole
 campaign down both paths, but it resolves every chapter the way the five
 ordinary ones end: it sets `won` itself and calls `handleFinish`. That is
 exactly the code path the two director-driven chapters do not take, so a
@@ -376,7 +788,7 @@ reveal set back inside it so the opening has a thickness, hazard banding down
 both jambs, the company's name on the beam and a signal either side that is
 green on the way in and red behind.
 
-**`tools/checkforge.js`** builds the hall for real through a GL stub and drops
+**`tools/check.py forge`** builds the hall for real through a GL stub and drops
 a ray down the centreline at a hundred stations. It caught two things a
 screenshot would not have: the trestle's diagonal braces leaned seven and a
 half units sideways and crossed the carriageway, one of them standing a unit
@@ -407,7 +819,7 @@ duplicate of a file that ships loose and a sheet from the game this one was
 built out of. They are rectangles inside two sheets that also carry the
 countdown numerals and the chequered flag, so the sheets stay and the AREA is
 what comes back: erased to transparent black, `GUI_HUD_Console.png` deflates
-80% smaller. `tools/trimatlas.js` derives the live set from `js/hud.js` rather
+80% smaller. `tools/assets.py atlas` derives the live set from `js/hud.js` rather
 than carrying a list — a hard-coded one is wrong the first time somebody draws
 a sprite again, and the failure is a hole in a sheet rather than an error — and
 drops the dead entries from `data/game_data.js` so a rectangle that has been
@@ -605,8 +1017,8 @@ merged like cubes, which they never were.
 ```sh
 cargo test -p synx-core --release      # simulation, AI, physics, wire format
 cargo test -p synx --release           # launcher, save file, platform flags
-node tools/build.js --check            # static checks
-node tools/build.js --smoke            # the game, in a real browser
+python tools/build.py --check            # static checks
+python tools/build.py --smoke            # the game, in a real browser
 ```
 
 ## Licence

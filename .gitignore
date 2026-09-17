@@ -71,6 +71,6 @@ npm-debug.log*
 #
 # Do not add them here - a clone without them is a clone that cannot start.
 
-# Derived: `node tools/pack.js --unpack` writes it, `node tools/pack.js` reads it.
+# Derived: `python tools/assets.py unpack` writes it, `python tools/assets.py pack` reads it.
 # The pack is the source of truth; this is the scratch copy you edit in.
 assets-src/

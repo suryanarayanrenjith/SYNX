@@ -194,10 +194,29 @@
     return s;
   }
 
-  function program(gl, vs, fs, label) {
+  /* `defines` is an optional object of preprocessor symbols, spliced in after
+     the `#version` line - which GLSL requires to be the very first thing in
+     the source, so they cannot simply be prepended.
+
+     It exists for decisions that are made ONCE, at load, and then hold for the
+     life of the context: whether the driver gave us hardware sRGB texture
+     decoding, for one. Branching on a uniform would cost a `pow` per fragment
+     on every surface in the game to answer a question whose answer never
+     changes. */
+  function withDefines(src, defines) {
+    if (!defines) return src;
+    const keys = Object.keys(defines);
+    if (!keys.length) return src;
+    const lines = keys.map((k) => '#define ' + k + ' ' + defines[k]).join('\n');
+    const nl = src.indexOf('\n');
+    if (!/^\s*#version/.test(src)) return lines + '\n' + src;
+    return src.slice(0, nl + 1) + lines + '\n' + src.slice(nl + 1);
+  }
+
+  function program(gl, vs, fs, label, defines) {
     const p = gl.createProgram();
-    const a = compile(gl, gl.VERTEX_SHADER, vs, label + '.vert');
-    const b = compile(gl, gl.FRAGMENT_SHADER, fs, label + '.frag');
+    const a = compile(gl, gl.VERTEX_SHADER, withDefines(vs, defines), label + '.vert');
+    const b = compile(gl, gl.FRAGMENT_SHADER, withDefines(fs, defines), label + '.frag');
     gl.attachShader(p, a); gl.attachShader(p, b);
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {

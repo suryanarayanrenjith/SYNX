@@ -20,6 +20,12 @@
     crash2: 'carhit2.ogg',
     crash3: 'carhit3.ogg',
     crash4: 'carhit4.ogg',
+    /* COMING BACK DOWN OFF A JUMP. Three takes of the same car so a
+       jump-heavy route does not play one sample a dozen times - see
+       tools/mksfx.py, which generates them. */
+    land0: 'carland0.ogg',
+    land1: 'carland1.ogg',
+    land2: 'carland2.ogg',
   };
   const LOOPS = {
     engine: 'engine.ogg',
@@ -29,41 +35,116 @@
     boostLoop: 'boostloop.ogg',
   };
 
-  /* The title keeps its own looping theme. On the road, four full-length Ogg
-     songs form an environment-aware radio. Each environment has a primary
-     song and one compatible alternate so a long route can continue without
-     immediately repeating the track that just finished. */
+  /* THE SOUNDTRACK, AND WHAT EACH PIECE OF IT IS CALLED.
+   *
+   * Every title below was chosen from the RECORDING rather than from the
+   * filename, because the filenames were somebody's shorthand and two of them
+   * were not true. Each track was measured - key by chroma against the
+   * Krumhansl-Kessler profiles, tempo by autocorrelating a spectral-flux onset
+   * envelope under a log-normal prior, brightness by spectral centroid, and
+   * how alike its first and last six seconds are - and the notes beside each
+   * one are those numbers, so a title can be argued with rather than believed.
+   *
+   * The title keeps its own looping theme. On the road, FIVE full-length songs
+   * form an environment-aware radio: each environment has a primary song and
+   * at least one compatible alternate, so a long route can continue without
+   * immediately repeating the track that just finished.
+   *
+   * `station` and `freq` are what the tuner in the HUD reads off. A fixed
+   * score has no frequency because it is not on the air - it is the building
+   * you are driving through - and the readout says so rather than inventing a
+   * number for it. See Hud.radio.
+   */
   const MENU_TRACK = {
     key: 'menu', file: 'theme.ogg', gain: 1.0, loop: true,
+    /* A minor, 98 BPM, centroid 3536 Hz - by a wide margin the brightest thing
+       in the pack, with half its energy above 2.5 kHz. It is the opening and
+       it sounds like one. */
+    title: 'NEON OVERTURE', station: 'SYNX GRID',
   };
   const CUTSCENE_TRACK = {
     key: 'cutscene', file: 'cutscene.ogg', gain: 1.0, loop: true,
+    /* D major, 145 BPM, the second-widest image in the pack and the only music
+       here that never returns to where it started - 0.22 against the radio's
+       0.4 to 0.8. It is written to be talked over and then stop. */
+    title: 'BETWEEN LIGHTS', station: 'SYNX GRID',
   };
   const FACTORY_TRACK = {
     key: 'factory', file: 'factory.ogg', gain: 1.0, loop: true,
+    /* A minor at 174 BPM - a machine tempo, double-time over an 87 BPM pulse -
+       and the widest stereo image of anything in the game. Chapter 6 is a
+       production hall and this is the hall running. */
+    title: 'FORGE CYCLE', station: 'AURORA FORGE',
   };
   const FINAL_TRACK = {
     key: 'final', file: 'final.ogg', gain: 1.0, loop: true,
+    /* A minor, 97 BPM, and the NARROWEST image in the pack at 0.36 with the
+       most weight in the mids: music mixed to sit in front of you rather than
+       around you. Chapter 7's event is called HUNT//REDLINE. */
+    title: 'REDLINE', station: 'NEON HORIZON',
   };
   const RADIO_TRACKS = [
     {
       key: 'coastline_drive', file: 'radio/coastline_drive.ogg', gain: 1.25,
       primary: 'coast', environments: ['coast', 'mesa'],
+      /* D major, 97 BPM, and it builds - the first thirty seconds sit at half
+         the level of the rest. A major-key cruise, which is what VECTOR RUN
+         is. It also loops well (0.82), the best of the four originals. */
+      title: 'COASTLINE DRIVE', station: 'SYNX FM', freq: 90.1,
     },
     {
       key: 'canyon_velocity', file: 'radio/canyon_velocity.ogg', gain: 1.25,
       primary: 'canyon', environments: ['canyon', 'city'],
+      /* A minor at 148 BPM: the fastest thing in the pack by fifty beats, and
+         the only radio track in a minor key. THE SPINE is the fast route. */
+      title: 'CANYON VELOCITY', station: 'SYNX FM', freq: 94.5,
     },
     {
       key: 'electric_horizon', file: 'radio/electric_horizon.ogg', gain: 1.25,
       primary: 'mesa', environments: ['mesa', 'coast'],
+      /* C major, 97 BPM, centroid 2646 Hz and 19% of its energy above 6 kHz -
+         the airiest of the five, which is the open country of MIRAGE CIRCUIT. */
+      title: 'ELECTRIC HORIZON', station: 'SYNX FM', freq: 101.7,
     },
     {
       key: 'midnight_circuit', file: 'radio/midnight_circuit.ogg', gain: 1.25,
       primary: 'city', environments: ['city', 'canyon'],
+      /* F major, 92 BPM - the slowest radio track - and the most dynamic thing
+         in the pack at 17.5 dB of crest. It has room in it, which is what a
+         city at night has. */
+      title: 'MIDNIGHT CIRCUIT', station: 'SYNX FM', freq: 104.3,
+    },
+    {
+      key: 'neon_pursuit', file: 'radio/neon_pursuit.ogg', gain: 1.05,
+      primary: 'city', environments: ['city', 'canyon'],
+      /* THE NEW ONE, and it is filed here on two measurements rather than on
+         its name - which is two words like every other station's, because the
+         dial is a lineup and one entry twice as long as the rest reads as a
+         mistake. It is in F major, which is MIDNIGHT CIRCUIT's key, and at 97
+         BPM, which is the tempo the coast and the mesa share - so it belongs
+         to the night family and still mixes with everything else on the dial.
+         It carries more bass than any other track here (21% below 150 Hz) and
+         it is the best loop in the pack at 0.84, which matters: a Free Roam
+         tour is a hundred and twenty-seven kilometres and can outlast the
+         playlist.
+
+         Its fader sits lower than the rest because its MASTER is hotter: -16.1
+         dBFS RMS against the other four's -17.8 average. 1.25 down to 1.05 is
+         1.5 dB back, which is most of that 1.7 - the remaining fifth of a
+         decibel is inside the spread the four originals already have between
+         them, and a station that is audibly louder than the one before it is
+         the one thing a radio must not be. */
+      title: 'NEON PURSUIT', station: 'SYNX FM', freq: 107.9,
     },
   ];
   const MUSIC_TRACKS = [MENU_TRACK, CUTSCENE_TRACK, FACTORY_TRACK, FINAL_TRACK].concat(RADIO_TRACKS);
+  /* By key, for the one question the interface asks: what is this? */
+  const TRACK_BY_KEY = {};
+  for (const t of MUSIC_TRACKS) TRACK_BY_KEY[t.key] = t;
+  /* Where the needle can sit, low to high, so the tuner has a scale even
+     before a station is chosen. Derived from the table rather than written
+     down twice. */
+  const BAND = RADIO_TRACKS.map((t) => t.freq).sort((a, b) => a - b);
   const ENVIRONMENTS = new Set(['coast', 'canyon', 'mesa', 'city']);
   const FADE = 1.6;              // seconds; long enough to sound intentional
   /* ...AND A SHORTER ONE FOR A CUE.
@@ -126,6 +207,30 @@
       this.music = ctx.createGain();
       this.music.gain.value = 0.5;
       this.music.connect(this.master);
+
+      /* A TAP ON THE MUSIC, so the radio panel shows the song rather than an
+         animation of one.
+       *
+       * It hangs off `music` as a DEAD END: an AnalyserNode with nothing
+       * connected to its output still analyses everything that reaches it, so
+       * this costs one extra FFT a frame and cannot put a second copy of the
+       * music into the mix. Connecting it onward to `master` is the mistake
+       * that would, and it would be inaudible as anything but +6 dB.
+       *
+       * 256 points is 128 bins at 172 Hz each, which is enough to tell a kick
+       * from a hi-hat and far less than enough to read a note - which is the
+       * right resolution for something eleven bars wide. The smoothing is the
+       * node's own one-pole, set high enough that the bars move with the music
+       * instead of flickering at the frame rate. */
+      try {
+        this.scope = ctx.createAnalyser();
+        this.scope.fftSize = 256;
+        this.scope.smoothingTimeConstant = 0.74;
+        this.scope.minDecibels = -78;
+        this.scope.maxDecibels = -14;
+        this.music.connect(this.scope);
+        this.scopeBins = new Uint8Array(this.scope.frequencyBinCount);
+      } catch (e) { this.scope = null; }
 
       /* Procedural air pressure: a filtered, looping noise bed that only rises
          above highway speed. It costs no shipped asset and follows the actual
@@ -310,6 +415,81 @@
     }
 
     _radioDef(key) { return RADIO_TRACKS.find(t => t.key === key) || null; }
+
+    /* WHAT IS ON, for anything that has to show it.
+     *
+     * One object, built fresh, with everything the interface could want and no
+     * way for it to reach into the mixer and find out some other way. `live`
+     * is the distinction that matters: a radio track is a station with a
+     * frequency, and a chapter's fixed score is the building you are inside.
+     *
+     * Returns null when there is nothing to say - music turned off in the
+     * options, or a track that failed to load - because a radio panel with
+     * nothing in it is worse than no radio panel. */
+    nowPlaying() {
+      if (!this.ready || !this.current) return null;
+      if (this.musicVol !== undefined && this.musicVol <= 0) return null;
+      const def = TRACK_BY_KEY[this.current];
+      if (!def) return null;
+      const t = this.tracks[this.current];
+      if (!t || t.broken) return null;
+      const el = t.el;
+      const dur = el && isFinite(el.duration) ? el.duration : 0;
+      return {
+        key: def.key,
+        title: def.title || def.key,
+        station: def.station || 'SYNX FM',
+        freq: def.freq || 0,
+        onAir: !!def.freq,
+        band: BAND,
+        environment: this.environment,
+        time: el ? (el.currentTime || 0) : 0,
+        duration: dur,
+        progress: dur > 0 ? Math.min(1, (el.currentTime || 0) / dur) : 0,
+        playing: !!(el && !el.paused),
+      };
+    }
+
+    /* The music's own spectrum, folded into `out.length` bars.
+     *
+     * Log-spaced, because an octave is a ratio: linear bins would give eleven
+     * bars of which nine are cymbals. Each bar is the loudest bin in its
+     * range rather than the average - a peak reads as an event and an average
+     * reads as a level, and this is meant to look like the song. */
+    musicLevels(out) {
+      const n = out.length;
+      if (!this.scope || !this.scopeBins) {
+        for (let i = 0; i < n; i++) out[i] = 0;
+        return false;
+      }
+      this.scope.getByteFrequencyData(this.scopeBins);
+      const bins = this.scopeBins;
+      /* Bins above about 12 kHz hold almost nothing on a 128 kbps Vorbis file
+         - the encoder has thrown them away - so the scale stops short of the
+         top rather than ending in two dead bars. */
+      const top = Math.min(bins.length, 72);
+      /* WALKED, NOT COMPUTED TWICE.
+       *
+       * The obvious form takes each band's start and end from the same power
+       * curve independently, and at eleven bands over seventy-two bins that
+       * gives the first two bands the SAME bin and never reads bin 0 at all -
+       * so the meter had a duplicated bar at one end and no kick drum at the
+       * other. Found by feeding a 220 Hz tone into the music bus and watching
+       * which bars moved.
+       *
+       * Carrying the previous band's end forward and forcing at least one bin
+       * of width makes the bands contiguous, distinct and complete by
+       * construction, whatever the band count is. */
+      let a = 0;
+      for (let i = 0; i < n; i++) {
+        const b = Math.max(a + 1, Math.round(Math.pow(top, (i + 1) / n)));
+        let peak = 0;
+        for (let k = a; k < b && k < bins.length; k++) if (bins[k] > peak) peak = bins[k];
+        out[i] = peak / 255;
+        a = b;
+      }
+      return true;
+    }
 
     /** Pick an environment-compatible song without immediately repeating. */
     _pickRadio(environmentChange) {
@@ -661,6 +841,26 @@
       this.play('crash' + Math.floor(Math.random() * 5), 0.35 + f * 0.6,
         1.18 - f * 0.3);
     }
+    /* A LANDING, AND HOW HARD IT WAS.
+     *
+     * `drop` is how far the car fell, in units, and `quality` is the
+     * solver's own measure of how square it came down - the same number
+     * the boost award and the replay mark read, so the sound agrees with
+     * what the rest of the game thought of the landing rather than having
+     * a second opinion.
+     *
+     * A big drop is louder and pitched DOWN, because a heavier arrival
+     * loads the springs further and everything about it gets lower. A
+     * scruffy one is pitched up a little and gets more of the sample's
+     * scrub, which is the tyres fighting for grip: landing sideways is
+     * supposed to sound worse than landing straight.
+     */
+    land(drop, quality) {
+      const d = Math.max(0, Math.min(1, (drop === undefined ? 1 : drop) / 6));
+      const q = Math.max(0, Math.min(1, quality === undefined ? 1 : quality));
+      const take = Math.floor(Math.random() * 3);
+      this.play('land' + take, 0.30 + d * 0.62, 1.10 - d * 0.22 + (1 - q) * 0.06);
+    }
     checkpoint() { this.play('whoosh', 0.8); }
     boostHit() { this.play('boost', 0.9); }
     select() { this.play('select', 0.8); }
@@ -668,4 +868,17 @@
   }
 
   global.NR.Audio = Audio;
+  /* THE SOUNDTRACK TABLE, PUBLISHED.
+   *
+   * Nothing in the game reads this - the interface asks `nowPlaying()`, which
+   * is the right question - but four things about the table go wrong silently
+   * and none of them is visible in a screenshot: a file that is not in the
+   * pack (the station simply never plays), two stations on one frequency, a
+   * frequency outside the dial the HUD draws, and an environment left with one
+   * usable song, which makes the no-immediate-repeat rule unsatisfiable.
+   *
+   * So it is exported for `python tools/check.py radio` to read, the same way
+   * the chapter directors publish their worlds. A checker that carried its own
+   * copy of this would pass while the real one was wrong. */
+  global.NR.MUSIC_TRACKS = MUSIC_TRACKS;
 })(window);

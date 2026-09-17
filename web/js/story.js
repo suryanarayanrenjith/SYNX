@@ -3630,7 +3630,7 @@
   NR.STORY_LAST_CHAPTER = LAST_CHAPTER;
   NR.STORY_CHAPTERS = CHAPTERS;
   NR.STORY_CAST = CAST;
-  /* The branch, published so tools/checkstory.js can walk every chapter down
+  /* The branch, published so tools/check.py story can walk every chapter down
      both paths without having to win seven races to see the second one. A
      scene is a pure function of its context (see `storyCtx`), which is the
      property that makes that walk exhaustive rather than a sample. */

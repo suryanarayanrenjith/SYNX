@@ -432,6 +432,18 @@ pub struct Vehicle {
     pub air_time: f64,
     pub air_pitch: f64,
     pub air_pitch_v: f64,
+    /// HOW FAR THE RAMP IS TIPPING THE BODY, in radians, nose-up positive.
+    ///
+    /// Separate from `pitch` because `pitch` belongs to the suspension: it is
+    /// integrated from `pitch_v` each frame and clamped to a tenth of a radian,
+    /// so a ramp slope folded into it would accumulate and would also be
+    /// clipped at about six degrees - which is less than half of what the
+    /// steepest ramp on the course actually asks for.
+    ///
+    /// Zero except while the car is on a ramp and still on the ground. Once it
+    /// is airborne the flight owns the attitude and writes `pitch` directly,
+    /// so this goes back to zero rather than being counted twice.
+    pub ramp_pitch: f64,
     pub air_roll: f64,
     pub air_roll_v: f64,
     pub air_yaw_v: f64,
@@ -471,6 +483,7 @@ impl Default for Vehicle {
             braking: 0.0, impact: 0.0, impact_speed: 0.0, stun: 0.0, contact_timer: 0.0,
             airborne: false, air_y: 0.0, air_abs: 0.0, air_v: 0.0, air_time: 0.0,
             air_pitch: 0.0, air_pitch_v: 0.0, air_roll: 0.0, air_roll_v: 0.0,
+            ramp_pitch: 0.0,
             air_yaw_v: 0.0, landing: 0.0, landed: 0.0, ramp: None,
             accum: 0.0,
         }
@@ -572,6 +585,7 @@ impl Vehicle {
         self.air_time = 0.0;
         self.air_pitch = 0.0;
         self.air_pitch_v = 0.0;
+        self.ramp_pitch = 0.0;
         self.air_roll = 0.0;
         self.air_roll_v = 0.0;
         self.air_yaw_v = 0.0;
@@ -1713,6 +1727,121 @@ fn smoothstep(u: f64) -> f64 {
     u * u * (3.0 - 2.0 * u)
 }
 
+impl Ramp {
+    /// Where the running surface is at one arc length, and nothing else.
+    ///
+    /// This used to be inlined in `update_air`, evaluated once, at the car's
+    /// own origin - which is why the bonnet went through the ramp. A ramp is a
+    /// CURVE and a car is a RIGID BODY four and a half units long: put the
+    /// origin on the surface, pitch the body by the slope at that one point,
+    /// and every other point of the car is somewhere the surface is not.
+    ///
+    /// On the incline the profile is convex, so it climbs faster than the
+    /// tangent the body was pitched by, and the part furthest ahead of the
+    /// origin - the nose - is the part it climbs furthest above. That is the
+    /// clipping, and it is worst exactly where it is most visible: nose-up,
+    /// mid-climb, with the camera behind the car.
+    ///
+    /// Splitting the profile out is what lets the body be sat on it at several
+    /// stations instead of balanced on one. See `settle_on_ramp`.
+    /// `None` where there is no structure under that point at all - past the
+    /// lip of a launch ramp, where the car is about to be over fresh air. A
+    /// sample with nothing under it must not hold the body up, and the first
+    /// version of this returned the lip height there instead, which built a
+    /// phantom shelf off the end of every kicker and pitched the car onto it.
+    fn height_at(&self, s: f64) -> Option<f64> {
+        let crest_end = self.s2.max(self.s1);
+        let has_down = self.s3 > crest_end;
+        if s <= self.s0 {
+            // behind the foot of the ramp is the road, which is a surface
+            return Some(0.0);
+        }
+        if s <= self.s1 {
+            let span = (self.s1 - self.s0).max(1.0);
+            let u = ((s - self.s0) / span).clamp(0.0, 1.0);
+            /* A LAUNCH ramp is quadratic: a constant slope has a corner at the
+               bottom that the car hits rather than rides, and the steepest
+               part being at the very top is what throws it.
+               A ramp onto a DECK is smoothstepped instead, because it has to
+               arrive parallel to the deck it joins - a quadratic meets a flat
+               roof at its steepest and the suspension reads that as an
+               impact. */
+            return Some(if has_down { self.h * smoothstep(u) } else { self.h * u * u });
+        }
+        if s <= crest_end {
+            /* THE CREST, which is the part that is driven along. Straight
+               rather than curved: it is a deck somebody laid, not a moulded
+               kicker, and the shallow rise along it is the only thing throwing
+               the car at the far end. */
+            let span = (crest_end - self.s1).max(1.0);
+            let v = ((s - self.s1) / span).clamp(0.0, 1.0);
+            return Some(self.h + (self.lip - self.h) * v);
+        }
+        if !has_down {
+            // past the lip of a launch ramp there is no structure at all
+            return None;
+        }
+        /* THE DESCENT. Smoothstepped, so it leaves the deck level and reaches
+           the road level - the car drives down it rather than dropping off the
+           end of the structure, which is the whole reason it exists. */
+        let span = (self.s3 - crest_end).max(1.0);
+        let v = ((s - crest_end) / span).clamp(0.0, 1.0);
+        Some(self.lip * (1.0 - smoothstep(v)))
+    }
+}
+
+/// How many stations across the car the ramp is sampled at.
+///
+/// Five, spread over the whole body rather than over the wheelbase. The nose
+/// overhangs the front axle by three quarters of a unit and it is the nose
+/// that was clipping, so an axle-to-axle fit would leave exactly the part that
+/// was reported still buried.
+const RAMP_SAMPLES: usize = 5;
+
+/// Sit a rigid body of length `2 * HALF_LENGTH` on a ramp profile.
+///
+/// Returns the height of the body at its own origin and the pitch it rests at.
+///
+/// The pitch is the chord between the two ENDS of the car, which is the line a
+/// long object actually comes to rest on; the height is then whatever is
+/// needed for no sample to be above the body. On the climb the profile is
+/// convex, so the chord clears everything between its ends and the height term
+/// does nothing. Over the crest it is concave, the middle of the car is what
+/// touches, and the height term is the whole of it. One expression covers
+/// both, which is why it is written this way rather than as two cases.
+fn settle_on_ramp(r: &Ramp, s: f64) -> (f64, f64) {
+    let mut pts = [None; RAMP_SAMPLES];
+    let (mut first, mut last) = (None, None);
+    for i in 0..RAMP_SAMPLES {
+        // -1 at the tail, +1 at the nose
+        let f = (i as f64) / ((RAMP_SAMPLES - 1) as f64) * 2.0 - 1.0;
+        let x = f * HALF_LENGTH;
+        if let Some(h) = r.height_at(s + x) {
+            pts[i] = Some((x, h));
+            if first.is_none() {
+                first = Some((x, h));
+            }
+            last = Some((x, h));
+        }
+    }
+    /* The chord runs between the outermost SUPPORTED stations, not between the
+       ends of the car. Once the nose is past the lip there is nothing under it
+       and the pitch is whatever the rest of the body is lying on - which is a
+       car tipping up as it leaves a kicker, and is why the nose overhang does
+       not simply get its own straight line to follow. */
+    let (Some(a), Some(b)) = (first, last) else {
+        return (0.0, 0.0);
+    };
+    let run = b.0 - a.0;
+    let pitch_tan = if run.abs() > 1e-6 { (b.1 - a.1) / run } else { 0.0 };
+    let mut y: f64 = f64::NEG_INFINITY;
+    for p in pts.iter().flatten() {
+        // the body height at the origin that puts its underside on THIS sample
+        y = y.max(p.1 - p.0 * pitch_tan);
+    }
+    (y, pitch_tan.atan())
+}
+
 /* WHY THE FIRST TUNE FELT LIKE A PAPER CAR, AND WHAT FIXED IT.
  *
  * Reported: boosting off a ramp read as "someone tossed a paper car in the
@@ -1832,47 +1961,19 @@ impl Vehicle {
                    ends where the structure does, exactly as before. */
                 let has_down = r.s3 > crest_end;
                 let end = if has_down { r.s3 } else { crest_end };
-                if self.s_track >= r.s0 && self.s_track <= end {
+                /* THE BODY IS SAT ON THE RAMP, NOT BALANCED ON A POINT OF IT.
+                   The car is on the structure from a body length before the
+                   foot - its nose reaches the ramp before its origin does -
+                   to a body length past the end. See settle_on_ramp. */
+                if self.s_track >= r.s0 - HALF_LENGTH && self.s_track <= end {
                     let prev = self.air_y;
-                    if self.s_track <= r.s1 {
-                        /* THE INCLINE.
-                           A LAUNCH ramp is quadratic: a constant slope has a
-                           corner at the bottom that the car hits rather than
-                           rides, and the steepest part being at the very top
-                           is what throws it.
-                           A ramp onto a DECK is smoothstepped instead, because
-                           it has to arrive parallel to the deck it joins - a
-                           quadratic meets a flat roof at its steepest and the
-                           suspension reads that as an impact. */
-                        let span = (r.s1 - r.s0).max(1.0);
-                        let u = ((self.s_track - r.s0) / span).clamp(0.0, 1.0);
-                        if has_down {
-                            self.air_y = r.h * smoothstep(u);
-                            self.air_pitch = (6.0 * r.h * u * (1.0 - u) / span).atan();
-                        } else {
-                            self.air_y = r.h * u * u;
-                            self.air_pitch = (2.0 * r.h * u / span).atan();
-                        }
-                    } else if self.s_track <= crest_end {
-                        /* THE CREST, which is the part that is driven along.
-                           Straight rather than curved: it is a deck somebody
-                           laid, not a moulded kicker, and the shallow rise
-                           along it is the only thing throwing the car at the
-                           far end. */
-                        let span = (crest_end - r.s1).max(1.0);
-                        let v = ((self.s_track - r.s1) / span).clamp(0.0, 1.0);
-                        self.air_y = r.h + (r.lip - r.h) * v;
-                        self.air_pitch = ((r.lip - r.h) / span).atan();
-                    } else {
-                        /* THE DESCENT. Smoothstepped, so it leaves the deck
-                           level and reaches the road level - the car drives
-                           down it rather than dropping off the end of the
-                           structure, which is the whole reason it exists. */
-                        let span = (r.s3 - crest_end).max(1.0);
-                        let v = ((self.s_track - crest_end) / span).clamp(0.0, 1.0);
-                        self.air_y = r.lip * (1.0 - smoothstep(v));
-                        self.air_pitch = (-6.0 * r.lip * v * (1.0 - v) / span).atan();
-                    }
+                    let (y, pitch) = settle_on_ramp(&r, self.s_track);
+                    self.air_y = y.max(0.0);
+                    self.air_pitch = pitch;
+                    /* ...and the BODY tips with it. This is the line that was
+                       missing: the profile was measured every frame and then
+                       used only after take-off. */
+                    self.ramp_pitch = pitch;
                     /* The vertical speed is read back off the profile rather
                        than assumed, so what leaves the end is what the car was
                        actually doing - on either section. */
@@ -1884,6 +1985,7 @@ impl Vehicle {
                     launched = true;
                 }
             }
+            self.ramp_pitch = 0.0;   // not on a ramp any more
             if launched {
                 self.airborne = true;
                 self.air_time = 0.0;
@@ -1897,6 +1999,8 @@ impl Vehicle {
                    how it was taken. */
                 self.air_pitch_v = 0.0;
                 self.air_yaw_v = self.yaw_rate * 0.35;
+                // the flight writes `pitch` itself from here on
+                self.ramp_pitch = 0.0;
                 /* ...and the suspension unloads. A car leaving a ramp rebounds
                    as the springs let go, which is the visual cue that it has
                    left the ground at all. */
@@ -2275,6 +2379,125 @@ mod tests {
     /// height, it stays on the ground for the whole of it - a launch off an
     /// eighteen-unit deck is a crash, not a way down - and it ends the section
     /// back on the road rather than above it.
+    #[test]
+    /// THE BODY TILTS WITH THE RAMP IT IS ON.
+    ///
+    /// `air_pitch` was measured off the profile on every frame the car was on
+    /// the structure and then applied only after take-off, so a car climbing a
+    /// ramp was drawn dead level on a rising surface and its nose went into
+    /// the slope. `ramp_pitch` is the field the renderer adds; this is that it
+    /// is actually set, and that it agrees with the surface the car is on.
+    #[test]
+    fn the_body_tilts_with_the_ramp() {
+        let t = straight_track(6000);
+        // the blocked bore's shape: the steepest climb on the course
+        let (s0, s1, h) = (500.0, 566.0, 10.4);
+        let mut car = Vehicle::new(&t, 0.0);
+        car.reset(&t, 400.0, 0.0);
+        car.v_long = 60.0;
+        car.arm_ramp(s0, s1, h);
+        let r = car.ramp.expect("the ramp was not armed");
+
+        let dt = 1.0 / 120.0;
+        let (mut peak, mut checked, mut worst) = (0.0f64, 0, 0.0f64);
+        for _ in 0..(30 * 120) {
+            let input = Input { throttle: 1.0, ..Default::default() };
+            car.update(&t, dt, input, true);
+            if car.airborne {
+                break;
+            }
+            if car.s_track < s0 + 8.0 || car.s_track > s1 - 4.0 {
+                continue;
+            }
+            checked += 1;
+            peak = peak.max(car.ramp_pitch);
+            /* The surface's own slope under the car, by difference. The body
+               is fitted across its whole length so it will not match the
+               tangent exactly - a couple of degrees of that is the fit, not an
+               error - but it must be following the ramp and not the road. */
+            let e = HALF_LENGTH;
+            let a = r.height_at(car.s_track - e).unwrap_or(0.0);
+            let b = r.height_at(car.s_track + e).unwrap_or(0.0);
+            let slope = ((b - a) / (2.0 * e)).atan();
+            worst = worst.max((car.ramp_pitch - slope).abs());
+        }
+        assert!(checked > 60, "only {checked} frames were on the climb");
+        assert!(
+            peak > 0.15,
+            "the steepest ramp on the course tilted the body by {peak:.3} rad at most - \
+             it is about 0.3, and zero means the renderer is drawing a level car on a slope"
+        );
+        assert!(
+            worst < 0.02,
+            "the body was {worst:.3} rad off the surface it is standing on"
+        );
+    }
+
+    /// NO PART OF THE CAR MAY BE UNDER THE RAMP IT IS DRIVING UP.
+    ///
+    /// The body was posed by putting its ORIGIN on the surface and pitching it
+    /// by the slope at that one point. A ramp is a curve; the incline is
+    /// convex, so it rises faster than the tangent, and every point ahead of
+    /// the origin ends up under it - the bonnet worst of all, because it is
+    /// the furthest forward. It was reported as the nose clipping through the
+    /// ramp, which is exactly what it was.
+    ///
+    /// So this walks a car up a ramp and, at every frame, checks every station
+    /// along the body against the surface underneath that station. Nothing may
+    /// be below it by more than a tyre's worth of squat.
+    #[test]
+    fn no_part_of_the_car_goes_under_the_ramp() {
+        let t = straight_track(6000);
+        for &(s0, s1, s2, s3, h, lip) in &[
+            // a launch kicker: short, steep, and the convex case that bit
+            (500.0, 560.0, 560.0, 560.0, 6.0, 6.0),
+            // a ramp onto a deck and down the far side
+            (500.0, 640.0, 1400.0, 1560.0, 18.0, 18.0),
+            // a long shallow one, where the nose overhang is most of the error
+            (500.0, 900.0, 900.0, 900.0, 9.0, 11.0),
+        ] {
+            let mut car = Vehicle::new(&t, 0.0);
+            car.reset(&t, 400.0, 0.0);
+            car.v_long = 70.0;
+            car.arm_ramp_road(s0, s1, s2, s3, h, lip);
+            let r = car.ramp.expect("the ramp was not armed");
+
+            let dt = 1.0 / 120.0;
+            let mut worst: f64 = 0.0;
+            let mut where_worst = 0.0;
+            for _ in 0..(30 * 120) {
+                let input = Input { throttle: 1.0, ..Default::default() };
+                car.update(&t, dt, input, true);
+                if car.airborne || car.s_track > s3.max(s1) {
+                    break;
+                }
+                if car.s_track < s0 - HALF_LENGTH {
+                    continue;
+                }
+                let tan = car.air_pitch.tan();
+                for i in 0..9 {
+                    let f = (i as f64) / 8.0 * 2.0 - 1.0;
+                    let x = f * HALF_LENGTH;
+                    // where the body's underside is at this station...
+                    let body = car.air_y + x * tan;
+                    // ...and where the ramp is
+                    // nothing under this station means nothing to clip through
+                    let Some(surf) = r.height_at(car.s_track + x) else { continue };
+                    let under = surf - body;
+                    if under > worst {
+                        worst = under;
+                        where_worst = car.s_track;
+                    }
+                }
+            }
+            assert!(
+                worst < 0.05,
+                "ramp ({s0}..{s1}..{s2}..{s3}, h {h}): the body was {worst:.3} units \
+                 under the surface at s={where_worst:.0} - the bonnet is inside the ramp"
+            );
+        }
+    }
+
     #[test]
     fn a_road_ramp_comes_back_down() {
         let t = straight_track(6000);

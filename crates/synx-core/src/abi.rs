@@ -91,7 +91,7 @@ veh_layout! {
     W3_OMEGA => "w3omega", W3_LOAD => "w3load", W3_SLIP_ANGLE => "w3slipAngle", W3_SLIP_RATIO => "w3slipRatio",
     // the stunt course; see the note above `Ramp` in vehicle.rs
     AIRBORNE => "airborne", AIR_Y => "airY", AIR_V => "airV", AIR_TIME => "airTime",
-    AIR_PITCH => "airPitch", AIR_ROLL => "airRoll",
+    AIR_PITCH => "airPitch", AIR_ROLL => "airRoll", RAMP_PITCH => "rampPitch",
     LANDING => "landing", LANDED => "landed",
 }
 
@@ -149,7 +149,7 @@ pub(crate) fn store_vehicle(v: &Vehicle, out: &mut [f64]) {
         p(w.omega, &mut i); p(w.load, &mut i); p(w.slip_angle, &mut i); p(w.slip_ratio, &mut i);
     }
     p(b(v.airborne), &mut i); p(v.air_y, &mut i); p(v.air_v, &mut i); p(v.air_time, &mut i);
-    p(v.air_pitch, &mut i); p(v.air_roll, &mut i);
+    p(v.air_pitch, &mut i); p(v.air_roll, &mut i); p(v.ramp_pitch, &mut i);
     p(v.landing, &mut i); p(v.landed, &mut i);
     debug_assert_eq!(i, VEH_STRIDE, "store_vehicle wrote {i} of {VEH_STRIDE} fields");
 }

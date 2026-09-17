@@ -234,7 +234,7 @@ pub struct MonitorInfo {
     /// actually open on. Two 1920x1080 displays are indistinguishable by size,
     /// and the launcher had no way to tell them apart or to say where they
     /// were - so nothing in the tree, and no test, could check that choosing
-    /// one had any effect. tools/checkdisplay.js needs exactly this.
+    /// one had any effect. tools/smoke.py display needs exactly this.
     pub x: i32,
     pub y: i32,
     /// Physical pixels.

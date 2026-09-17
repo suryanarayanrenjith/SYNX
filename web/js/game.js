@@ -88,6 +88,13 @@
   const POV_PITCH = -0.045;
 
   const BLOOM_LEVELS = 6;
+
+  /* THE GRADE'S OWN CHROMA PUSH, after the split tone and the S-curve.
+     Separate from FX.saturation, which is the AgX look's - the transform's
+     inset pulls chroma in on the way through and that number puts it back,
+     while this one is the colourist's pass on top of a finished picture. Both
+     ride the COLOUR row together. */
+  const GRADE_SAT = 1.22;
   /* The highest texture unit any pass binds to. 0 albedo, 1 environment,
      2 normal, 3 headlight cookie, 4 emissive, 5-7 the shadow cascades,
      8 the reflection probe. */
@@ -109,7 +116,16 @@
        it to land in the same place. Measured against the old image rather
        than guessed. What the extra range buys is above the midtones: the neon
        now has ten stops of headroom to roll off through instead of two. */
-    exposure: 0.72,
+    /* Trimmed from 0.72 when the grade's split tone was normalised. That tint
+       had a luminance of 0.87 and was multiplied over most of the frame, so it
+       had been acting as a thirteen-per-cent exposure cut that nobody had
+       chosen and that only applied where the tint did. Normalising it - see
+       POST_FRAG - gave that stop back everywhere at once and the night came
+       out milky. This is the same trim, made on purpose and in the place
+       exposure belongs, which is BEFORE the display transform: a scene that is
+       darker here rolls further down AgX's toe instead of merely being
+       multiplied down after it. */
+    exposure: 0.645,
     /* The look on top of the display transform. The inset desaturates on the
        way in, so unity here would read flatter than the old image; 1.34 puts
        the chroma back and a little past it, which is the genre. */
@@ -292,7 +308,7 @@
       /* The expressway is open above, but every arch, gate and portal on it
          spans the deck with RING_CLEAR of headroom - so a drone above them
          watches the car through a row of rings. Just under that clearance puts
-         the camera inside the架 structure with the car, which is what a
+         the camera inside the gantry structure with the car, which is what a
          top-down view of this route should be. */
       droneCeiling: 11.5,
       coursePreview: true,
@@ -372,7 +388,7 @@
    * cannot see. Those three have to agree to the unit: a deck drawn where the
    * car is not is a car driving through the air, and a deck the car reaches
    * before the hall has stopped hanging machinery over the road is a
-   * collision with something a kilometre up. See tools/checkramps.js, which
+   * collision with something a kilometre up. See tools/check.py ramps, which
    * exists because exactly that went wrong twice before.
    *
    * So it is declared once, here, and published on NR.
@@ -561,7 +577,7 @@
      *           the canyon, because a game about speed should show some.
      *
      * Nothing here is accidental: the corners and the straights were both
-     * chosen by measurement, and tools/checkramps.js asserts that the only
+     * chosen by measurement, and tools/check.py ramps asserts that the only
      * stretches containing a ramp are the ones that mean to.
      */
     // the seawall hairpin: ninety-five units of radius, taken sideways
@@ -1166,7 +1182,7 @@
     { key: 'boost', label: 'BOOST', def: ['b'],
       hint: 'Spends the blue reserve. It refills off the throttle, not on a timer.' },
     { key: 'raceMode', label: 'RACE MODE / RESTART', def: ['r'],
-      hint: 'Fires raceMode where a chapter has awarded it, and restarts the run everywhere else.' },
+      hint: 'Fires raceMode where a chapter has awarded it. Outside the campaign it restarts the run instead - but never inside a chapter, where a mis-hit would throw away a run that can be thirty kilometres long. Use RESTART on the pause menu for that.' },
     { key: 'camera', label: 'CAMERA VIEW', def: ['c'],
       hint: 'Cycles CHASE, DRIVER and DRONE. Driver is the view from behind the wheel; drone looks down on the road from above.' },
     { key: 'pause', label: 'PAUSE', def: ['escape', 'p'],
@@ -2178,6 +2194,7 @@
   uniform vec3 uSunCol;
   uniform float uSat;          // AgX look: saturation past the inset
   uniform float uPunch;        // ...and its contrast power
+  uniform float uGradeSat;     // ...and the grade's own, after the split tone
 
   float hash21(vec2 p) {
     p = fract(p * vec2(233.34, 851.73));
@@ -2378,25 +2395,117 @@
     col *= uExposure;
     col = filmic(col);
 
-    // grade: push shadows violet and highlights cyan, then lift saturation
-    vec3 shadows = vec3(0.010, 0.004, 0.024);
-    vec3 highs   = vec3(1.00, 0.975, 1.07);
-    col = col * highs + shadows * (1.0 - col);
-    // a firmer S-curve: the night has to sit down in the blacks or the neon has
-    // nothing to be brighter than
-    col = col * col * (3.0 - 2.0 * col) * 0.62 + col * 0.38;
-    float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    /* Pushing past 1.0 is what makes the neon sing, but it drives the weakest
-       channel below zero on anything strongly tinted, and a negative channel
-       clamps to black - a magenta sign loses its green and turns into a hole.
-       Eased back now that the rolloff above keeps the highlights coloured on
-       its own: 1.52 on top of that oversaturates the midtones. */
-    col = max(mix(vec3(lum), col, 1.30), 0.0);
+    /* ------------------------------------------------------- THE GRADE ----
+     *
+     * THE SPLIT TONE MULTIPLIES. IT USED TO ADD.
+     *
+     * The old line was  col * highs + shadows * (1 - col)  with shadows at
+     * (0.010, 0.004, 0.024), and that second term is not a tint, it is a
+     * FLOOR: at col = 0 it returns the offset itself, so the darkest pixel the
+     * game could produce was 0.024 of blue - which comes out of the encode at
+     * 47 of 255. Measured over the world band of a night frame, the blue
+     * channel never once went below 34 and not one pixel in the frame was
+     * within ten per cent of neutral. There was no black in this game at all,
+     * anywhere, and a route lit entirely by neon whose shadows are a lilac has
+     * nothing for the neon to be brighter THAN. That is most of what "washed
+     * out" means.
+     *
+     * Multiplying keeps the identity and loses the floor. Violet shadows and
+     * cyan highlights are still exactly what this route is; they are now a
+     * tint applied TO the picture, weighted by where each pixel sits on the
+     * ramp, rather than a wash laid OVER it. Black stays black, and the tint
+     * is strongest in the low mids, which is where the eye reads it anyway.
+     */
+    /* ...AND IT IS LUMINANCE-NEUTRAL, which a tint has to be.
+     *
+     * A tint that is not normalised is a brightness change wearing a hue's
+     * clothes, and it goes wrong in the one place it is least wanted. The
+     * first version of this multiplied the shadows by (0.88, 0.83, 1.19) -
+     * whose luminance is 0.87, so it darkened by thirteen per cent wherever it
+     * applied. On a bright route that is invisible. On the storm route, where
+     * the entire frame sits under the shadow weight, it darkened EVERYTHING:
+     * the measured 99th percentile fell from 84 to 63 and the route lost a
+     * quarter of its highlight range to what was supposed to be a colour
+     * decision.
+     *
+     * Dividing by its own luminance makes each tint pure chroma: it moves the
+     * hue and cannot move the exposure, on any route, at any weight. */
+    const vec3 LW = vec3(0.2126, 0.7152, 0.0722);
+    float lum = dot(col, LW);
+    float shW = 1.0 - smoothstep(0.0, 0.42, lum);        // low mids, not blacks
+    float hiW = smoothstep(0.34, 1.05, lum);
+    vec3 shTint = vec3(0.970, 0.940, 1.080);             // violet
+    vec3 hiTint = vec3(0.985, 1.005, 1.045);             // cyan-ward
+    shTint /= dot(shTint, LW);
+    hiTint /= dot(hiTint, LW);
+    col *= mix(vec3(1.0), shTint, shW);
+    col *= mix(vec3(1.0), hiTint, hiW);
 
-    col *= smoothstep(1.15, 0.16, r2);                   // vignette
+    /* CONTRAST, as a power about a pivot rather than a smoothstep blend.
+       The night has to sit down in the blacks or the neon has nothing to be
+       brighter than. A smoothstep blend is anchored at 0 and 1 and steepens
+       about the middle, which is fine but gives no control over WHERE the
+       middle is; a power about a pivot puts the hinge on a number that can be
+       chosen. At 0.30 of display-linear the hinge sits around 149 of 255 once
+       encoded - above the road, above the sky, below the sources - so the
+       world seats down and the things that are actually emitting are the only
+       part of the frame that lifts. The exponent is gentle on purpose: at 1.18
+       the storm route, which lives entirely below the hinge, lost a quarter of
+       its highlight range. Measured, not guessed - see tools/check.py colour
+       for what the frame is supposed to look like afterwards. */
+    const float PIVOT = 0.30;
+    col = max(col, 0.0);
+    col = PIVOT * pow(col / PIVOT, vec3(1.12));
+
+    /* SATURATION THAT CANNOT PUNCH A HOLE.
+     *
+     * Boosting chroma past 1.0 is what makes neon sing, and doing it the
+     * obvious way - mix(vec3(lum), col, k) - drives the weakest channel below
+     * zero on anything strongly tinted. The clamp that follows then eats it:
+     * a magenta sign loses its green and becomes a dark hole with a hue that
+     * no longer matches the tube it came from. The old code knew and backed
+     * the number down to hide it, which costs the colour everywhere to protect
+     * a few pixels.
+     *
+     * So the push is measured instead. The room below is how far this pixel
+     * can be pushed before its weakest channel reaches zero; the boost is
+     * whichever is smaller. Hue and luminance are preserved exactly, nothing clips to
+     * black, and the number can be honest again. */
+    lum = dot(col, LW);
+    vec3 d = col - lum;
+    float lowest = min(min(d.r, d.g), d.b);
+    float room = lowest < -1e-4 ? lum / -lowest : 1e9;
+    col = lum + d * min(uGradeSat, max(1.0, room));
+
+    /* The vignette is optical, so it belongs on the LIGHT rather than on the
+       picture: a lens falls off toward the corner, it does not desaturate what
+       it is looking at. Eased from the old curve, which took the corners to
+       seventy per cent and took the frame's colour down with them. */
+    col *= smoothstep(1.35, 0.13, r2);
+
+    col = pow(max(col, 0.0), vec3(1.0 / 2.2));
+
+    /* DITHER, and it is not optional.
+     *
+     * Everything from here on is eight bits. A night sky is a shallow gradient
+     * across a thousand pixels of frame, an eight-bit ramp gives it about
+     * forty steps to do that in, and the eye resolves every one of them as a
+     * contour. The film grain was masking it - badly, and only for players who
+     * left grain switched ON, so turning grain off revealed banding across the
+     * entire sky and read as the renderer being cheap.
+     *
+     * A triangular-PDF dither of one least-significant bit is the textbook
+     * answer: two independent uniform samples differenced, which decorrelates
+     * the quantisation error from the signal instead of merely hiding it. One
+     * 255th of amplitude - far below anything visible as noise - and the
+     * banding is gone rather than covered. */
+    float d1 = hash21(gl_FragCoord.xy + fract(uTime) * 17.0);
+    float d2 = hash21(gl_FragCoord.xy * 1.371 + fract(uTime) * 53.0 + 11.0);
+    col += (d1 - d2) * (1.0 / 255.0);
+
     // the CRT pass now runs after the temporal resolve, so the grain is not
     // averaged into a smooth haze by the history buffer
-    outColor = vec4(pow(max(col, 0.0), vec3(1.0 / 2.2)), 1.0);
+    outColor = vec4(max(col, 0.0), 1.0);
   }`;
 
   /* --- temporal anti-aliasing ---------------------------------------------
@@ -2613,7 +2722,7 @@
    * The first version of this was a positive-only lobe, chosen because it is
    * cheap and looks like a reasonable window. It is not one. A reconstruction
    * filter whose weights are all positive is a weighted average, and a
-   * weighted average of a one-texel line is a blur - tools/checkupscale.js
+   * weighted average of a one-texel line is a blur - tools/check.py upscale
    * measured a bright line coming back at 0.37 where plain bilinear left it at
    * 0.75, so the upscaler was quantifiably worse than the stretch it replaced.
    *
@@ -2721,7 +2830,7 @@
 
        Reversing the pair does not look like a subtle error: it averages across
        the edge it was meant to follow, which is a worse blur than the bilinear
-       it replaced. tools/checkupscale.js exists because it was reversed here
+       it replaced. tools/check.py upscale exists because it was reversed here
        first, and the one-texel-line case is what caught it. */
     vec2 ax = d2;
     vec2 ay = vec2(-d2.y, d2.x);
@@ -2814,7 +2923,7 @@
      left, and at zero the whole block below costs one compare. */
   uniform sampler2D uCrack;
   uniform float uCrackAmt;
-  /* The tiling micro-fracture sheet, generated by tools/gentex.js and carried
+  /* The tiling micro-fracture sheet, generated by tools/assets.py gentex and carried
      in the pack. R is the crack web, G the pulverised dust, B the sparkle. It
      only ever contributes where the star's own halo says there is damage. */
   uniform sampler2D uShards;
@@ -2970,7 +3079,19 @@
     // the CRT pass goes last so nothing downstream averages it away
     c *= 1.0 - 0.030 * uGrain * step(0.5, fract(gl_FragCoord.y * 0.5));
     c += (hash21(vUv * uRes + fract(uTime) * 91.0) - 0.5) * 0.014 * uGrain;
-    outColor = vec4(c, 1.0);
+
+    /* ...and one more least-significant bit of dither, which is NOT part of
+       the grain and is not optional.
+       This is the last write before the display, and the temporal resolve
+       between here and the tonemapper averages the dither that was applied
+       there - which recovers precision rather than losing it, but leaves this
+       final quantisation undithered. The film grain was covering it, so a
+       player who turned grain off got banding across every gradient in the
+       game and no way to know why. One 255th, triangular, always on. */
+    float e1 = hash21(gl_FragCoord.xy * 0.7919 + fract(uTime) * 23.0);
+    float e2 = hash21(gl_FragCoord.xy * 1.2743 + fract(uTime) * 61.0 + 7.0);
+    c += (e1 - e2) * (1.0 / 255.0);
+    outColor = vec4(max(c, 0.0), 1.0);
   }`;
 
   const EMPTY_KEYS = [];
@@ -4293,7 +4414,7 @@
     applyRecorderSettings(st) {
       const R = NR.Record;
       if (!R) return;
-      /* Read as `st.<key>`, which is the shape tools/checksettings.js looks
+      /* Read as `st.<key>`, which is the shape tools/check.py settings looks
          for. An alias would hide the read from it, and a row nothing can be
          seen to read is exactly what that check exists to catch. */
       if (!st) st = (NR.Settings && NR.Settings.read) ? NR.Settings.read() : {};
@@ -4769,6 +4890,11 @@
     beginFreeRoamRun() {
       this.freeRoamClock = 0;
       this.freeRoamRegionShown = -1;
+      /* Where this tour got on, which is what decides whether the ascension
+         gate has anything to announce. Recorded here rather than read from
+         the region, because a resumed tour gets on wherever it left off.
+         See updateFreeRoamGate. */
+      this.freeRoamStartS = this.distance;
       /* The worlds FIRST, because building them is also what constructs the
          two chapter directors - and both of those clear `raceModeAvailable`
          and `blockQuickRestart` in reset(). Set before that happens and the
@@ -5010,6 +5136,12 @@
       for (const car of this.rampCars()) {
         if (!car || !car.armRamp) continue;
         const player = car === this.car;
+        /* HOW FAR THIS ONE FELL. `airY` is the height over the road and it
+           is gone by the time `landed` is raised, so the peak of it is kept
+           here - one number per car, cleared on touchdown. */
+        if (car.airborne) {
+          car.__airPeak = Math.max(car.__airPeak || 0, car.airY || 0);
+        }
         /* THE LANDING IS READ FROM A FLAG THE SOLVER SETS FOR EXACTLY ONE
            FRAME. Reading the height instead - "it was in the air and now it is
            not" - misses a landing whenever a frame is long enough to span the
@@ -5017,6 +5149,16 @@
         if (car.landed) {
           car.landed = 0;
           const q = car.landing || 0;
+          /* THE CAR MAKES A NOISE WHEN IT COMES DOWN.
+             Only the player's, and only for a drop worth hearing: a rival
+             landing four hundred units away is not a sound the player's
+             speakers should be producing, and the deck ramps set `landed`
+             for the two-unit step off a kerb as well as for a jump. */
+          if (player && this.audio && this.audio.land) {
+            const drop = car.__airPeak || 0;
+            if (drop > 0.8) this.audio.land(drop, q);
+          }
+          car.__airPeak = 0;
           /* Boost, and boost is the right currency: a ramp taken well is one
              of the few places on this road anyone can make some. Paid to every
              car that earns it, so a rival that lands straight gets the same
@@ -5183,6 +5325,24 @@
        a second opinion about it. */
     updateFreeRoamGate() {
       const gate = REGION_EDGES[REGION_EDGES.length - 1];
+      /* A RUN THAT BEGINS ON THE GATE IS NOT A CAR ARRIVING AT ONE.
+       *
+       * This is the ascension: the air goes white and the fog closes to three
+       * hundred units as the tour crosses into NEON HORIZON, and it is keyed
+       * on distance alone. The last region's edge IS the gate - both are
+       * 132,000 - so a tour that STARTS in the last region starts with the car
+       * standing inside the boundary. `k` is 1 on the first frame, and the
+       * player gets the full glare and the gate's fog laid over the whole
+       * route from the moment it opens.
+       *
+       * That is the white overlay reported over Free Roam on the last region.
+       * It is not an overlay at all; it is the crossing effect, fired by a car
+       * that never crossed anything.
+       *
+       * The effect belongs to the APPROACH, so it only arms for a run that
+       * began on the near side of one. A tour that starts past that point has
+       * nothing to be arriving from. */
+      if (!(this.freeRoamStartS < gate - GATE_IN)) { this.freeRoamGate = 0; return; }
       const d = this.distance - gate;
       const k = d < 0 ? smoothstep((d + GATE_IN) / GATE_IN)
                       : 1 - smoothstep(d / GATE_OUT);
@@ -5268,6 +5428,31 @@
       this.resetCar();
       this.onMusic();
       this.fadeTo(0);
+    }
+
+    /* MAY R THROW THIS RUN AWAY?
+     *
+     * R is two keys wearing one hat - RACE MODE where a chapter has awarded
+     * it, and RESTART everywhere else - and inside the campaign the wrong one
+     * was answering.
+     *
+     * Outside a chapter a restart is cheap and it is what the player asked
+     * for: a route is a few minutes, the key is advertised, and there is
+     * nothing behind it to lose. Inside one it is not. A chapter can be thirty
+     * kilometres, it restarts from the cold open, and chapters one to five
+     * never award raceMode at all - so in five of the seven the ONLY thing
+     * this key could do was destroy an attempt that was going well. It sits
+     * one row above the arrow keys. It was reported, correctly, as a key that
+     * eats your evening.
+     *
+     * So the restart half is off inside a chapter unless raceMode is actually
+     * there to fire, in which case R is the ability and not a restart anyway.
+     * Nothing is taken away: the pause menu still has RESTART on it, and the
+     * finish card still answers R with RETRY - both of which are asked for on
+     * purpose, in front of a screen that says what they do. */
+    quickRestartAllowed() {
+      const inChapter = !!(this.story && this.story.chapter && this.story.mode === 'race');
+      return !inChapter || !!this.raceModeAvailable;
     }
 
     beginRace() {
@@ -5902,7 +6087,9 @@
         this.settleFx(dt);
         return;
       }
-      if (inp.actHit('raceMode') && !this.blockQuickRestart) { this.beginRace(); return; }
+      if (inp.actHit('raceMode') && !this.blockQuickRestart && this.quickRestartAllowed()) {
+        this.beginRace(); return;
+      }
 
       if (this.state === 'countdown') {
         this.countdown -= dt;
@@ -7085,9 +7272,28 @@
      *
      * Built here, once, before the camera and the renderer both read it.
      */
+    /* HOW FAR A CAR IS TIPPED, ALL IN.
+     *
+     *   pitch      the suspension - squat, dive, and the body on its springs,
+     *              or the whole attitude of the car once it is in the air
+     *   roadPitch  the slope of the road under it
+     *   rampPitch  the slope of the RAMP it is climbing, which is a structure
+     *              laid on the road and belongs to neither of the other two
+     *
+     * The third was computed by the solver every frame a car was on a ramp and
+     * then read by nothing: the car rose with the surface and stayed dead
+     * level, so its bonnet drove into the slope. Six degrees on a coastal
+     * kicker, eighteen on the blocked bore - which is the whole front of the
+     * car inside the ramp. It is zero once the car is airborne, because from
+     * there the flight owns the attitude and writes `pitch` itself.
+     */
+    static bodyPitch(car) {
+      return (car.pitch || 0) + (car.roadPitch || 0) + (car.rampPitch || 0);
+    }
+
     poseCar() {
       M4.trs(this.model, this.car.x, this.car.y, this.car.z,
-        this.car.yaw, (this.car.pitch || 0) + (this.car.roadPitch || 0), this.car.roll);
+        this.car.yaw, Game.bodyPitch(this.car), this.car.roll);
       /* Chapter 6's baler flattens the car. A director sets carSquash and the
          body scales with it, in its own axes, so the crush is the actual car
          being crushed rather than a cut to a prop. Nothing else writes it. */
@@ -7130,7 +7336,7 @@
          Composed here because the input belongs to this side; the core is
          given the answer rather than the parts. */
       const yaw = car.yaw + (this.lookYaw || 0);
-      const pitch = (car.pitch || 0) + (car.roadPitch || 0)
+      const pitch = Game.bodyPitch(car)
         + (this.lookPitch || 0) * 0.9 + POV_PITCH;
       const cam = NR.camPov ? NR.camPov(this.model, yaw, pitch) : null;
       /* No core, no eye. Rather than invent one, say so and let the chase
@@ -7381,7 +7587,7 @@
          every frame passes through, whatever is happening. */
       if (this.intro) this.introCamera();
       const near = this.activeCam() === 1 ? CAM.nearPov : CAM.near;
-      this.camNear = near;   // read by tools/smoke.js --probe bonnet
+      this.camNear = near;   // read by tools/smoke.py --probe bonnet
       M4.perspectiveLH(this.proj, this.fov * Math.PI / 180, this.w / this.h, near, CAM.far);
       this.nearPlane = near;
       /* Sub-pixel jitter for the temporal resolve. Halton(2,3) over eight
@@ -7474,7 +7680,7 @@
       // the rival first, so the player's own car composites over it
       if (this.rival && !this.storyHideRival && this.state !== 'menu' && this.state !== 'controls') {
         M4.trs(this.rivalModel, this.rival.x, this.rival.y, this.rival.z,
-          this.rival.yaw, (this.rival.pitch||0)+(this.rival.roadPitch||0), this.rival.roll);
+          this.rival.yaw, Game.bodyPitch(this.rival), this.rival.roll);
         /* R-IX // IMPOSSIBLE is not a difficulty label with a blue car behind
            it. The Free Roam terminal offers "the one that hunted you" as the
            top opponent, and it was fielding the ordinary rival livery - so the
@@ -7505,7 +7711,7 @@
           if (!e || !e.car) continue;
           e._model = e._model || M4.make();
           M4.trs(e._model, e.car.x, e.car.y, e.car.z,
-            e.car.yaw, (e.car.pitch||0)+(e.car.roadPitch||0), e.car.roll);
+            e.car.yaw, Game.bodyPitch(e.car), e.car.roll);
           this.scene.drawCar(e._model, true,
             { livery: 'rival', steer: e.car.steer || 0, brake: lampOf(e.car),
               ...wheelsOf(e.car) });
@@ -7879,6 +8085,11 @@
         const lp = this.lookPunch === undefined ? 1.06 : this.lookPunch;
         U.f(gl, u.uSat, FX.saturation * (ls / 1.22) * (1 - raceModeGrade * .10));
         U.f(gl, u.uPunch, (FX.contrast * (lp / 1.06)) + raceModeGrade * .06);
+        /* The grade's own chroma push, on the same COLOUR row as the transform's
+           - one control, two places it lands. It can be honest about the number
+           now that the push is headroom-limited and cannot clip a channel to
+           black; see the note beside it in POST_FRAG. */
+        U.f(gl, u.uGradeSat, GRADE_SAT * (ls / 1.22) * (1 - raceModeGrade * .10));
         U.f(gl, u.uGodAmt, FX.godrayAmount);
         U.f(gl, u.uSsrAmt, this.useSsr ? 1 : 0);
         U.f(gl, u.uDofAmt, this.useDof ? 1 : 0);
@@ -8264,7 +8475,7 @@
      for the harnesses that assert a ramp stands on a straight. */
   global.NR.COURSE_RAMPS = COURSE_RAMPS;
   /* js/chapters.js builds the structure against exactly these marks, and
-     tools/checkramps.js checks the three descriptions against each other. */
+     tools/check.py ramps checks the three descriptions against each other. */
   global.NR.FORGE_ROOF = FORGE_ROOF;
   /* The title screen's running order, published so a tool can start the drive
      somewhere in particular. Every menu defect reported so far has been at a
