@@ -134,18 +134,73 @@ pub fn apply_env(r: Renderer) {
 
 /// A short human-readable description of the graphics path, for the options
 /// screen and for a bug report.
+///
+/// THREE PLATFORMS, NOT TWO. This used to ask only whether it was Windows
+/// and call everything else WebKitGTK, which on a Mac is a bug report that
+/// names the wrong graphics stack - the webview there is WKWebView on Metal
+/// and has never been through GTK or llvmpipe in its life. A diagnostic that
+/// confidently states something untrue is worse than one that says nothing,
+/// because it is the line whoever reads the report starts from.
+///
+/// macOS has no software fall-back to name, either. `apply_env` sets nothing
+/// there and `browser_args` returns an empty string, so the CPU renderer is
+/// a launcher row that cannot be honoured rather than a path that exists -
+/// and it says so instead of claiming a rasteriser it has not selected.
 pub fn describe(r: Renderer) -> &'static str {
-    match (cfg!(target_os = "windows"), r) {
-        (true, Renderer::Gpu) => "WebView2 / ANGLE / Direct3D 11",
-        (true, Renderer::Cpu) => "WebView2 / ANGLE / SwiftShader (software)",
-        (false, Renderer::Gpu) => "WebKitGTK / OpenGL",
-        (false, Renderer::Cpu) => "WebKitGTK / llvmpipe (software)",
+    #[cfg(target_os = "windows")]
+    {
+        match r {
+            Renderer::Gpu => "WebView2 / ANGLE / Direct3D 11",
+            Renderer::Cpu => "WebView2 / ANGLE / SwiftShader (software)",
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match r {
+            Renderer::Gpu => "WKWebView / Metal",
+            Renderer::Cpu => "WKWebView / Metal (no software path on this platform)",
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        match r {
+            Renderer::Gpu => "WebKitGTK / OpenGL",
+            Renderer::Cpu => "WebKitGTK / llvmpipe (software)",
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WHICHEVER PLATFORM THIS IS BUILT FOR, the description has to name the
+    /// webview that platform actually uses, and the two renderers have to be
+    /// distinguishable from one another. Checked as a property because the
+    /// wording is a presentation decision and the correctness is not.
+    #[test]
+    fn every_platform_names_its_own_webview() {
+        let gpu = describe(Renderer::Gpu);
+        let cpu = describe(Renderer::Cpu);
+        let want = if cfg!(target_os = "windows") {
+            "WebView2"
+        } else if cfg!(target_os = "macos") {
+            "WKWebView"
+        } else {
+            "WebKitGTK"
+        };
+        assert!(gpu.contains(want), "GPU says {gpu:?}, which is not {want}");
+        assert!(cpu.contains(want), "CPU says {cpu:?}, which is not {want}");
+        assert_ne!(gpu, cpu, "the two renderers read the same");
+        // ...and no platform describes another platform's stack
+        for other in ["WebView2", "WKWebView", "WebKitGTK"] {
+            if other == want {
+                continue;
+            }
+            assert!(!gpu.contains(other) && !cpu.contains(other),
+                "this build claims to be running {other}");
+        }
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

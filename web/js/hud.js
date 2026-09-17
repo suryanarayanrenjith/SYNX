@@ -9,17 +9,19 @@
 (function (global) {
   'use strict';
 
-  /* WHICH KEY AN ACTION IS ON, for the few places the interface has to name
-     one. Read from the live bindings rather than written into the string,
-     because a hard-coded key name is a lie the moment somebody rebinds it -
-     and, as the boost meter proved, it can be a lie from the day it is typed.
-     Falls back to the action's own name rather than to a guess, so a missing
-     binding reads as a missing binding. */
+  /* WHICH KEY AN ACTION IS ON, for the several places the interface has to
+     name one. Read from the live bindings rather than written into the
+     string, because a hard-coded key name is a lie the moment somebody
+     rebinds it - and, as the boost meter and the raceMode widget both
+     proved, it can be a lie from the day it is typed.
+
+     One implementation, in js/game.js, next to the bindings themselves and
+     shared with the chapter directors. This name stays because the call
+     sites below read better with it. Empty means NOTHING IS BOUND, and each
+     caller decides what to say about that. */
   function keyFor(g, action) {
-    const inp = g && g.input;
-    const label = global.NR && global.NR.bindLabel;
-    if (!inp || !inp.keysFor || !label) return String(action).toUpperCase();
-    return label(inp.keysFor(action));
+    const f = global.NR && global.NR.keyFor;
+    return f ? f(g, action) : '';
   }
 
   const AMBER = '#ffb400';
@@ -1637,7 +1639,12 @@
            and it would have gone on being wrong for anybody who rebound it
            anyway. NR.bindLabel renders whatever the action is actually on,
            the same way the CONTROLS rows do. */
-        caption = blue ? 'BLUE RESERVE  //  FULL' : 'BOOST READY  //  ' + keyFor(g, 'boost');
+        /* An action with no key left on it is not offered one: the meter
+           still says the boost is there to spend, on a pad or after a
+           rebind, and does not name a key that does nothing. */
+        const bk = keyFor(g, 'boost');
+        caption = blue ? 'BLUE RESERVE  //  FULL'
+          : 'BOOST READY' + (bk ? '  //  ' + bk : '');
       } else {
         state = 'part';
         edge = blue ? '#38bfff' : 'rgba(120,190,240,0.55)';
@@ -2601,8 +2608,14 @@
         const rx = 570, ry = 150;
         const ready = !rm.active && rm.cooldown <= 0;
         const col = rm.active ? '#45d7ff' : (ready ? '#5affc0' : INK.mute);
+        /* THE KEY, NOT THE LETTER R. This widget is the merge of three that
+           each drew their own meter, and the wording it inherited had the
+           key typed into it - so moving RACE MODE off R left the one place
+           that tells the player how to spend it pointing at the old key. */
+        const rk = keyFor(g, 'raceMode');
         const label = rm.active ? 'raceMode  //  ' + rm.timer.toFixed(1) + 's'
-          : (ready ? 'raceMode  //  R' : 'raceMode  //  ' + Math.ceil(rm.cooldown) + 's');
+          : (ready ? 'raceMode' + (rk ? '  //  ' + rk : '')
+            : 'raceMode  //  ' + Math.ceil(rm.cooldown) + 's');
         /* One bar, three meanings, and it always fills toward the right:
            ACTIVE counts the window down, COOLDOWN counts the wait back up,
            READY is full. A meter that emptied for one and filled for another
@@ -3501,17 +3514,19 @@
          up arrow. `cap` takes the FIRST key bound to an action, because this
          is a reminder and not the reference; the reference is the CONTROLS
          screen, which lists every key on every action. */
+      /* ASKED OF THE INPUT LAYER, not of the settings blob. The blob was a
+         second opinion, and it differed from the game in the one case that
+         matters: a row the player had CLEARED fell through to the default
+         here and the card went on printing a key that no longer did
+         anything. keyLabel of nothing is the em dash, which is what an
+         unbound row on the CONTROLS screen shows too. */
       const NRk = global.NR;
-      const B = (g.settings && g.settings.binds) || {};
-      const cap = (action, fallback) => {
-        const list = B[action] || (NRk.ACTION_DEFAULTS && NRk.ACTION_DEFAULTS[action]);
-        return (list && list.length) ? NRk.keyLabel(list[0]) : (fallback || '—');
-      };
+      const cap = (action) => NRk.keyLabel(NRk.boundKeys(g, action)[0]);
       const rows = [
-        ['GAS / BRAKE', [cap('throttle', 'UP'), cap('brake', 'DOWN')], 110],
-        ['STEER', [cap('left', 'LEFT'), cap('right', 'RIGHT')], 56],
-        ['DRIFT', [cap('ebrake', 'SPACE'), '+', cap('left', 'LEFT') + ' / ' + cap('right', 'RIGHT')], 2],
-        ['BOOST', [cap('boost', 'B')], -52],
+        ['GAS / BRAKE', [cap('throttle'), cap('brake')], 110],
+        ['STEER', [cap('left'), cap('right')], 56],
+        ['DRIFT', [cap('ebrake'), '+', cap('left') + ' / ' + cap('right')], 2],
+        ['BOOST', [cap('boost')], -52],
         /* WHAT R ACTUALLY DOES HERE, which is not the same everywhere.
            Inside a chapter it is RACE MODE and nothing else - the restart half
            is off, because a mis-hit would throw away a run that can be thirty
@@ -3519,7 +3534,7 @@
            RESTART on a key that will not restart is worse than a card that
            does not mention it. */
         [g.quickRestartAllowed && !g.quickRestartAllowed() ? 'PAUSE' : 'PAUSE / RESTART',
-          [cap('pause', 'ESC'), cap('raceMode', 'R')], -106],
+          [cap('pause'), cap('raceMode')], -106],
       ];
       for (let ri = 0; ri < rows.length; ri++) {
         const [name, keys, y] = rows[ri];

@@ -29,6 +29,11 @@
 # The differential harness writes here.
 /target/diff/
 
+# tools/release.py collects one platform's finished downloads here. Every
+# file in it is a copy of something under /target/, and the release workflow
+# rebuilds the lot on every push.
+/dist/
+
 # ----------------------------------------------------------------- tools ----
 /tools/__pycache__/
 __pycache__/

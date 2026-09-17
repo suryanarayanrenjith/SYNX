@@ -9,6 +9,12 @@
     python tools/build.py --bundle        ...and an installer
     python tools/build.py --run           ...and launch it when it is done
 
+    python tools/build.py --target aarch64-apple-darwin --bundles app,dmg
+                                          one release artefact, for one target
+    python tools/build.py --test --check --no-host
+                                          everything that can fail, and nothing
+                                          that takes ten minutes
+
 THREE ARTEFACTS, IN THIS ORDER, because the first two go inside the third:
 
   1. crates/synx-core  ->  web/wasm/synx_core.wasm
@@ -55,6 +61,51 @@ from synx.report import C                                       # noqa: E402
 PY = sys.executable
 
 
+def tauri_cli():
+    """How to invoke the Tauri CLI, whichever way it happens to be installed.
+
+    Two ways exist and both are normal. `cargo install tauri-cli` puts a
+    `cargo-tauri` on the path and is what a Rust machine usually has; the npm
+    package `@tauri-apps/cli` puts a `tauri` there and ships a PREBUILT
+    binary, which is why the release workflow uses it - compiling the CLI
+    from source costs more than compiling the game does.
+
+    Returns None when neither is there, and the caller decides whether that
+    is a note or the end of the build.
+
+    THE PATH IS RESOLVED, NOT ASSUMED. npm installs the standalone CLI on
+    Windows as `tauri.cmd`, and a bare 'tauri' handed to CreateProcess does
+    not find it - the extension search that a shell would do is the shell's,
+    and there is deliberately no shell here (see `run`). which() applies
+    PATHEXT and hands back something that can actually be started.
+    """
+    if shutil.which('cargo-tauri'):
+        return ['cargo', 'tauri']
+    standalone = shutil.which('tauri')
+    if standalone:
+        return [standalone]
+    return None
+
+
+def host_exe(target):
+    """Where cargo leaves the host binary, with and without a --target.
+
+    Passing --target moves the whole output tree down one level, which is the
+    one thing about cross-compiling that silently breaks a script with the
+    path written down. paths.EXE is the no-target answer and stays correct.
+
+    The FILENAME is the cargo package's, not the product name: Tauri 2 stopped
+    renaming the binary to match `productName`, so it is `synx` everywhere and
+    `SYNX` is only what the finished bundle is called. On a case-sensitive
+    filesystem that difference is the bundler failing to find its own
+    executable, so it is worth being exact about.
+    """
+    if not target:
+        return paths.EXE
+    name = 'synx.exe' if 'windows' in target else 'synx'
+    return paths.ROOT / 'target' / target / 'release' / name
+
+
 def step(msg):
     print('\n%s=== %s ===%s' % (C.cyan, msg, C.off))
 
@@ -92,7 +143,25 @@ def main(argv=None):
     ap.add_argument('--all', action='store_true')
     ap.add_argument('--bundle', action='store_true')
     ap.add_argument('--run', action='store_true')
+    ap.add_argument('--target', metavar='TRIPLE',
+                    help='build the host for this Rust target instead of this machine')
+    ap.add_argument('--no-host', action='store_true', dest='no_host',
+                    help='stop after the checks; do not build the desktop host.'
+                         ' The release workflow gates on this before it starts'
+                         ' four builds it would only throw away')
+    ap.add_argument('--bundles', metavar='LIST',
+                    help='what to ask the bundler for, e.g. deb,rpm or nsis or app,dmg.'
+                         ' Implies --bundle, and a missing CLI is then a failed build'
+                         ' rather than a note')
     a = ap.parse_args(argv)
+    if a.bundles:
+        a.bundle = True
+    # A cross build cannot be launched here, and saying so beats trying it.
+    if a.run and a.target:
+        fail('--run cannot launch a %s build on this machine' % a.target)
+    # ...and there is nothing to launch or wrap up if it was never built.
+    if a.no_host and (a.run or a.bundle):
+        fail('--no-host cannot be combined with --run or a bundle')
     want_test = a.all or a.test
     want_check = a.all or a.check or a.smoke
     want_smoke = a.all or a.smoke
@@ -193,21 +262,55 @@ def main(argv=None):
         run([PY, smoke, '--seconds', 70, '--route', 0, '--preset', 2], 'route 0 smoke test')
         run([PY, smoke, '--seconds', 95, '--route', 6, '--preset', 2], 'Chapter 7 smoke test')
 
+    # Everything above this line is the game; everything below it is the
+    # DELIVERY of the game. --no-host stops between the two.
+    if a.no_host:
+        print('\n%s  checks only: the desktop host was not built%s' % (C.grey, C.off))
+        return 0
+
     # -------------------------------------------------- 4. the host exe ---
-    step('Desktop host')
-    run(['cargo', 'build', '-p', 'synx', '--release'], 'host build')
-    if not paths.EXE.exists():
-        fail('cargo reported success but %s is not there' % paths.rel(paths.EXE))
+    step('Desktop host' + (' (%s)' % a.target if a.target else ''))
+    cmd = ['cargo', 'build', '-p', 'synx', '--release']
+    if a.target:
+        cmd += ['--target', a.target]
+    run(cmd, 'host build')
+    exe = host_exe(a.target)
+    if not exe.exists():
+        fail('cargo reported success but %s is not there' % paths.rel(exe))
     print('\n%s  %s  %s  %s%s'
-          % (C.green, paths.EXE.name, mb(paths.EXE.stat().st_size), paths.EXE, C.off))
+          % (C.green, exe.name, mb(exe.stat().st_size), exe, C.off))
 
     # ----------------------------------------------------- 5. installer ---
+    #
+    # THE EXECUTABLE ABOVE IS ALREADY THE GAME. Everything in web/ is compiled
+    # into it, so a bundle is a matter of how that file is DELIVERED - an
+    # installer that puts it on a Start menu, a .deb a package manager can
+    # remove again, a .dmg that opens with the application in it. None of them
+    # changes what runs.
+    #
+    # `--bundles` names them and the config's own list is then ignored, which
+    # is what the release workflow wants: "all" on Linux means an AppImage as
+    # well, and that one downloads a runtime while it builds.
     if a.bundle:
-        step('Installer')
-        r = subprocess.run(['cargo', 'tauri', 'build'], cwd=str(paths.ROOT))
-        if r.returncode != 0:
-            print('%s  cargo-tauri is not installed; the executable above is already'
-                  ' self-contained.%s' % (C.yellow, C.off))
+        step('Bundle' + (' [%s]' % a.bundles if a.bundles else ''))
+        cli = tauri_cli()
+        if not cli:
+            msg = ('no Tauri CLI on the path: install one with'
+                   ' `cargo install tauri-cli --version "^2"`'
+                   ' or `npm i -g @tauri-apps/cli@^2`')
+            # Asked for by name, so not getting it is a failed build. Without
+            # --bundles it is a developer convenience and a note is right.
+            if a.bundles:
+                fail(msg)
+            print('%s  %s; the executable above is already self-contained.%s'
+                  % (C.yellow, msg, C.off))
+        else:
+            cmd = cli + ['build']
+            if a.target:
+                cmd += ['--target', a.target]
+            if a.bundles:
+                cmd += ['--bundles', a.bundles]
+            run(cmd, 'bundle')
 
     if a.run:
         step('Launching')

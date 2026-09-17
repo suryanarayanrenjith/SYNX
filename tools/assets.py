@@ -10,6 +10,7 @@
     python tools/assets.py gentex [--force]   generate the R-IX surface maps
     python tools/assets.py scene  [--write]   drop geometry nothing submits
     python tools/assets.py sfx    [--write]   synthesise the one-shots
+    python tools/assets.py icons  [--write]   build src-tauri/icons/icon.icns
 
 WHY ONE FILE
 ------------
@@ -28,6 +29,7 @@ import argparse
 import json
 import math
 import re
+import struct
 import sys
 
 sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parent))
@@ -839,12 +841,115 @@ def cmd_sfx(args):
     return 0
 
 
+# ================================================== the desktop icon set ===
+#
+# WHAT THIS IS FOR
+#
+# The bundler wants one icon file per platform and they are three different
+# formats: a .ico on Windows, loose .png on Linux, and a .icns on macOS. The
+# first two are in the tree already. The third was not, and the macOS half of
+# the release had no icon to put on the application at all.
+#
+# It is generated rather than drawn because there is nothing to draw: an .icns
+# is a container, and every image that goes into it is already sitting inside
+# icon.ico at exactly the sizes macOS asks for. Regenerating it from that file
+# is also what keeps the platforms from drifting - change the artwork once, run
+# this, and all three carry the same picture.
+#
+# THE FORMAT
+#     'icns'  + uint32 big-endian total length, then, end to end:
+#     OSType  + uint32 big-endian length INCLUDING these eight bytes + payload
+#
+# Every payload here is a PNG, which macOS has accepted for these types since
+# 10.7 and which is what `iconutil` itself writes.
+#
+# WHAT IS NOT IN IT, AND WHY NOT. macOS defines slots up to 1024 square and the
+# largest artwork in this tree is 256. Nothing is upscaled to fill them: an
+# invented 1024 is a blurry icon that LOOKS authored, where an absent one lets
+# the window server scale the 256 itself and be honest about what it has. If a
+# larger source is ever added, add its entries here and they will be used.
+ICNS_SLOTS = [
+    # (OSType, pixel size it must be) - the retina types are listed with the
+    # size they actually contain, not the point size they are named for.
+    (b'icp4', 16),      # 16pt
+    (b'icp5', 32),      # 32pt
+    (b'icp6', 64),      # 64pt
+    (b'ic07', 128),     # 128pt
+    (b'ic08', 256),     # 256pt
+    (b'ic11', 32),      # 16pt @2x
+    (b'ic12', 64),      # 32pt @2x
+    (b'ic13', 256),     # 128pt @2x
+]
+
+
+def _ico_pngs(blob):
+    """Every PNG inside a .ico, keyed by its square size.
+
+    Windows icons may hold either a PNG or a headerless BMP per entry; this
+    tree's are all PNG and anything else is skipped rather than converted,
+    because converting one would mean writing a BMP decoder for a case that
+    does not occur.
+    """
+    if len(blob) < 6 or blob[0:4] != b'\x00\x00\x01\x00':
+        raise SystemExit('src-tauri/icons/icon.ico is not an icon file')
+    out = {}
+    count = struct.unpack_from('<H', blob, 4)[0]
+    for i in range(count):
+        w, h, _, _, _, _, size, off = struct.unpack_from('<BBBBHHII', blob, 6 + i * 16)
+        w, h = w or 256, h or 256
+        if w != h or off + size > len(blob):
+            continue
+        img = blob[off:off + size]
+        if img[:8] == b'\x89PNG\r\n\x1a\n':
+            out[w] = img
+    return out
+
+
+def cmd_icons(args):
+    """Build src-tauri/icons/icon.icns from src-tauri/icons/icon.ico."""
+    icons = paths.SRC_TAURI / 'icons'
+    src = icons / 'icon.ico'
+    if not src.exists():
+        raise SystemExit('there is no %s to build from' % paths.rel(src))
+    have = _ico_pngs(src.read_bytes())
+    if not have:
+        raise SystemExit('%s carries no PNG entries' % paths.rel(src))
+
+    entries, missing = [], []
+    for otype, px in ICNS_SLOTS:
+        png = have.get(px)
+        if png is None:
+            missing.append((otype.decode(), px))
+            continue
+        entries.append(otype + struct.pack('>I', len(png) + 8) + png)
+    if not entries:
+        raise SystemExit('none of the sizes macOS asks for are in %s' % paths.rel(src))
+
+    body = b''.join(entries)
+    icns = b'icns' + struct.pack('>I', len(body) + 8) + body
+
+    out = icons / 'icon.icns'
+    for otype, px in ICNS_SLOTS:
+        if have.get(px) is not None:
+            print('  %s  %4d x %-4d %s bytes' % (otype.decode(), px, px,
+                                                 '{:,}'.format(len(have[px]))))
+    for name, px in missing:
+        print('  %s  %4d x %-4d not in the source, left out' % (name, px, px))
+    if not args.write:
+        print('\n  would write %s, %s bytes' % (paths.rel(out), '{:,}'.format(len(icns))))
+        print('\n--write to apply')
+        return 0
+    out.write_bytes(icns)
+    print('\n  %s  %s bytes' % (paths.rel(out), '{:,}'.format(len(icns))))
+    return 0
+
+
 # =================================================================== main ===
 
 COMMANDS = {
     'pack': cmd_pack, 'unpack': cmd_unpack, 'check': cmd_check, 'list': cmd_list,
     'shrink': cmd_shrink, 'atlas': cmd_atlas, 'gentex': cmd_gentex,
-    'scene': cmd_scene, 'sfx': cmd_sfx,
+    'scene': cmd_scene, 'sfx': cmd_sfx, 'icons': cmd_icons,
 }
 
 

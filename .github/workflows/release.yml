@@ -1,0 +1,315 @@
+# SYNX — the desktop release, built on every push.
+#
+# WHAT THIS PRODUCES
+#
+#   Windows   x86_64   an NSIS installer and a portable .zip
+#   Linux     x86_64   a .deb, an .rpm and a portable .tar.gz
+#   macOS     arm64    a .dmg for Apple silicon
+#   macOS     x86_64   a .dmg for Intel
+#
+# ...plus one SHA256SUMS.txt covering all of them.
+#
+# WHERE THEY GO
+#
+# A push to `main` replaces the rolling `nightly` prerelease, so the newest
+# build of the current code is always one link away and the release list does
+# not grow by one entry per commit. A pushed `v*` tag publishes a permanent,
+# non-prerelease build at that tag instead. Both run the same jobs; the only
+# difference is what the last one is told to call the result.
+#
+# WHY NOT tauri-action
+#
+# This repository has a build of its own and it is not optional: the Rust
+# simulation core and the recorder are compiled to WebAssembly and copied into
+# web/ BEFORE the desktop host is built, because the host embeds web/ whole.
+# An action that runs `tauri build` on its own would compile a host around a
+# missing core. tools/build.py is the one description of that order, so the
+# workflow calls it rather than restating it - see also tools/release.py, which
+# owns the artefact names.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+# The release job creates releases and tags; nothing else here writes.
+permissions:
+  contents: write
+
+# Two pushes in quick succession would otherwise race to replace the same
+# rolling release, and the loser would be the newer one.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ======================================================================
+  # Everything that can fail cheaply, before anything expensive starts.
+  #
+  # The unit tests and the repository's own checkers need the WebAssembly
+  # modules but not the desktop host, which is what --no-host is for: this
+  # job is three minutes, and the four builds it gates are twenty.
+  # ======================================================================
+  verify:
+    name: Tests and checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # Six of the checkers run the game's own JavaScript, which is the only
+      # honest way to check JavaScript. See tools/synx/jsprobe.py.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: verify
+
+      - run: python tools/build.py --test --check --no-host
+
+  # ======================================================================
+  # Windows and the two Macs. All three have a Rust toolchain and a Python
+  # on the image already, so they share one set of steps.
+  # ======================================================================
+  desktop:
+    name: ${{ matrix.name }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (x86_64)
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - name: macOS (Apple silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          # macos-latest is Apple silicon, so this one is a cross build. It is
+          # the arrangement Tauri's own pipeline uses, and the alternative -
+          # pinning an Intel runner image - is pinning something that is being
+          # retired.
+          - name: macOS (Intel)
+            os: macos-latest
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # wasm32 for the core and the recorder; the host triple for the host.
+          targets: wasm32-unknown-unknown,${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # The npm package ships a PREBUILT binary. `cargo install tauri-cli`
+      # would compile the bundler from source, which costs more than compiling
+      # the game does.
+      - name: Install the Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+
+      - name: Build and bundle
+        run: python tools/build.py --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: Collect into dist/
+        run: python tools/release.py --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ======================================================================
+  # Linux, in a Debian 12 container.
+  #
+  # WHY A CONTAINER AND NOT THE RUNNER ITSELF. A binary built against glibc
+  # 2.39 will not start on glibc 2.35, and that is not a theoretical range: it
+  # is the difference between "runs on Ubuntu 22.04, Debian 12 and RHEL 9" and
+  # "does not". The runner images that are still supported are newer than the
+  # systems people play on, so the build happens on the oldest base that still
+  # carries WebKitGTK 4.1 - which is exactly what Tauri's own distribution
+  # guide asks for - while the runner label stays one that is not being
+  # retired underneath us.
+  #
+  # The container is bare, so everything the other jobs get from the image is
+  # installed here: a compiler, a Python, a Node, and Rust from rustup, because
+  # Debian's own rustc is several years behind what Tauri needs.
+  # ======================================================================
+  linux:
+    name: Linux (x86_64)
+    needs: verify
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:12
+    steps:
+      - name: Install the build and webview dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl file git pkg-config xz-utils \
+            python3 \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libssl-dev patchelf
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      # rustup rather than dtolnay/rust-toolchain: that action drives a rustup
+      # the hosted images already have, and this container has nothing.
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable \
+                        --target wasm32-unknown-unknown
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-gnu
+
+      - name: Install the Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+
+      # The .rpm is written by the bundler itself - it links the `rpm` crate
+      # rather than shelling out - so there is no rpmbuild to install.
+      - name: Build and bundle
+        run: python3 tools/build.py --target x86_64-unknown-linux-gnu --bundles deb,rpm
+
+      - name: Collect into dist/
+        run: python3 tools/release.py --target x86_64-unknown-linux-gnu
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-x86_64-unknown-linux-gnu
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ======================================================================
+  # One release, out of four platforms' worth of files.
+  # ======================================================================
+  publish:
+    name: Publish
+    needs: [desktop, linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Name the release
+        id: name
+        run: |
+          version=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "tag=${GITHUB_REF_NAME}"            >> "$GITHUB_OUTPUT"
+            echo "title=SYNX ${version}"             >> "$GITHUB_OUTPUT"
+            echo "prerelease=false"                  >> "$GITHUB_OUTPUT"
+          else
+            # One rolling prerelease rather than one release per commit. The
+            # tag is moved to whatever main is now, which is what makes the
+            # link on the README stable.
+            echo "tag=nightly"                       >> "$GITHUB_OUTPUT"
+            echo "title=SYNX ${version} — build ${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true"                   >> "$GITHUB_OUTPUT"
+          fi
+
+      # Each build wrote the sums for its own files. One list is what a person
+      # checking a download actually wants, and the per-platform pieces have no
+      # reason to be on the page beside it.
+      - name: Merge the checksums
+        run: |
+          cd dist
+          cat SHA256SUMS-*.txt | sort -k2 > SHA256SUMS.txt
+          rm -f SHA256SUMS-*.txt
+          ls -la
+          echo '--- SHA256SUMS.txt ---'
+          cat SHA256SUMS.txt
+
+      - name: Write the release notes
+        run: |
+          {
+            echo "Built from \`${GITHUB_SHA}\` on \`${GITHUB_REF_NAME}\`."
+            echo
+            echo "| Platform | Download |"
+            echo "| --- | --- |"
+            echo "| Windows | \`-setup.exe\` to install, \`-portable.zip\` to just run it |"
+            echo "| Linux | \`.deb\`, \`.rpm\`, or \`.tar.gz\` on any other distribution |"
+            echo "| macOS (Apple silicon) | \`-apple-silicon.dmg\` |"
+            echo "| macOS (Intel) | \`-intel.dmg\` |"
+            echo
+            echo "Nothing here is code-signed. Windows SmartScreen will ask once"
+            echo "(More info → Run anyway); macOS will refuse a double-click, so"
+            echo "open it from the right-click menu the first time, or run"
+            echo "\`xattr -dr com.apple.quarantine /Applications/SYNX.app\`."
+            echo
+            echo "The Linux builds are made on Debian 12, so they need glibc 2.36"
+            echo "or newer and a WebKitGTK 4.1 runtime."
+            echo
+            echo "\`SHA256SUMS.txt\` covers every file above."
+            echo
+            echo "**Photosensitivity warning:** SYNX contains rapidly flashing"
+            echo "lights, high-contrast strobing and saturated neon effects."
+          } > NOTES.md
+          cat NOTES.md
+
+      # The rolling release is REPLACED rather than added to: leaving it in
+      # place would carry the previous version's files alongside the new
+      # ones the moment the version number changes.
+      - name: Clear the previous rolling build
+        if: github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete nightly --yes --cleanup-tag || true
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.name.outputs.tag }}
+          name: ${{ steps.name.outputs.title }}
+          body_path: NOTES.md
+          prerelease: ${{ steps.name.outputs.prerelease }}
+          target_commitish: ${{ github.sha }}
+          files: dist/*
+          fail_on_unmatched_files: true
+          # A rolling prerelease must not displace the newest real
+          # release as the one the repository points people at.
+          make_latest: ${{ github.ref_type == 'tag' }}

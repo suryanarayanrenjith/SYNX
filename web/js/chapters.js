@@ -1871,6 +1871,23 @@
   const clamp = (v,a,b) => Math.max(a, Math.min(b,v));
   const smooth = v => { v=clamp(v,0,1); return v*v*(3-2*v); };
 
+  /* THE ONE INSTRUCTION IN THIS CHAPTER THAT NAMES KEYS.
+   *
+   * Calibration is where the player is handed raceMode and told what to do
+   * with it, and the card used to say PRESS R ... HOLD B - which was correct
+   * for the default layout and wrong for everybody who had changed either.
+   * Being told the wrong key during the one beat that teaches the ability is
+   * as bad as not being told at all.
+   *
+   * An action with no key left on it is named rather than pointed at: the
+   * pad still has both, so the instruction is still true, it just cannot be
+   * given as a letter. */
+  function raceModeBrief(g) {
+    const r = NR.keyFor(g, 'raceMode'), b = NR.keyFor(g, 'boost');
+    return (r ? 'PRESS ' + r : 'USE RACE MODE') + ' WHEN NOVA CALLS IT. '
+      + (b ? 'HOLD ' + b : 'HOLD BOOST') + ' UNTIL BLUE RESERVE IS EMPTY.';
+  }
+
   /* The chapter, as distances. The factory course turns twice - a tight snake
      from 112.5 to 115.8 km and a wider set of six from 116.4 to 118.9 - and
      then runs dead straight to the end. The two trials that are about reading
@@ -4499,7 +4516,7 @@
       this.phase='skillCard';this.phaseTime=0;this.g.story.setDialogueVisible(false);this.ui.skill.classList.add('show');this.ui.skill.setAttribute('aria-hidden','false');this.g.audio.goBeep();}
     startTest(){
       this.phase='test';this.phaseTime=0;this.ui.skill.classList.remove('show');this.ui.skill.setAttribute('aria-hidden','true');this.g.story.mode='race';this.g.state='racing';this.g.story.setLayer(this.g.story.ui.letterbox,false);global.document.body.classList.remove('story-cinematic');
-      this.g.story.setVehicle(this.g.car,TEST_START,0,0);this.g.car.boost=1;this.g.story.setVehicle(this.g.rival,START,-6,0);this.g.storyHideRival=true;this.g.distance=TEST_START;this.g.raceOver=false;this.g.raceModeAvailable=true;this.g.blockQuickRestart=true;this.ui.phase.textContent='AURORA FORGE // CALIBRATION';this.ui.objectiveText.textContent='CLEAR THE HAULER';this.updateRule();this.showRound('ABILITY TEST // STRAIGHT 07','raceMode','PRESS R WHEN NOVA CALLS IT. HOLD B UNTIL BLUE RESERVE IS EMPTY.',3.4);this.g.story.showCompact('NOVA','calculating','Hauler ahead. Do not brake yet.',3.4);
+      this.g.story.setVehicle(this.g.car,TEST_START,0,0);this.g.car.boost=1;this.g.story.setVehicle(this.g.rival,START,-6,0);this.g.storyHideRival=true;this.g.distance=TEST_START;this.g.raceOver=false;this.g.raceModeAvailable=true;this.g.blockQuickRestart=true;this.ui.phase.textContent='AURORA FORGE // CALIBRATION';this.ui.objectiveText.textContent='CLEAR THE HAULER';this.updateRule();this.showRound('ABILITY TEST // STRAIGHT 07','raceMode',raceModeBrief(this.g),3.4);this.g.story.showCompact('NOVA','calculating','Hauler ahead. Do not brake yet.',3.4);
     }
     activateRaceMode(){
       if(this.raceModeActive||this.raceModeCooldown>0)return;this.raceModeActive=true;this.raceModeTimer=30;this.raceModeCooldown=70;this.reserveLoaded=false;this.truckCleared=true;this.truckClearT=this.g.time;this.activationTime=0;this.activationS=this.g.car.sTrack;this.activationLateral=this.g.car.lateral||0;this.activationSpeed=Math.max(28,this.g.car.vLong||this.g.car.speed||0);this.phase='modeCinematic';this.g.raceModeActive=true;this.g.raceModeBlueFuel=true;this.g.car.raceModeMultiplier=1.5;this.g.car.boosting=true;this.g.state='story';this.g.story.mode='level6Special';this.g.story.setLayer(this.g.story.ui.letterbox,true);global.document.body.classList.add('forge6-racemode','story-cinematic');this.ui.skill.classList.add('show');this.ui.skill.setAttribute('aria-hidden','false');this.skillFlash=0;if(this.g.fx&&this.g.fx.raceModeBurst)this.g.fx.raceModeBurst(this.g.car);this.g.audio.boostHit();this.g.flash=.09;this.g.shake=.48;this.g.story.showCompact('NOVA','smug','Now. Give it everything.',3.0);

@@ -3981,15 +3981,93 @@
          led the road so far that the car sat at 31 degrees below the view axis
          against a 34 degree half-frame - on the bottom edge, behind the boost
          bar. Anything under about 25 leaves it clear of the HUD band. */
-      var C = g.__cam || (g.__cam = { t: 0, seen: {} });
+      /* AND THE MOVE BETWEEN THEM, WHICH IS THE OTHER HALF OF IT.
+
+         C does not cut any more - the eye travels from one rig to the
+         next over about half a second, so a probe that measured one frame
+         after the key would now measure the middle of the move and report
+         every view as being in the wrong place. It waits for the move to
+         land instead, and on the way it watches the thing the move exists
+         to be.
+
+         WHAT SEPARATES A MOVE FROM A CUT, without a frame rate in it: a
+         cut carries the whole distance in ONE frame, so its biggest step
+         IS its total. A move spreads the same distance over many, so its
+         biggest step is a small fraction of the total however fast or slow
+         the machine drawing it is. Measured against the CAR's own travel
+         subtracted, because all three rigs ride the car and the eye is
+         expected to cover ground with it. */
+      var C = g.__cam || (g.__cam = {
+        t: 0, seen: {}, moving: 0, frames: 0, jump: 0, total: 0, last: null,
+        tick: 0, frameMs: 0, armed: 0, drift: 0,
+      });
       C.t++;
-      if (C.t < 2) return;   // one frame for the new view to settle, not six
       var car = g.car;
+      /* HOW FAST THIS MACHINE IS DRAWING, which decides what the probe is
+         entitled to judge below. The move is a length of WALL CLOCK - half
+         a second or so - and on the software rasteriser this harness runs
+         on, a frame takes most of a second, so the whole move happens
+         between two frames and there is nothing left to count. Measured
+         rather than assumed, because the same probe runs on machines where
+         there is. */
+      var nowMs = performance.now();
+      if (C.tick) C.frameMs = Math.max(C.frameMs, nowMs - C.tick);
+      C.tick = nowMs;
+      if (C.moving) {
+        if (C.last) {
+          var sx = g.eye[0] - C.last[0], sy = g.eye[1] - C.last[1], sz = g.eye[2] - C.last[2];
+          var cx = car.x - C.last[3], cy = car.y - C.last[4], cz = car.z - C.last[5];
+          // how far the eye moved relative to the car it is riding
+          var stepped = Math.abs(Math.hypot(sx, sy, sz) - Math.hypot(cx, cy, cz));
+          C.jump = Math.max(C.jump, stepped);
+          C.total += stepped;
+          C.frames++;
+        }
+        C.last = [g.eye[0], g.eye[1], g.eye[2], car.x, car.y, car.z];
+        if (g.camSwitch) return;          // still travelling
+      }
+      if (C.t < 2) return;   // one frame for the new view to settle, not six
       var d = Math.hypot(g.eye[0] - car.x, g.eye[2] - car.z);
       var up = g.eye[1] - car.y;
       var name = ['CHASE', 'DRIVER', 'DRONE'][g.camMode];
       if (!C.seen[name]) {
         C.seen[name] = 1;
+        if (C.moving) {
+          /* THE CLAIM THAT HOLDS AT ANY FRAME RATE, checked where it was
+             made - see the press below. The move exists, and it starts
+             from the picture that was on the screen. Neither of those
+             depends on the machine drawing a single frame of it. */
+          if (!C.armed) {
+            note('PROBLEM: C did not arm a move - the view still cuts');
+          } else if (C.drift > 0.01) {
+            note('PROBLEM: the move started ' + C.drift.toFixed(2) +
+                 'u from where the camera actually was');
+          } else {
+            note('camera: the move into ' + name + ' was armed from the pose that was on screen (' + C.drift.toFixed(4) + 'u out)');
+          }
+          note('camera: the move into ' + name + ' drew ' + C.frames +
+               ' frame(s) over ' + C.total.toFixed(1) + 'u, biggest single frame ' +
+               C.jump.toFixed(2) + 'u (' +
+               (100 * C.jump / (C.total || 1)).toFixed(0) + '% of it)');
+          /* ...and the claim that does. A move is only visible as a move
+             on a machine that draws several frames inside half a second;
+             below that the correct behaviour and a cut are the same
+             picture, and reporting the difference as a fault would train
+             whoever reads this output to skip it. */
+          if (C.frameMs > 110) {
+            note('camera: a frame here takes up to ' + Math.round(C.frameMs) +
+                 'ms, so a half-second move cannot span frames on this machine' +
+                 ' - the shape of it is not judged');
+          } else if (C.frames < 5) {
+            note('PROBLEM: the move into ' + name + ' was over in ' + C.frames + ' frames');
+          } else if (C.jump > C.total * 0.5) {
+            note('PROBLEM: one frame carried ' +
+                 (100 * C.jump / (C.total || 1)).toFixed(0) +
+                 '% of the way into ' + name + ' - that is a cut, not a move');
+          }
+          C.moving = 0; C.frames = 0; C.jump = 0; C.total = 0; C.last = null;
+          C.armed = 0; C.drift = 0;
+        }
         note('camera: ' + name.padEnd(8) + ' eye is ' + d.toFixed(1) +
              'u from the car horizontally, ' + up.toFixed(1) + 'u above it, fov ' +
              (g.fov || 0).toFixed(0));
@@ -4020,7 +4098,20 @@
         }
         if (name === 'CHASE' && !(d > 5 && up > 1))
           note('PROBLEM: the chase camera is not behind and above');
+        /* ASKED HERE, INSIDE THE FRAME OF THE PRESS, because on a slow
+           machine the move is finished by the next one and there is
+           nothing left to ask. `camSwitch.eye` is held in the CAR's frame,
+           so it is put back through the game's own transform rather than
+           compared raw - see holdCamPose in js/game.js. */
+        var wasAt = [g.eye[0], g.eye[1], g.eye[2]];
         g.cycleCamera();
+        var sw = g.camSwitch;
+        C.armed = sw ? 1 : 0;
+        if (sw && g.worldOf) {
+          var held = g.worldOf([0, 0, 0], sw.eye, 1);
+          C.drift = Math.hypot(held[0] - wasAt[0], held[1] - wasAt[1], held[2] - wasAt[2]);
+        }
+        C.moving = 1;
         C.t = 0;
         return;
       }

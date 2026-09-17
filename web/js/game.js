@@ -86,6 +86,64 @@
      in the seat, on the core side, so that the two cannot disagree. See
      povCamera and crates/synx-core/src/driver.rs. */
   const POV_PITCH = -0.045;
+  /* HOW CLOSE TO THE CAR COUNTS AS BEING IN IT, measured on the flat and
+     from the car's centre. The cabin runs from about eight tenths of a unit
+     behind that point to a little over one in front of it, so this is the
+     greenhouse and not the bodywork around it - which is what it has to be:
+     it decides when the figure in the seat loses the head this camera is
+     inside. See frameCam. */
+  const POV_SHELL = 1.35;
+
+  /* ================================ THE SWITCH BETWEEN THEM, AS A MOVE ==
+   *
+   * C used to CUT. One frame the eye was eleven units behind the car and
+   * the next it was inside the driver's helmet, so the only thing that said
+   * which way round the three views ran was the toast in the corner. A cut
+   * is also the one thing that breaks every temporal pass in the renderer
+   * at once: the resolve has no motion vector for an eye that teleported,
+   * so the whole frame smears for as long as it takes to converge.
+   *
+   * So the eye TRAVELS between the rigs. Chase to driver dollies in through
+   * the bodywork, driver to drone climbs out and up, drone back to chase
+   * settles onto the boom. What the player reads as a zoom is the real
+   * distance between two cameras, because the camera really goes.
+   *
+   * HOW IT WORKS, AND WHY IT IS NOT A SECOND CAMERA. The new rig runs to
+   * completion every frame exactly as it always did, so all of its damped
+   * state - the boom's containment, the drone's lift, the lens - is warm
+   * and correct from the first frame of the move. The pose the player was
+   * LOOKING AT when the key went down is then dragged toward it by a weight
+   * that falls to zero. At the end the weight IS zero, so the camera is not
+   * blended into the new view, it simply is the new view, and there is no
+   * frame where control changes hands. Same construction as the opening
+   * move - see introCamera.
+   *
+   * THE HELD POSE IS BOLTED TO THE CAR, NOT TO THE WORLD. All three rigs
+   * are car-relative, so a frozen world-space pose would be left standing
+   * on the tarmac while the car drove out of it - sixty units of it over
+   * half a second at two hundred, which reads as the old camera being
+   * dropped rather than handing over. Held in the car's own frame it keeps
+   * following the car for the whole of the move, which is the only thing
+   * that makes the two ends of the blend comparable at all.
+   *
+   * ITS LENGTH IS MEASURED RATHER THAN CHOSEN. Chase to driver is about
+   * eleven units; chase to drone is thirty-five and grows with speed. One
+   * duration for both makes the short move sluggish or the long one a whip
+   * pan, so the move is timed from how far it actually has to go - latched
+   * on its first frame, which is the first moment both ends are known - and
+   * bounded at both ends so it can be neither a cut nor a wait.
+   */
+  const CAM_SWITCH = {
+    minLen: 0.34,        // seconds; under this the move reads as a cut
+    maxLen: 0.72,        // ...and over it the player is waiting for the game
+    perUnit: 0.0125,     // seconds of move per unit the eye has to travel
+    /* The lens opens on the way across and closes again at the far end.
+       Four degrees at most, on the longest move, and nothing at all on a
+       short one. What it buys is that the dolly reads as a camera moving
+       rather than as two poses being cross-faded. */
+    breathe: 0.115,
+    breatheMax: 4.2,
+  };
 
   const BLOOM_LEVELS = 6;
 
@@ -1225,6 +1283,30 @@
     return list.map(keyLabel).join('  /  ');
   }
 
+  /* WHICH KEYS AN ACTION IS ACTUALLY ON, asked of the thing that reads them.
+   *
+   * Every widget that names a key goes through here, and it goes through
+   * Input rather than through the settings blob on purpose: Input is what
+   * decides whether a press counts, so anything else is a second opinion
+   * that can differ from it. The boost meter and the controls card were both
+   * reading their own copy, and both of them were wrong in the one case that
+   * matters - an action the player had cleared.
+   *
+   * `keyFor` returns an EMPTY STRING when the action has no key at all,
+   * rather than the em dash a CONTROLS row shows. A row is a table and an
+   * empty cell in it reads as empty; a caption is a sentence, and
+   * "BOOST READY // —" invites the player to press a key called dash. The
+   * callers drop the clause instead.
+   */
+  function boundKeys(g, action) {
+    const inp = g && g.input;
+    return (inp && inp.keysFor) ? inp.keysFor(action) : EMPTY_KEYS;
+  }
+  function keyFor(g, action) {
+    const k = boundKeys(g, action);
+    return k && k.length ? bindLabel(k) : '';
+  }
+
   /* ------------------------------------------------------------------------
    * THE SECOND PAGE.
    *
@@ -1415,6 +1497,14 @@
               clean.push(k);
             }
           }
+          /* CLEARED, OR CORRUPT? A list saved as [] is a row the player
+             emptied on the CONTROLS screen and it is kept, because that is
+             what LEFT on that row means. A list that arrived with entries
+             and validated down to nothing is a damaged file, and keeps the
+             default - which is the case the old fallback in Input.keysFor
+             was really there for, applied here where the two can still be
+             told apart. */
+          if (!clean.length && list.length) continue;
           o.binds[a.key] = clean;
         }
       }
@@ -3154,13 +3244,25 @@
      * THE SAME TWO QUESTIONS, ASKED BY ACTION RATHER THAN BY KEY.
      *
      * `binds` is handed over by Game whenever the settings change. Until it
-     * is - and for any action a save has managed to strip entirely - the
-     * table's own defaults answer, so a corrupt or half-written settings file
-     * cannot produce a car that will not accelerate.
+     * is - and for any action a save has never heard of - the table's own
+     * defaults answer, so a half-written settings file cannot produce a car
+     * that will not accelerate.
+     *
+     * AN EMPTY LIST IS NOT AN ABSENT ONE, and the difference is the whole of
+     * what was wrong here. The CONTROLS screen offers LEFT to clear a row,
+     * because unbinding an action you never use is a legitimate thing to
+     * want - and this then handed the default straight back, so the key went
+     * on working, the boost meter went on advertising it, and the only
+     * visible effect of clearing the row was that the row looked empty.
+     *
+     * The corruption guard the old test existed for has moved to where it
+     * belongs: loadSettings keeps a saved [] and drops a list that arrived
+     * with entries and validated down to nothing. By the time a list reaches
+     * this method, empty means the player emptied it.
      * ------------------------------------------------------------------ */
     keysFor(action) {
       const b = this.binds && this.binds[action];
-      if (b && b.length) return b;
+      if (b) return b;
       const d = NR.ACTION_DEFAULTS && NR.ACTION_DEFAULTS[action];
       return d || EMPTY_KEYS;
     }
@@ -6885,7 +6987,17 @@
       return state;
     }
 
+    /* The gameplay camera, and then the move that may still be carrying it
+       away from the last one. In this order, and inside this method, so that
+       a director which takes the camera after calling it - js/chapters.js and
+       js/story.js both do - still wins outright, exactly as it did before
+       there was a move to lose. */
     updateCamera(dt) {
+      this.driveCamera(dt);
+      this.blendCamSwitch();
+    }
+
+    driveCamera(dt) {
       const car = this.car;
       /* Level unless something says otherwise. Only the view from inside the
          car leans, and it sets this itself - but it has to be put back, or a
@@ -7113,14 +7225,27 @@
          the player decides is broken. */
       if (this.input.actHit('clipToggle')) {
         if (R.on) { R.stop(); this.toast('RECORDING OFF', '#ffb400'); }
-        else if (R.start()) this.toast('RECORDING ON — F10 MARKS, F9 SAVES', '#5affc0');
-        else this.toast('RECORDER UNAVAILABLE' + (R.why ? ' — ' + R.why : ''), '#ff8a3a');
+        else if (R.start()) {
+          /* The two keys this line is about are rebindable, so the line is
+             assembled from the bindings. An action with no key left on it
+             drops out of the sentence rather than being advertised as a
+             dash. */
+          const mark = keyFor(this, 'clipMark'), save = keyFor(this, 'clipSave');
+          const tips = [];
+          if (mark) tips.push(mark + ' MARKS');
+          if (save) tips.push(save + ' SAVES');
+          this.toast('RECORDING ON' + (tips.length ? ' — ' + tips.join(', ') : ''), '#5affc0');
+        } else this.toast('RECORDER UNAVAILABLE' + (R.why ? ' — ' + R.why : ''), '#ff8a3a');
         return;
       }
       const askedSave = this.input.actHit('clipSave');
       const askedMark = this.input.actHit('clipMark');
       if (!askedSave && !askedMark) return;
-      if (!R.on) { this.toast('RECORDING IS OFF — PRESS F8', '#ffb400'); return; }
+      if (!R.on) {
+        const on = keyFor(this, 'clipToggle');
+        this.toast('RECORDING IS OFF' + (on ? ' — PRESS ' + on : ''), '#ffb400');
+        return;
+      }
       /* NEITHER OF THESE BLOCKS. The save is posted to the recorder's own
          thread and this returns on the same frame it was asked on; the file
          is built and written while the game carries on, and the clip comes
@@ -7236,7 +7361,14 @@
          on screen would change, because a menu is drawn from the chase
          camera whatever the preference says - see DRIVING. */
       if (!this.inRun || this.raceOver || MENUS[this._state]) return this.camMode || 0;
-      this.camMode = ((this.camMode || 0) + 1) % CAM_MODES.length;
+      const was = this.camMode || 0;
+      this.camMode = (was + 1) % CAM_MODES.length;
+      /* THE POSE ON SCREEN, HELD BEFORE ANYTHING ELSE MOVES.
+         `this.eye` is last frame's finished camera, which is exactly the
+         picture the player is looking at as the key goes down - so the move
+         starts from what is on the screen rather than from where some rig
+         believes the screen was. See CAM_SWITCH. */
+      this.holdCamPose(was, this.camMode);
       /* The look-around offsets are the chase rig's, and they mean something
          different in a fixed view - a driver whose head starts eight degrees
          off axis because the mouse was moved a minute ago is a driver who
@@ -7247,6 +7379,163 @@
       if (this.hud && this.hud.toast) this.hud.toast('VIEW // ' + CAM_MODES[this.camMode], '#39e6ff');
       writeNum(CAM_KEY, this.camMode);
       return this.camMode;
+    }
+
+    /* A world point or direction in the CAR's frame, and back out of it.
+     *
+     * Yaw only: all three rigs are placed against the car's heading and a
+     * level horizon, never against its pitch or roll - the one view that
+     * leans is the driver's, and it leans by carrying its own up vector,
+     * which travels through here as a direction like any other.
+     *
+     * `w` is 1 for a point, where the car's position is part of the frame,
+     * and 0 for a direction, where it is not.
+     *
+     * The axes are the ones the rest of this file uses: forward is
+     * (sin yaw, 0, cos yaw), which is what `fx`/`fz` are everywhere above,
+     * and lateral is the same pair the other way round. */
+    rigOf(o, x, y, z, w) {
+      const car = this.car, fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
+      const dx = x - car.x * w, dy = y - car.y * w, dz = z - car.z * w;
+      o[0] = dx * fz - dz * fx;    // lateral
+      o[1] = dy;                   // height
+      o[2] = dx * fx + dz * fz;    // along the heading
+      return o;
+    }
+
+    worldOf(o, r, w) {
+      const car = this.car, fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
+      o[0] = car.x * w + r[0] * fz + r[2] * fx;
+      o[1] = car.y * w + r[1];
+      o[2] = car.z * w - r[0] * fx + r[2] * fz;
+      return o;
+    }
+
+    /** Hold the pose that is on screen, in the car's frame, and start a move
+        from it. Called by cycleCamera and by nothing else. */
+    holdCamPose(from, to) {
+      /* No car, no frame to hold the pose in. cycleCamera has already
+         refused everything outside a run, so this is the belt on the braces
+         rather than a case that happens. */
+      if (!this.car) { this.camSwitch = null; return; }
+      const s = this.camSwitch || (this.camSwitch = {
+        eye: V3.make(), target: V3.make(), up: V3.make(),
+      });
+      /* Re-held rather than refused when one move interrupts another: a
+         player leaning on C gets a camera that keeps travelling from
+         wherever it actually is, instead of one that snaps back to the view
+         it was leaving and starts again. */
+      this.rigOf(s.eye, this.eye[0], this.eye[1], this.eye[2], 1);
+      this.rigOf(s.target, this.target[0], this.target[1], this.target[2], 1);
+      this.rigOf(s.up, this.up[0], this.up[1], this.up[2], 0);
+      s.fov = this.fov;
+      s.near = this.camNear || CAM.near;
+      s.from = from;
+      s.to = to;
+      s.at = performance.now();
+      s.len = 0;      // latched on the first blended frame, once both ends exist
+      s.span = 0;
+      s.w = 1;        // the held pose owns the frame until the blend first runs
+    }
+
+    /** Drag this frame's camera back toward the view it is leaving, by a
+        weight that has already fallen to zero by the end of the move. */
+    blendCamSwitch() {
+      const s = this.camSwitch;
+      if (!s) return;
+      /* THE MOVE BELONGS TO THE VIEW IT WAS GOING TO. A race that ends, a
+         menu that opens and a chapter that reaches a cutscene all change
+         which view is in force - see activeCam - and a move still pulling
+         toward a pose nothing is heading for is a camera fighting its own
+         director. Dropped rather than finished: the shot that took over is
+         composed, and it does not want half of the last one in it. */
+      if (!this.car || this.activeCam() !== s.to) { this.camSwitch = null; return; }
+
+      const eye = this.worldOf(this._swEye || (this._swEye = V3.make()), s.eye, 1);
+      const tgt = this.worldOf(this._swTgt || (this._swTgt = V3.make()), s.target, 1);
+      const up = this.worldOf(this._swUp || (this._swUp = V3.make()), s.up, 0);
+
+      /* HOW FAR THE MOVE HAS TO GO, MEASURED ONCE. Not when the key was
+         pressed: the new rig had not run then, so there was no far end to
+         measure to. Latched rather than re-read every frame, because the far
+         end closes as the move proceeds and a length recomputed from the
+         remaining distance is a move that never arrives. */
+      if (!s.len) {
+        s.span = Math.hypot(eye[0] - this.eye[0], eye[1] - this.eye[1],
+                            eye[2] - this.eye[2]);
+        s.len = M.clamp(CAM_SWITCH.minLen + s.span * CAM_SWITCH.perUnit,
+          CAM_SWITCH.minLen, CAM_SWITCH.maxLen);
+      }
+      /* SECONDS OF WALL CLOCK, NOT SECONDS OF SIMULATION, for both of the
+         reasons introCamera is measured that way: the frame loop clamps dt
+         against a stall and scales it for slow motion, so a move driven by
+         it would stretch to seconds on a slow machine and would crawl if the
+         player happened to clip a barrier on the way through. It also makes
+         this safe to call more than once in a frame, which the chapter and
+         story layers between them do. */
+      const k = Math.min(1, (performance.now() - s.at) / (s.len * 1000));
+      /* Smootherstep rather than smoothstep: its second derivative is zero
+         at both ends too, so the move is already going when you notice it
+         and already stopped when the new view arrives. */
+      const e = k * k * k * (k * (k * 6 - 15) + 10);
+      const w = s.w = 1 - e;
+
+      this.eye[0] += (eye[0] - this.eye[0]) * w;
+      this.eye[1] += (eye[1] - this.eye[1]) * w;
+      this.eye[2] += (eye[2] - this.eye[2]) * w;
+      this.target[0] += (tgt[0] - this.target[0]) * w;
+      this.target[1] += (tgt[1] - this.target[1]) * w;
+      this.target[2] += (tgt[2] - this.target[2]) * w;
+      /* The lean crosses with the rest of it, so the driver's view rolls
+         upright on the way out and rolls into the car on the way in rather
+         than snapping level on the frame the view changes. Renormalised
+         because two unit vectors blended are not one. */
+      this.up[0] += (up[0] - this.up[0]) * w;
+      this.up[1] += (up[1] - this.up[1]) * w;
+      this.up[2] += (up[2] - this.up[2]) * w;
+      V3.norm(this.up, this.up);
+
+      /* THE LENS CROSSES TOO, and opens a few degrees in the middle of the
+         crossing. sin(pi*e) is zero at both ends, so the extra is gone by
+         the time the new view owns the frame and cannot leave the field of
+         view a degree wide of where the rig wanted it. */
+      this.fov += (s.fov - this.fov) * w;
+      this.fov += Math.min(CAM_SWITCH.breatheMax, s.span * CAM_SWITCH.breathe)
+        * Math.sin(Math.PI * e);
+
+      if (k >= 1) this.camSwitch = null;
+    }
+
+    /* WHICH VIEW THE FRAME IS COMPOSED FOR, which while the camera is
+     * moving between two of them is not the same question as which view is
+     * in force.
+     *
+     * Two things are drawn differently from the driving seat, and both are
+     * about where the eye physically is rather than about what the player
+     * asked for: the figure in the seat loses the head that would be a shell
+     * around the camera and the torso that would be a wall under it, and the
+     * cabin - dash, pillars, door cards - is drawn at all. See the own and
+     * cabin lists in js/scene.js.
+     *
+     * Deciding them from the PREFERENCE is something a cut got away with and
+     * a move does not. Leaving the driver's view, the head came back on the
+     * first frame of the move with the camera still inside it, so the shot
+     * opened on the inside of a helmet. Arriving at it, the head went on the
+     * first frame too - with the camera still five units behind the car, so
+     * the player watched their own driver vanish before the camera got
+     * anywhere near them.
+     *
+     * So the eye is asked instead. Inside the shell the frame is the
+     * driver's whatever the preference says, and outside it, it is not.
+     */
+    frameCam() {
+      const view = this.activeCam();
+      const s = this.camSwitch, car = this.car;
+      // nothing moving, or a move with no driver's view at either end
+      if (!s || !car || (s.from !== 1 && s.to !== 1)) return view;
+      const dx = this.eye[0] - car.x, dz = this.eye[2] - car.z;
+      if (dx * dx + dz * dz < POV_SHELL * POV_SHELL) return 1;
+      return s.to === 1 ? s.from : s.to;
     }
 
     /** True while the camera is the driver's own eye. */
@@ -7586,7 +7875,19 @@
          the moment the game is in some other state. This is the one place
          every frame passes through, whatever is happening. */
       if (this.intro) this.introCamera();
-      const near = this.activeCam() === 1 ? CAM.nearPov : CAM.near;
+      let near = this.activeCam() === 1 ? CAM.nearPov : CAM.near;
+      /* AND THE NEAR PLANE TRAVELS WITH THE EYE.
+
+         The driver's view needs it eight centimetres out or the cabin around
+         the camera is clipped away; the other two want it at a unit, where
+         the depth buffer still resolves a road 48 km long. Switching between
+         the two on the frame the preference changes would put a hard plane
+         through the bodywork while the eye was still halfway into it, which
+         is exactly the artefact the move exists to remove - so it crosses on
+         the same weight the pose does, and the tight plane is only in force
+         while the camera is actually close enough to need it. */
+      const sw = this.camSwitch;
+      if (sw) near += (sw.near - near) * sw.w;
       this.camNear = near;   // read by tools/smoke.py --probe bonnet
       M4.perspectiveLH(this.proj, this.fov * Math.PI / 180, this.w / this.h, near, CAM.far);
       this.nearPlane = near;
@@ -7745,16 +8046,23 @@
         }
       }
       this.poseCar();
-      /* The player's own car, whole, in every view. The bonnet camera sits on
-         the nose looking forward, so everything it can see of the car is meant
-         to be seen from outside - there is nothing to hide. */
+      const pov = this.frameCam() === 1;
+      /* The player's own car, drawn in every view - what CHANGES is how much
+         of it. From outside it is the whole car; from the driving seat the
+         head and torso this camera is inside come off and the cabin goes on.
+         That used to be a claim about the bonnet camera, which no longer
+         exists: the eye is in the seat now, so there IS something to hide,
+         and the switch between the two is a move rather than a cut - see
+         frameCam. */
       this.scene.drawCar(this.model, false,
         { livery: 'player', steer: this.car.steer || 0, damage: this.damage,
           brake: lampOf(this.car),
           // nobody sees the flare of their own lamps from the driving seat
           // from inside, neither the beam flares nor the head this eye is in
-          noFlare: this.activeCam() === 1,
-          inside: this.activeCam() === 1,
+          // ...and "from inside" is where the eye IS, not which view was
+          // asked for, which is the whole of frameCam
+          noFlare: pov,
+          inside: pov,
           /* How hard the boost is being asked for, which is what moves the
              button on the wheel. Damped rather than the raw flag: a control
              that snaps to its stop and back in one frame is a control that
@@ -8496,6 +8804,8 @@
   global.NR.tabRows = tabRows;
   global.NR.keyLabel = keyLabel;
   global.NR.bindLabel = bindLabel;
+  global.NR.boundKeys = boundKeys;
+  global.NR.keyFor = keyFor;
   /* The fallback Input.keysFor uses when a settings file has never mentioned
      an action, or has managed to strip one to nothing. */
   global.NR.ACTION_DEFAULTS = (() => {
