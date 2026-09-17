@@ -1,4 +1,4 @@
-/* SYNX — bootstrap.
+/* SYNX - bootstrap.
  *
  * Boots straight into the game: no configuration dialog, no title gate.
  *

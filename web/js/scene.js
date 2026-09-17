@@ -9475,15 +9475,78 @@
            somebody sat in the seat. */
         C('trim', 0.86, -0.128, 1.520, 0.055, 0.050, 0.290, -0.16),
 
-        /* THE MIRROR. Hung from the header at the top of the screen, and the
-           height is the whole of the decision: the eye is at 0.285 and the
-           glass starts at 0.301, so it sits ON the line of sight rather than
-           across it - which is where a real one is and why nobody driving a
-           real car thinks about it. Any lower and it is an obstruction; any
-           higher and it is inside the headliner. */
-        C('dash', 0.0, 0.352, 1.545, 0.030, 0.048, 0.030),
-        C('dash', 0.0, 0.330, 1.512, 0.300, 0.058, 0.030, 0.14),
-        C('trim', 0.0, 0.330, 1.497, 0.268, 0.042, 0.006, 0.14),
+        /* THE MIRROR, WHICH WAS NOT IN THE CAR.
+         *
+         * The height was right and the DEPTH was a unit out, which put the
+         * whole assembly outside the bodywork: the windscreen is raked, so
+         * at z 1.5 its surface has already fallen to y 0.124, and a mirror
+         * sitting at y 0.33 there is not mounted to the glass, it is
+         * hanging in the air over the bonnet. From the seat it read as a
+         * slab floating in the middle of the screen aperture with nothing
+         * holding it up, which is exactly what it was.
+         *
+         * WHERE THE HEADER ACTUALLY IS, measured off the shipped body
+         * rather than taken from the note this replaces:
+         *
+         *   the screen, on the centreline   y 0.354 at z 0.60
+         *                                   y 0.274 at z 1.00
+         *                                   y 0.124 at z 1.45
+         *   the roof above it               y 0.353 to 0.385, z 0.40 to 0.60
+         *   the driver's eye                y 0.23,  z 0.26
+         *
+         * So the top of the aperture is at z 0.6 and the glass falls away
+         * from there at about a fifth of a unit of height per unit of
+         * depth. The stalk goes on the header at z 0.615, where the glass
+         * is at 0.348, and the body hangs below and slightly forward of it.
+         *
+         * AND IT IS SMALLER, because it is now three times closer to the
+         * eye than it was. A tenth of a unit of width at 1.25 units away is
+         * a mirror; the same width at 0.4 away is a wall. This subtends
+         * about thirteen degrees, which is what an interior mirror looks
+         * like from a driving seat.
+         *
+         * AND IT IS NOT ON THE CENTRELINE, which is the one place this
+         * departs from where a real one goes.
+         *
+         * The seat is 0.42 off centre and the header is only 0.40 in front
+         * of the eye, so a mirror hung at x 0 subtends forty-six degrees to
+         * the right of the eye - against a half-frame of forty-seven. It
+         * would sit on the edge of the screen. The cabin is simply shorter
+         * between the driver's head and the screen than a real one is,
+         * where the header is far enough forward for the same offset to
+         * come out at half that angle.
+         *
+         * Moving it toward the driver puts it where a driver's eye expects
+         * to find it - up and to the right, about twenty-three degrees off
+         * axis - and costs nothing, because this whole block is cabin
+         * geometry and is drawn for one view only. Nobody ever sees this
+         * mirror from outside the car. See the cabin flag in draw().
+         *
+         * AND THE STALK GOES INTO THE ROOF, NOT INTO THE GLASS, which is a
+         * distinction the second attempt at this did not make. A windscreen
+         * is transparent: a stalk whose top stops at the glass plane is a
+         * stalk you can see the sky behind, and it reads as a mirror
+         * floating under the roof rather than hanging from it. The solid
+         * roof ends at z 0.58 in this strip of the car, so the stalk is at
+         * 0.555 and its top is buried a few millimetres inside the shell.
+         *
+         * Measured by dropping a vertical line through the shipped body at
+         * x -0.29, which is the only way to find a surface on a mesh this
+         * coarse - its corners are nowhere near where the mirror goes:
+         *
+         *   z 0.46   solid roof at y 0.376
+         *   z 0.52   solid roof at y 0.368
+         *   z 0.58   solid roof at y 0.354
+         *   z 0.60   no roof; the screen glass takes over at y 0.349
+         *
+         * The height is still the decision the old note described, against
+         * the eye the car actually has: the body's lower edge is at 0.277
+         * and the eye is at 0.23, so it sits above the line of sight rather
+         * than across it.
+         */
+        C('dash', -0.290, 0.330, 0.555, 0.022, 0.046, 0.050),
+        C('dash', -0.290, 0.296, 0.575, 0.098, 0.038, 0.022, 0.14),
+        C('trim', -0.290, 0.296, 0.566, 0.088, 0.028, 0.005, 0.14),
 
         /* THE HARNESS. Two shoulder straps over the suit, in the same red the
            boost cap uses - a five-point belt is the single clearest thing in

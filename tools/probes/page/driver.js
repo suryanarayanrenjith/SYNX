@@ -1508,7 +1508,7 @@
         var CHOICES = (window.NR && NR.STORY_CHOICES) || null;
         if (!CHOICES) { note("PROBLEM: the campaign publishes no decisions"); PROBE = ""; ST.done = true; return; }
         var keys = Object.keys(CHOICES);
-        note("story: " + keys.length + " decisions — " + keys.join(", "));
+        note("story: " + keys.length + " decisions - " + keys.join(", "));
         story.dialogue.active = false;
         story.setDialogueVisible(false);
         story.chapter = NR.STORY_CHAPTERS[CHOICES[keys[0]].after];
@@ -2023,7 +2023,12 @@
                which start at -56. The first version of this band claimed -40
                and was reported as colliding with three of them. */
             list.push(band('pad status', 157, 46, -430, -185));
-            list.push(band('pad diagram', -196, 234, -524, -76));
+            /* Measured off drawPadDiagram rather than estimated: centre
+               -196, scale 1.72, local y from -64.5 at the top of a trigger
+               to +66 at the bottom of a grip, which is HUD -85 to -310. The
+               first version of this claimed a top of -79 and hid a real
+               overlap with the hint band underneath it. */
+            list.push(band('pad diagram', -197, 226, -524, -76));
             list.push(band('pad legend', -159, 152, 46, 560));
           }
           for (var ri = 0; ri < rows.length; ri++) {
@@ -2457,7 +2462,7 @@
         g.car.speed = savedSpeed; g.car.driftAmount = savedDrift;
         g.combo = before; g.cleanTime = 0;
 
-        note('ui: clean multiplier — parked 30s: combo ' + parkedCombo + ', ' + parkedToasts
+        note('ui: clean multiplier - parked 30s: combo ' + parkedCombo + ', ' + parkedToasts
              + ' toast(s); then moving 30s: combo ' + movingCombo + ', ' + movingToasts + ' toast(s)');
         if (parkedToasts !== 0 || parkedCombo !== 1) {
           note('PROBLEM: a parked car still earns CLEAN');

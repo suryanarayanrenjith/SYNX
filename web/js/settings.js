@@ -1,4 +1,4 @@
-/* SYNX — the settings schema, in one place.
+/* SYNX - the settings schema, in one place.
  *
  * Every row on the launcher and every row on the in-game CONTROLS screen is
  * declared here, once. Both screens read this file and neither carries its own
@@ -109,13 +109,13 @@
     // underneath a live webview, which is why the launcher exists.
     { where: 'launcher', tab: 0, group: 'DISPLAY', key: 'mode', label: 'WINDOW MODE',
       opts: ['WINDOWED', 'BORDERLESS', 'FULLSCREEN'], def: 1,
-      hint: 'BORDERLESS fills the display with no frame and alt-tabs instantly. FULLSCREEN goes through the platform’s own path. WINDOWED uses the size below.' },
+      hint: 'BORDERLESS fills the display with no frame and alt-tabs instantly. FULLSCREEN goes through the platform\'s own path. WINDOWED uses the size below.' },
     { where: 'launcher', tab: 0, key: 'monitor', label: 'DISPLAY', opts: null, def: 0,
       hint: 'Which screen the game opens on.' },
     { where: 'launcher', tab: 0, key: 'size', label: 'WINDOW SIZE', opts: null, def: 0,
       hint: 'The size of the window in WINDOWED mode. Filtered to what fits on the display above.' },
     { where: 'launcher', tab: 0, key: 'gpu', label: 'RENDERER', opts: ['SOFTWARE', 'HARDWARE'], def: 1,
-      hint: 'HARDWARE is the GPU path and is what the game is built for. SOFTWARE is a fallback for a machine whose driver cannot give a 3D context — correct, and very slow. Changing this restarts the game.' },
+      hint: 'HARDWARE is the GPU path and is what the game is built for. SOFTWARE is a fallback for a machine whose driver cannot give a 3D context - correct, and very slow. Changing this restarts the game.' },
     { where: 'launcher', tab: 0, key: 'vsync', label: 'VERTICAL SYNC', opts: ['OFF', 'ON'], def: 1,
       hint: 'Matches the frame to the display refresh. Off can tear; on is smoother and adds a frame of latency.' },
     /* THE GAME OWNS THIS ONE, not the host.
@@ -142,7 +142,7 @@
       opts: RENDER_SCALES.map((r) => r.label), def: 3,
       hint: 'How many pixels the 3D is drawn at before it is fitted to the window. Below NATIVE is reconstructed by the upscaler and costs far less; above it is supersampled, the sharpest and most expensive thing in the game.' },
     { where: 'launcher', tab: 1, key: 'upscaler', label: 'UPSCALER',
-      opts: ['BILINEAR', 'FSR — SPATIAL', 'FSR — SHARP'], def: 2,
+      opts: ['BILINEAR', 'FSR - SPATIAL', 'FSR - SHARP'], def: 2,
       hint: 'How a sub-native frame is reconstructed. BILINEAR is the plain stretch a browser does on its own. FSR is an edge-directed filter that follows the shape of the image rather than blurring across it; SHARP adds a contrast-adaptive pass. Nothing to do at or above NATIVE.' },
 
     { where: 'launcher', tab: 1, group: 'DETAIL', key: 'quality', label: 'PRESET',
@@ -183,7 +183,7 @@
        wide margin: no shadow map, no extra pass, no extra geometry. */
     { where: 'launcher', tab: 1, key: 'roadLights', label: 'ROAD LIGHTING',
       opts: ['OFF', 'SOFT', 'NORMAL', 'BRIGHT'], def: 2,
-      hint: 'Whether the street lamps and the gantry neon actually cast light on the road, or only glow. OFF leaves the carriageway to the headlights, the way it was before; NORMAL puts a pool under every fitting. Six local lights in the surface shader — the cheapest lighting in the game, and the one that does most for how the road reads at night.' },
+      hint: 'Whether the street lamps and the gantry neon actually cast light on the road, or only glow. OFF leaves the carriageway to the headlights, the way it was before; NORMAL puts a pool under every fitting. Six local lights in the surface shader - the cheapest lighting in the game, and the one that does most for how the road reads at night.' },
     { where: 'launcher', tab: 1, key: 'volumetrics', label: 'VOLUMETRIC FOG', opts: ['OFF', 'ON'], def: 1,
       hint: 'Light in the air: headlight beams, god rays, haze with depth in it.' },
     { where: 'launcher', tab: 1, key: 'reflections', label: 'WET REFLECTIONS', opts: ['OFF', 'ON'], def: 1,

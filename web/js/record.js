@@ -485,7 +485,7 @@
         a.download = 'SYNX-' + Date.now() + (name ? '-' + name : '') + '.avi';
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 4000);
-        toast(what + ' — ' + mb(bytes.length), '#5affc0');
+        toast(what + ' - ' + mb(bytes.length), '#5affc0');
       } catch (e) { toast('THE CLIP COULD NOT BE SAVED', '#ff8a3a'); }
       return;
     }
@@ -496,7 +496,7 @@
     const tag = String(name || '').replace(/[^A-Za-z0-9 _-]/g, '').slice(0, 24);
     invoke('clip_write', bytes, { headers: { 'x-synx-clip': tag } })
       .then((path) => {
-        toast(what + ' — ' + mb(bytes.length), '#5affc0');
+        toast(what + ' - ' + mb(bytes.length), '#5affc0');
         if (global.console) global.console.info('SYNX: clip written to ' + path);
       })
       .catch((e) => toast('CLIP FAILED: ' + e, '#ff3b3b'));

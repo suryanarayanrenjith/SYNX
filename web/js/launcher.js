@@ -1,4 +1,4 @@
-/* SYNX — the launcher.
+/* SYNX - the launcher.
  *
  * One screen, four tabs, and a PLAY button that builds the game window out of
  * the answers. The rows are not written here: they come from js/settings.js,
@@ -96,7 +96,7 @@
           this.sizes = view.sizes || [];
           this.startedGpu = !!view.started_gpu;
           this.ui.version.textContent = 'v' + (view.version || '1.0.0');
-          this.ui.graphics.textContent = view.graphics || '—';
+          this.ui.graphics.textContent = view.graphics || '-';
         } catch (e) {
           this.bootDone();
           this.fail('The host did not answer: ' + (e && e.message ? e.message : e));
@@ -405,7 +405,7 @@
       txt.className = 'txt';
 
       const i = Math.max(0, Math.min(this.valueOf(row), opts.length - 1));
-      txt.textContent = opts[i] === undefined ? '—' : opts[i];
+      txt.textContent = opts[i] === undefined ? '-' : opts[i];
       if (i === 0 && /^(OFF|BILINEAR|UNCAPPED)$/.test(String(opts[0]))) el.classList.add('is-off');
       dec.disabled = i <= 0;
       inc.disabled = i >= opts.length - 1;
@@ -484,7 +484,7 @@
      */
     async loadDiagnostics() {
       if (!native) {
-        this.ui.diag.textContent = 'running in a browser — no host diagnostics';
+        this.ui.diag.textContent = 'running in a browser - no host diagnostics';
         return;
       }
       try {
@@ -714,7 +714,7 @@
       }
 
       if (!native) {
-        this.note('No desktop host here — this page is running in a browser, so there is no window to build. Open index.html to play.', true);
+        this.note('No desktop host here - this page is running in a browser, so there is no window to build. Open index.html to play.', true);
         this.busy = false;
         this.ui.play.disabled = false;
         return;
@@ -733,7 +733,7 @@
         await this.report(
           'This webview cannot create a 3D context, so the game has nothing to draw with. '
           + (this.win.gpu
-            ? 'Set RENDERER to SOFTWARE on the DISPLAY page and try again — it is slow, and it works.'
+            ? 'Set RENDERER to SOFTWARE on the DISPLAY page and try again - it is slow, and it works.'
             : 'It is already on SOFTWARE, which means the webview itself is not able to render. '
               + 'The report says what is installed.'),
           { stage: 'preflight', preflight: pre, settings: this.win });
@@ -744,7 +744,7 @@
            and the player deserves to know that is what is happening rather
            than concluding the game is broken. */
         this.note('Running on a software renderer (' + (pre.renderer || 'unknown')
-          + ') — expect very low frame rates.', true);
+          + ') - expect very low frame rates.', true);
       }
 
       this.note('STARTING...');

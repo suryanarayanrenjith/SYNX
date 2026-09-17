@@ -3072,17 +3072,35 @@
 
       const held = (i) => !!(pad && pad.held(i));
 
-      // triggers and bumpers, riding above the shoulder line
-      trigger(-84, -68, pad ? pad.value(B.LT) : 0, 'LT');
-      trigger(84, -68, pad ? pad.value(B.RT) : 0, 'RT');
-      box(-84, -52, 32, 9, held(B.LB), 4);
-      box(84, -52, 32, 9, held(B.RB), 4);
+      /* TRIGGERS AND BUMPERS, ON THE SHOULDER RATHER THAN OVER IT.
+       *
+       * The shoulder line is the bezier from (118,-26) through (96,-44)
+       * and (40,-48) to (0,-48), which at x 84 - where these are drawn -
+       * passes through y -40. The bumpers were centred at -52 with a
+       * height of 9, so their lower edge was at -47.5: seven clear units
+       * above the body, with the background visible between. A bumper that
+       * does not touch the pad is not a bumper, it is a floating pill.
+       *
+       * At -44 the lower edge lands at -39.5, half a unit INSIDE the
+       * silhouette, so the two meet. The trigger then sits above it with a
+       * three-unit gap, which is the order they are in on the hardware.
+       *
+       * It also buys the clearance this diagram did not have. The trigger
+       * pair used to reach local -74.5, which at this scale and centre is
+       * HUD -68, and the explanation band above it ends at -70. They were
+       * two units into each other; the layout checker missed it because
+       * the band it models for this diagram was written by hand and
+       * claimed -79. Both are corrected. */
+      trigger(-84, -58, pad ? pad.value(B.LT) : 0, 'LT');
+      trigger(84, -58, pad ? pad.value(B.RT) : 0, 'RT');
+      box(-84, -44, 32, 9, held(B.LB), 4);
+      box(84, -44, 32, 9, held(B.RB), 4);
       c.fillStyle = bodyCol + '0.9)';
       setFont(c, '900 ' + S(7) + 'px "Orbitron", system-ui, sans-serif');
       c.textAlign = 'center';
       c.textBaseline = 'middle';
-      c.fillText('LB', X(-84), Y(-52));
-      c.fillText('RB', X(84), Y(-52));
+      c.fillText('LB', X(-84), Y(-44));
+      c.fillText('RB', X(84), Y(-44));
 
       // sticks: left high, right low - the layout the standard mapping assumes
       stick(-66, -12, 0, 1, held(B.LS));
@@ -3163,8 +3181,8 @@
         dot('#5affc0');
         this.label(info.name, x - 120, y, 17, '#5affc0', 'left', 900);
         this.label(info.standard
-          ? 'STANDARD LAYOUT — PRESS ANYTHING TO TEST IT'
-          : 'LAYOUT NOT RECOGNISED — STEERING AND TRIGGERS ONLY',
+          ? 'STANDARD LAYOUT - PRESS ANYTHING TO TEST IT'
+          : 'LAYOUT NOT RECOGNISED - STEERING AND TRIGGERS ONLY',
           x - 120, y - 22, 11, info.standard ? INK.mute : AMBER, 'left', 700);
       }
     }
@@ -3263,7 +3281,11 @@
          used to occupy is the tab strip's now, and a legend is the one thing
          on this screen that can go anywhere - it is read once and then never
          again. */
-      this.label(tab === 1
+      /* Tab 0 is KEYBOARD and is the only page with anything bindable on
+         it. This used to read `tab === 1`, which put the rebinding legend
+         on the gamepad page and the ordinary one on the page that does the
+         rebinding. */
+      this.label(tab === 0
         ? 'ENTER  REBIND      ‹  CLEAR      R  RESET ALL      ESC  BACK'
         : '‹ ›  CHANGE      ENTER  SELECT      ESC  BACK',
         548, 288, 11, 'rgba(170,190,230,0.50)', 'right', 700);
@@ -3363,7 +3385,7 @@
             this.label('PRESS A KEY   //   ESC CANCELS', VX + 40, y, 15, AMBER,
               'center', 900, p2);
           } else if (!list.length) {
-            this.label('—', VX + 40, y, 20, 'rgba(255,90,120,0.85)', 'center', 900);
+            this.label('-', VX + 40, y, 20, 'rgba(255,90,120,0.85)', 'center', 900);
             this.label('UNBOUND', VX + 150, y, 11, 'rgba(255,90,120,0.55)', 'center', 700);
           } else {
             let cx = VX - 60;
@@ -3434,8 +3456,13 @@
         /* RESET is not a setting, so it is not in the list. It sits beside the
            way out, on the page it belongs to, and it is the only thing on this
            screen that can undo a player who has bound the accelerator to the
-           pause key and back again. */
-        if (tab === 1) {
+           pause key and back again.
+
+           THE PAGE IT BELONGS TO IS THE KEYBOARD ONE. It resets key
+           BINDINGS - see Game.resetBinds - and it was being drawn on the
+           gamepad page, where there are no bindings and where the button
+           therefore changed something the player could not see. */
+        if (tab === 0) {
           this.panel(360, y, 220, 34, VIOLET, 0.20);
           this.label('R   RESET CONTROLS', 360, y, 14,
             'rgba(214,210,240,0.78)', 'center', 800);

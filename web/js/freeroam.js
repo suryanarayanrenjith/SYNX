@@ -1,4 +1,4 @@
-/* SYNX FREE ROAM — the open route
+/* SYNX FREE ROAM - the open route
  *
  * The campaign is a series of chapters, and a chapter is a route cut to the
  * length of a story beat. This is the screen in front of the other thing the

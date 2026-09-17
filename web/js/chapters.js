@@ -1,4 +1,4 @@
-/* SYNX — the chapter directors.
+/* SYNX - the chapter directors.
  *
  * Chapters 5, 6 and 7 each layer a set piece over the running game. They are
  * directors, not engines: the Vehicle, the rival Driver, the camera, the
@@ -37,18 +37,18 @@
 
 
 /* ==========================================================================
- * CHAPTER 5 — ASHFALL ZERO
+ * CHAPTER 5 - ASHFALL ZERO
  * ========================================================================== */
-/* SYNX Level 5 — ASHFALL ZERO interactive cinematic director
+/* SYNX Level 5 - ASHFALL ZERO interactive cinematic director
  *
  * Only Level 5 is touched. SYNX still owns the vehicle model, rival AI, race
  * flow and renderer. This file takes over for three deliberately rare set
  * pieces:
  *
- *   1)  6 s COLLAPSE RUN — mash Q fast enough to clear a falling tower.
- *   2) 20 s VOLCANO RUN  — a falling W/A/S/D sequence drives cinematic dodges
+ *   1)  6 s COLLAPSE RUN - mash Q fast enough to clear a falling tower.
+ *   2) 20 s VOLCANO RUN  - a falling W/A/S/D sequence drives cinematic dodges
  *                          while the volcano throws fireballs at the road.
- *   3) 40 s REDLINE FINALE — the last 250 metres preserve the real race gap,
+ *   3) 40 s REDLINE FINALE - the last 250 metres preserve the real race gap,
  *                            let Ryker steal the result, destroy his old car,
  *                            and reveal the AURORA R-IX RAPTOR.
  *
@@ -1746,7 +1746,7 @@
       else if(t<5.2){this.setFinishCopy('HUNT PROTOCOL','REDLINE?','CORE PROTECTION // ACTIVE','OVERRIDE MAY CAUSE TERMINAL POWERTRAIN FAILURE');this.setTelemetry('HUNT PROTOCOL',['NORMAL LIMITER ........ ACTIVE','CORE PROTECTION ....... ACTIVE','ENERGY ................ LOW'],true);}
       else if(t<8.6){this.setFinishCopy('LIMITER DISABLED // CORE PROTECTION DISABLED','HUNT//REDLINE','RYKER // NOT... AGAIN.','POWERTRAIN OUTSIDE SAFE OPERATING LIMITS');this.setTelemetry('REDLINE OVERRIDE',['OUTPUT ............... UNBOUNDED','TEMPERATURE .......... CRITICAL','STABILITY ............ FAILING'],true);if(D.root)D.root.classList.add('redline');}
       else if(t<11.8){const live=(g.car.sTrack-g.rival.sTrack)*EVENTS.finish.metresPerTrackUnit;this.setFinishCopy('SYNX GRID // LIVE','...WHAT?','THE GAP IS DISAPPEARING.','RYKER IS PHYSICALLY CLOSING THE DISTANCE');this.setTelemetry('LIVE GAP',['RYKER CLOSING // '+Math.max(0,live).toFixed(0)+' M','OUTPUT EXCEEDS HOMOLOGATED LIMITS','NOVA // HE\'S DESTROYING THE CAR.'],true);}
-      else if(t<13.15){this.setFinishCopy('FINAL APPROACH','COME ON...','PLAYER BOOST // MAXIMUM','RYKER // ACTUALLY— I\'M NOT.');}
+      else if(t<13.15){this.setFinishCopy('FINAL APPROACH','COME ON...','PLAYER BOOST // MAXIMUM','RYKER // ACTUALLY... I\'M NOT.');}
       else if(t<15.8){this.setFinishCopy('IMPACT // REAR QUARTER','RYKER!','CONTROL LOST','THE PLAYER HAD THE PACE. RYKER STOLE THE LINE.');}
       else if(t<18.2){this.setFinishCopy('OFFICIAL RESULT','RYKER CROSSES FIRST.','SILENCE ON THE GRID.','WHAT THE HELL WAS THAT?');}
       else if(t<20.8){this.setFinishCopy('RYKER // POWERTRAIN FAILURE','HUNT OFFLINE','THE OLD MACHINE DIED FOR THE RESULT.','PLAYER // YOU COULDN\'T BEAT ME.  RYKER // ...NO.');this.setTelemetry('TERMINAL FAILURE',['TRANSMISSION ......... OFFLINE','CORE TEMPERATURE ...... CRITICAL','PROPULSION ............ LOST'],true);}
@@ -1841,9 +1841,9 @@
 
 
 /* ==========================================================================
- * CHAPTER 6 — AURORA FORGE / BROKEN CIRCUIT
+ * CHAPTER 6 - AURORA FORGE / BROKEN CIRCUIT
  * ========================================================================== */
-/* SYNX Chapter 6 — BROKEN CIRCUIT
+/* SYNX Chapter 6 - BROKEN CIRCUIT
  *
  * AURORA FORGE is a story-owned factory trial layered over the existing
  * Vehicle, Driver, camera, renderer and StoryManager. Nothing here creates a
@@ -1882,6 +1882,13 @@
    * An action with no key left on it is named rather than pointed at: the
    * pad still has both, so the instruction is still true, it just cannot be
    * given as a letter. */
+  /* The same two keys, on the rule line the HUD carries for the whole of
+     the test rather than on the card that introduces it. */
+  function raceModeRule(g) {
+    const r = NR.keyFor(g, 'raceMode'), b = NR.keyFor(g, 'boost');
+    return (r ? r + ' - ' : '') + 'raceMode  //  ' + (b ? b + ' - ' : '') + 'BOOST';
+  }
+
   function raceModeBrief(g) {
     const r = NR.keyFor(g, 'raceMode'), b = NR.keyFor(g, 'boost');
     return (r ? 'PRESS ' + r : 'USE RACE MODE') + ' WHEN NOVA CALLS IT. '
@@ -3888,7 +3895,7 @@
         sorting:'CHUTES CLEARED '+this.sortGates.filter(g=>g.resolved).length+' / 3',
         scrap:'PRESS LINE // TIME THE RAM',
         ghost:'MODEL BROKEN '+this.ghostBroken+' / 3',
-        test:'R — raceMode  //  B — BOOST'};
+        test:raceModeRule(this.g)};
       this.ui.rule.textContent=R[this.phase]||'';
       // Three pips read at a glance at racing speed; a fraction does not.
       if(this.ui.strikes){
@@ -3906,7 +3913,7 @@
       this.strikes++;gate.open=true;this.invertTime=5;this.g.controlsSwapped=true;global.document.body.classList.add('forge6-invert');
       this.g.car.vLong*=.58;this.g.car.vLat*=-.35;this.g.flash=.22;this.g.shake=.72;this.g.audio.crash(.75);if(this.g.fx)this.g.fx.sparks(this.g.car,.9);
       this.g.hud.toast('ARC STRIKE '+this.strikes+'/3  //  A ↔ D  5.0s','#52dfff');this.updateRule();
-      this.g.story.showCompact(this.strikes===1?'NOVA':'JAVAS',this.strikes===1?'calculating':'calm',this.strikes===1?'Steering bus inverted. Five seconds—read the car, not your hands.':'Again. The wall is not going to apologize.',3.8);
+      this.g.story.showCompact(this.strikes===1?'NOVA':'JAVAS',this.strikes===1?'calculating':'calm',this.strikes===1?'Steering bus inverted. Five seconds. Read the car, not your hands.':'Again. The wall is not going to apologize.',3.8);
       if(this.strikes>=3)this.fail('THREE ARC STRIKES // DRIVER LINK REJECTED');
     }
     checkGates(){
@@ -3942,7 +3949,7 @@
     renderHandshake(){
       const q=this.question;if(!q)return;
       if(this.ui.mathCaption)this.ui.mathCaption.textContent=
-        q.watch>0?'AURORA DRIVER LINK // MEMORISE':'AURORA DRIVER LINK // REPLAY  1–4';
+        q.watch>0?'AURORA DRIVER LINK // MEMORISE':'AURORA DRIVER LINK // REPLAY  1-4';
       if(q.watch>0){
         // one glyph at a time, big, while the board is playing it
         const i=Math.min(q.seq.length-1,Math.floor((q.seq.length*0.55-q.watch)/0.55));
@@ -4011,7 +4018,7 @@
              takes the rewind point for the one that is. */
           g.armed=true;this.g.audio.goBeep();
           this.mark(g.s-560,'SORTING FLOOR');
-          this.g.hud.toast('SORTING FLOOR — PICK A CHUTE','#ffb020');
+          this.g.hud.toast('SORTING FLOOR - PICK A CHUTE','#ffb020');
         }
         // committed once past the funnel mouth: the walls are already either
         // side of the car and there is nowhere left to change your mind
@@ -4382,7 +4389,7 @@
       g.state='racing';story.mode='race';
       story.setLayer(story.ui.raceMeta,true);
       this.showRoot();this.updateRule();
-      g.hud.toast('REWIND — '+(cp.label||'TRIAL'),'#62e7ff');
+      g.hud.toast('REWIND - '+(cp.label||'TRIAL'),'#62e7ff');
       if(g.audio&&g.audio.checkpoint)g.audio.checkpoint();
       return true;
     }
@@ -4679,7 +4686,7 @@
       else if(this.phase==='ghost')this.updateGhost(dt);
       else if(this.phase==='test'){
         if(this.g.input.actHit('raceMode'))this.activateRaceMode();if(!this.raceModeActive)this.cap(this.g.car,DAMAGED_CAP);
-        if(this.g.car.sTrack>TRUCK_S-480&&!this.truckPrompt){this.truckPrompt=true;this.g.story.showCompact('NOVA','calculating','R. Now.',2.4);this.g.hud.toast('R — ACTIVATE raceMode','#55dfff');}
+        if(this.g.car.sTrack>TRUCK_S-480&&!this.truckPrompt){this.truckPrompt=true;this.g.story.showCompact('NOVA','calculating','R. Now.',2.4);this.g.hud.toast('R - ACTIVATE raceMode','#55dfff');}
         this.updateRaceMode(dt);
       }
       /* Solid hardware, for BOTH cars. The player has to be stopped by it -
@@ -4747,9 +4754,9 @@
 
 
 /* ==========================================================================
- * CHAPTER 7 — NEON HORIZON
+ * CHAPTER 7 - NEON HORIZON
  * ========================================================================== */
-/* SYNX Chapter 7 — NEON HORIZON
+/* SYNX Chapter 7 - NEON HORIZON
  *
  * A fifty-kilometre playable finale. The normal Track, Vehicle, Driver,
  * collision, story and race flow remain authoritative; this file contributes
@@ -7467,7 +7474,7 @@
       else if(name==='predatorScan'&&a.checkpoint)a.checkpoint();
     }
     eventBanner(kicker,text,seconds){
-      setText(this.ui.eventKicker,kicker);setText(this.ui.eventText,text);setText(this.ui.live,kicker+' — '+text);
+      setText(this.ui.eventKicker,kicker);setText(this.ui.eventText,text);setText(this.ui.live,kicker+' - '+text);
       this.eventBannerTimer=seconds||3.2;
       if(this.ui.event){this.ui.event.classList.add('show');setHidden(this.ui.event,false);}
     }
@@ -8398,10 +8405,10 @@
         :h.safeLane<lat?'LEFT ONTO THE LINE':'RIGHT ONTO THE LINE';
       const metres=Math.max(0,Math.round(best.d*KM_PER_UNIT*1000));
       const kicker=VERB[h.type]+' // '+metres+' M';
-      const text=NAME[h.type]+'  —  '+dir;
+      const text=NAME[h.type]+'  -  '+dir;
       const key=h.id+'|'+dir;
       // the live region is only written when the instruction itself changes
-      if(key!==this.cueKey){this.cueKey=key;setText(this.ui.live,kicker+' — '+text);}
+      if(key!==this.cueKey){this.cueKey=key;setText(this.ui.live,kicker+' - '+text);}
       setText(this.ui.eventKicker,kicker);setText(this.ui.eventText,text);
       if(this.ui.event){this.ui.event.classList.add('show');setHidden(this.ui.event,false);}
       this.eventBannerTimer=Math.max(this.eventBannerTimer||0,.4);

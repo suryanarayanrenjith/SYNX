@@ -1,4 +1,4 @@
-/* SYNX — the link to the grid.
+/* SYNX - the link to the grid.
  *
  * Everything between the game and the multiplayer server: who you are, whether
  * the server is awake, the socket, the clock, and the send tick. The netcode
@@ -613,7 +613,7 @@
           if (/^status:404/.test(msg)) return { ok: false, why: 'there is a server there, but no SYNX on it' };
           if (/^status:/.test(msg)) return { ok: false, why: 'that server answered ' + msg.slice(7) };
           if (e && e.name === 'AbortError') {
-            return { ok: false, why: 'no answer in thirty seconds — if it is a free host it may be asleep' };
+            return { ok: false, why: 'no answer in thirty seconds - if it is a free host it may be asleep' };
           }
           return { ok: false, why: 'could not reach that address at all' };
         })

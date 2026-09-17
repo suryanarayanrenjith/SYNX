@@ -1,4 +1,4 @@
-/* SYNX — the desktop host bridge.
+/* SYNX - the desktop host bridge.
  *
  * The game runs inside a native window rather than a browser tab, and three
  * things behave differently because of that. This file owns all three, and it

@@ -9,6 +9,31 @@
   const MIN_PITCH = 0.5;
   const MAX_PITCH = 1.53;
 
+  /* HOW LOUD THE CAR ITSELF IS, as one number.
+   *
+   * The engine bed is four voices - the note, the idle under it, the
+   * intake on top and the reheat when the boost is lit - and they add up.
+   * At full throttle they were summing to a little over unity into a
+   * drive bus that is itself at unity, against a music bus at 0.55: the
+   * car was the loudest thing in the mix by a clear margin, and a radio
+   * station is not something you should have to guess at.
+   *
+   * A broadband engine also masks music far more than the two levels
+   * suggest - it has energy everywhere the music does - so matching them
+   * on paper is not enough and the car has to sit under it.
+   *
+   * WHY A TRIM AND NOT FOUR EDITED NUMBERS. The four gains are balanced
+   * against EACH OTHER: the idle carries the bottom, the intake opens with
+   * load, the note does the work in between. Editing them one at a time is
+   * how that balance drifts. This scales all four together, so the car
+   * sounds like the same car, quieter.
+   *
+   * It is deliberately NOT the drive bus, which also carries the tyres and
+   * the wall scrape: those are feedback about what the car is doing and
+   * turning them down is turning down information. See the note on
+   * `drive` for what that bus is actually for. */
+  const ENGINE_TRIM = 0.60;
+
   const ONESHOT = {
     select: 'Game - Select Item.ogg',
     rollover: 'subtle-tech_rollover_01.ogg',
@@ -735,17 +760,19 @@
       if (eng) {
         eng.src.playbackRate.setTargetAtTime(pitch, t, 0.05);
         eng.gain.gain.setTargetAtTime(
-          active ? (0.18 + load * 0.42) * (moving ? 1 : 0.35) : 0, t, 0.08);
+          active ? ENGINE_TRIM * (0.18 + load * 0.42) * (moving ? 1 : 0.35) : 0,
+          t, 0.08);
       }
       const idle = this.loops.idle;
       if (idle) {
         idle.src.playbackRate.setTargetAtTime(0.85 + rpm * 0.5, t, 0.08);
-        idle.gain.gain.setTargetAtTime(active ? (moving ? 0.16 : 0.40) : 0.0, t, 0.1);
+        idle.gain.gain.setTargetAtTime(
+          active ? ENGINE_TRIM * (moving ? 0.16 : 0.40) : 0.0, t, 0.1);
       }
       const open = this.loops.open;
       if (open) {
         open.src.playbackRate.setTargetAtTime(pitch, t, 0.05);
-        open.gain.gain.setTargetAtTime(active ? load * 0.30 : 0, t, 0.08);
+        open.gain.gain.setTargetAtTime(active ? ENGINE_TRIM * load * 0.30 : 0, t, 0.08);
       }
       /* Tyres. A drift squeals; a barrier SCREAMS. They were the same sound at
          the same level, which is why braking felt like crashing - and why the
@@ -765,7 +792,8 @@
         // used to carry the reheat into the next scene, because `car.boosting`
         // stays true until a frame of physics clears it and a cutscene runs none
         bl.src.playbackRate.setTargetAtTime(car.boosting ? 1.12 : 1.0, t, .05);
-        bl.gain.gain.setTargetAtTime(active && car.boosting ? 0.62 : 0, t, 0.055);
+        bl.gain.gain.setTargetAtTime(
+          active && car.boosting ? ENGINE_TRIM * 0.62 : 0, t, 0.055);
       }
       if (this.wind) {
         const mph = car.speedMph || 0;

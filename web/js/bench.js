@@ -177,7 +177,7 @@
       + '<span class="bench-live"></span>'
       + '<canvas class="bench-graph" width="520" height="58"></canvas>'
       + '</div>'
-      + '<p class="bench-hint">MEASURING — the game is driving itself. ESC to stop.</p>'
+      + '<p class="bench-hint">MEASURING - the game is driving itself. ESC to stop.</p>'
       + '</div>'
       + '<div class="bench-card">'
       + '<div class="bench-rule"><i></i><span>SYNX // BENCHMARK</span><i></i></div>'
@@ -398,7 +398,7 @@
        needs a manual is not a report. */
     ui.split.textContent = '';
     const title = doc.createElement('small');
-    title.textContent = 'WHERE THE FRAME GOES  —  '
+    title.textContent = 'WHERE THE FRAME GOES  -  '
       + s.frameMs.toFixed(1) + ' ms on average';
     ui.split.appendChild(title);
     const bar = doc.createElement('div');
@@ -432,7 +432,7 @@
     const cal = doc.createElement('div');
     cal.className = 'bench-cal';
     const calTitle = doc.createElement('small');
-    calTitle.textContent = 'CALIBRATION  —  what each preset held';
+    calTitle.textContent = 'CALIBRATION  -  what each preset held';
     cal.appendChild(calTitle);
     const calRow = doc.createElement('div');
     calRow.className = 'bench-cal-row';
@@ -458,10 +458,10 @@
     }
 
     ui.foot.textContent = (rec.held
-      ? 'APPLIED — ' + rec.preset + ' holds ' + Math.round(fps(TARGET_MS)) + ' FPS here.'
-      : 'APPLIED — nothing held ' + Math.round(fps(TARGET_MS)) + ' FPS, so '
+      ? 'APPLIED - ' + rec.preset + ' holds ' + Math.round(fps(TARGET_MS)) + ' FPS here.'
+      : 'APPLIED - nothing held ' + Math.round(fps(TARGET_MS)) + ' FPS, so '
         + rec.preset + ' is the closest.')
-      + '   PRESS ANY KEY TO QUIT — the launcher will open on these settings.';
+      + '   PRESS ANY KEY TO QUIT - the launcher will open on these settings.';
   }
 
   function teardown() {

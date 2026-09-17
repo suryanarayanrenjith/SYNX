@@ -1,4 +1,4 @@
-/* SYNX — the asset pack.
+/* SYNX - the asset pack.
  *
  * Every texture, sprite and sound lives in one file, data/synx.pak, built by
  * tools/assets.py. This resolves the paths the game already uses against it.

@@ -1,4 +1,4 @@
-# SYNX — the desktop release, built on every push.
+# SYNX - the desktop release, built and published on every push.
 #
 # WHAT THIS PRODUCES
 #
@@ -9,13 +9,22 @@
 #
 # ...plus one SHA256SUMS.txt covering all of them.
 #
-# WHERE THEY GO
+# THE VERSION NUMBER IS ASSIGNED HERE, NOT IN THE TREE
 #
-# A push to `main` replaces the rolling `nightly` prerelease, so the newest
-# build of the current code is always one link away and the release list does
-# not grow by one entry per commit. A pushed `v*` tag publishes a permanent,
-# non-prerelease build at that tag instead. Both run the same jobs; the only
-# difference is what the last one is told to call the result.
+# Every run takes the highest version already published, adds one to the patch
+# and releases that: 1.0.1, 1.0.2, and so on. The number in src-tauri is a
+# floor rather than a statement, so raising it by hand still works, and the
+# next release is then the number that was written rather than the one after
+# the last one. See tools/version.py for why the alternative, committing a
+# bump back to the branch that triggered the run, is not worth what it costs.
+#
+# EVERY RELEASE IS A BETA, AND THE NEWEST ONE IS THE HIGHLIGHTED ONE
+#
+# SYNX is in open beta and expects to stay there for a while, so "beta" is in
+# the title of every release rather than being a state some releases are in.
+# It is deliberately NOT marked as a GitHub prerelease: GitHub will not put the
+# Latest badge on a prerelease, and a repository whose newest build is not the
+# one its front page points at is a repository that hands people an old build.
 #
 # WHY NOT tauri-action
 #
@@ -24,8 +33,8 @@
 # web/ BEFORE the desktop host is built, because the host embeds web/ whole.
 # An action that runs `tauri build` on its own would compile a host around a
 # missing core. tools/build.py is the one description of that order, so the
-# workflow calls it rather than restating it - see also tools/release.py, which
-# owns the artefact names.
+# workflow calls it rather than restating it. tools/release.py owns the
+# artefact names in the same way.
 name: Release
 
 on:
@@ -34,14 +43,14 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-# The release job creates releases and tags; nothing else here writes.
+# The publish job creates releases and tags; nothing else here writes.
 permissions:
   contents: write
 
-# Two pushes in quick succession would otherwise race to replace the same
-# rolling release, and the loser would be the newer one.
+# Two pushes in quick succession would otherwise both read the same "highest
+# published version" and both try to release it.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: true
 
 env:
@@ -49,6 +58,42 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # ======================================================================
+  # What this release is called, decided once so that four builds and a
+  # publish cannot each arrive at a different answer.
+  # ======================================================================
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Work out the next version
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            # A tag pushed by hand says what it wants to be called.
+            version="${GITHUB_REF_NAME#v}"
+          else
+            # Otherwise: one past the highest that has already been published.
+            version=$(gh release list --limit 200 --json tagName --jq '.[].tagName' \
+                      | python3 tools/version.py --next)
+          fi
+          # An empty answer here would tag the release `v` and name it
+          # "SYNX  Beta", which is a bad release rather than a failed run.
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "could not work out a version (got '$version')" >&2; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version"    >> "$GITHUB_OUTPUT"
+          echo "Releasing $version"
+
   # ======================================================================
   # Everything that can fail cheaply, before anything expensive starts.
   #
@@ -88,7 +133,7 @@ jobs:
   # ======================================================================
   desktop:
     name: ${{ matrix.name }}
-    needs: verify
+    needs: [version, verify]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -103,8 +148,8 @@ jobs:
             target: aarch64-apple-darwin
             bundles: app,dmg
           # macos-latest is Apple silicon, so this one is a cross build. It is
-          # the arrangement Tauri's own pipeline uses, and the alternative -
-          # pinning an Intel runner image - is pinning something that is being
+          # the arrangement Tauri's own pipeline uses, and the alternative,
+          # pinning an Intel runner image, is pinning something that is being
           # retired.
           - name: macOS (Intel)
             os: macos-latest
@@ -129,6 +174,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+
+      # Stamped before anything is compiled, so the installer, the executable's
+      # own metadata and the launcher's BUILD row all read the same number the
+      # release page does.
+      - name: Stamp the version
+        run: python tools/version.py --set ${{ needs.version.outputs.version }}
 
       # The npm package ships a PREBUILT binary. `cargo install tauri-cli`
       # would compile the bundler from source, which costs more than compiling
@@ -157,9 +208,9 @@ jobs:
   # is the difference between "runs on Ubuntu 22.04, Debian 12 and RHEL 9" and
   # "does not". The runner images that are still supported are newer than the
   # systems people play on, so the build happens on the oldest base that still
-  # carries WebKitGTK 4.1 - which is exactly what Tauri's own distribution
-  # guide asks for - while the runner label stays one that is not being
-  # retired underneath us.
+  # carries WebKitGTK 4.1, which is exactly what Tauri's own distribution guide
+  # asks for, while the runner label stays one that is not being retired
+  # underneath us.
   #
   # The container is bare, so everything the other jobs get from the image is
   # installed here: a compiler, a Python, a Node, and Rust from rustup, because
@@ -167,7 +218,7 @@ jobs:
   # ======================================================================
   linux:
     name: Linux (x86_64)
-    needs: verify
+    needs: [version, verify]
     runs-on: ubuntu-24.04
     container:
       image: debian:12
@@ -201,11 +252,14 @@ jobs:
         with:
           key: x86_64-unknown-linux-gnu
 
+      - name: Stamp the version
+        run: python3 tools/version.py --set ${{ needs.version.outputs.version }}
+
       - name: Install the Tauri CLI
         run: npm install -g @tauri-apps/cli@^2
 
-      # The .rpm is written by the bundler itself - it links the `rpm` crate
-      # rather than shelling out - so there is no rpmbuild to install.
+      # The .rpm is written by the bundler itself, which links the `rpm` crate
+      # rather than shelling out, so there is no rpmbuild to install.
       - name: Build and bundle
         run: python3 tools/build.py --target x86_64-unknown-linux-gnu --bundles deb,rpm
 
@@ -224,34 +278,14 @@ jobs:
   # ======================================================================
   publish:
     name: Publish
-    needs: [desktop, linux]
+    needs: [version, desktop, linux]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-
       - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: dist-*
           merge-multiple: true
-
-      - name: Name the release
-        id: name
-        run: |
-          version=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            echo "tag=${GITHUB_REF_NAME}"            >> "$GITHUB_OUTPUT"
-            echo "title=SYNX ${version}"             >> "$GITHUB_OUTPUT"
-            echo "prerelease=false"                  >> "$GITHUB_OUTPUT"
-          else
-            # One rolling prerelease rather than one release per commit. The
-            # tag is moved to whatever main is now, which is what makes the
-            # link on the README stable.
-            echo "tag=nightly"                       >> "$GITHUB_OUTPUT"
-            echo "title=SYNX ${version} — build ${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true"                   >> "$GITHUB_OUTPUT"
-          fi
 
       # Each build wrote the sums for its own files. One list is what a person
       # checking a download actually wants, and the per-platform pieces have no
@@ -266,9 +300,11 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: Write the release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           {
-            echo "Built from \`${GITHUB_SHA}\` on \`${GITHUB_REF_NAME}\`."
+            echo "Open beta build ${VERSION}, from \`${GITHUB_SHA}\`."
             echo
             echo "| Platform | Download |"
             echo "| --- | --- |"
@@ -277,10 +313,10 @@ jobs:
             echo "| macOS (Apple silicon) | \`-apple-silicon.dmg\` |"
             echo "| macOS (Intel) | \`-intel.dmg\` |"
             echo
-            echo "Nothing here is code-signed. Windows SmartScreen will ask once"
-            echo "(More info → Run anyway); macOS will refuse a double-click, so"
-            echo "open it from the right-click menu the first time, or run"
-            echo "\`xattr -dr com.apple.quarantine /Applications/SYNX.app\`."
+            echo "Nothing here is code-signed. Windows SmartScreen will ask once:"
+            echo "choose More info, then Run anyway. macOS will refuse a"
+            echo "double-click, so open it from the right-click menu the first"
+            echo "time, or run \`xattr -dr com.apple.quarantine /Applications/SYNX.app\`."
             echo
             echo "The Linux builds are made on Debian 12, so they need glibc 2.36"
             echo "or newer and a WebKitGTK 4.1 runtime."
@@ -289,27 +325,21 @@ jobs:
             echo
             echo "**Photosensitivity warning:** SYNX contains rapidly flashing"
             echo "lights, high-contrast strobing and saturated neon effects."
+            echo
+            echo "SYNX is in open beta. Expect bugs, and please report them."
           } > NOTES.md
           cat NOTES.md
 
-      # The rolling release is REPLACED rather than added to: leaving it in
-      # place would carry the previous version's files alongside the new
-      # ones the moment the version number changes.
-      - name: Clear the previous rolling build
-        if: github.ref_type != 'tag'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete nightly --yes --cleanup-tag || true
-
       - uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.name.outputs.tag }}
-          name: ${{ steps.name.outputs.title }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: SYNX ${{ needs.version.outputs.version }} Beta
           body_path: NOTES.md
-          prerelease: ${{ steps.name.outputs.prerelease }}
           target_commitish: ${{ github.sha }}
           files: dist/*
           fail_on_unmatched_files: true
-          # A rolling prerelease must not displace the newest real
-          # release as the one the repository points people at.
-          make_latest: ${{ github.ref_type == 'tag' }}
+          # Beta by name, not by GitHub's prerelease flag: a prerelease cannot
+          # hold the Latest badge, and the newest beta is exactly what the
+          # repository should be pointing people at.
+          prerelease: false
+          make_latest: true

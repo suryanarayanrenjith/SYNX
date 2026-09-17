@@ -1,4 +1,4 @@
-/* SYNX — the controller.
+/* SYNX - the controller.
  *
  * One place that knows about the Gamepad API, so nothing else has to.
  *

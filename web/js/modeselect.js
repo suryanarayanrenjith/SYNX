@@ -1,4 +1,4 @@
-/* SYNX DRIVER TERMINAL — the door behind START
+/* SYNX DRIVER TERMINAL - the door behind START
  *
  * The title screen used to hand START straight to the campaign, and Free Roam
  * had to be reached from somewhere: first as a third row on the title, then as
@@ -290,7 +290,7 @@
       if (this.ui.status) {
         this.ui.status.textContent = unlocked
           ? 'The campaign is behind you and the whole road is open. Drive the story again for the chapters, or take the open route and drive all seven regions end to end.'
-          : 'Seven chapters, one rival at a time. The open route unlocks when the last of them is behind you — everything between the seawall and the horizon, in one unbroken run.';
+          : 'Seven chapters, one rival at a time. The open route unlocks when the last of them is behind you - everything between the seawall and the horizon, in one unbroken run.';
       }
 
       const cards = this.ui.cards;
@@ -344,11 +344,11 @@
         kicker: 'CAMPAIGN // WELCOME TO THE NIGHT',
         title: 'STORY MODE',
         note: last + ' CHAPTERS  //  SEVEN RIVALS  //  ONE MODEL THAT CANNOT PREDICT YOU',
-        state: unlocked ? 'COMPLETE — REPLAY ANY CHAPTER'
+        state: unlocked ? 'COMPLETE - REPLAY ANY CHAPTER'
           : (started
-            ? 'CONTINUE — CHAPTER ' + String(current).padStart(2, '0')
-              + (chapterName ? ' — ' + chapterName : '')
-            : 'NEW GAME — CHAPTER 01'),
+            ? 'CONTINUE - CHAPTER ' + String(current).padStart(2, '0')
+              + (chapterName ? ' - ' + chapterName : '')
+            : 'NEW GAME - CHAPTER 01'),
         act: () => this.chooseStory(),
       });
 
@@ -423,8 +423,8 @@
         note: 'ALL ' + (levels.length || 7) + ' REGIONS  //  ' + km
           + ' KM  //  NO CHAPTER, NO CUTSCENE, NO SEAM',
         state: unlocked
-          ? 'ONE UNBROKEN RUN — SEAWALL TO HORIZON'
-          : 'LOCKED — FINISH THE STORY  (' + done + ' / ' + last + ')',
+          ? 'ONE UNBROKEN RUN - SEAWALL TO HORIZON'
+          : 'LOCKED - FINISH THE STORY  (' + done + ' / ' + last + ')',
         act: (b) => this.chooseFreeRoam(b),
       });
 

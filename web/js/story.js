@@ -1,4 +1,4 @@
-/* SYNX Story Mode — WELCOME TO THE NIGHT
+/* SYNX Story Mode - WELCOME TO THE NIGHT
  *
  * StoryManager is deliberately a director above the existing game. Vehicle,
  * camera, renderer, AI, route and race-result authority remain in Game. This
@@ -230,7 +230,7 @@
       after: 2, weight: 1,
       kicker: 'DECISION // WHAT KAEL FOUND',
       question: 'AURORA HAS NINE YEARS OF RYKER',
-      detail: 'Every lap he has ever driven, logged and modelled. Kael says the file is closed — they are not still collecting. They already have what they wanted from him.',
+      detail: 'Every lap he has ever driven, logged and modelled. Kael says the file is closed - they are not still collecting. They already have what they wanted from him.',
       edge: {
         label: 'SAY NOTHING', sub: 'IT IS NOT YOUR CHANNEL',
         tag: 'He is the only person on this Grid who can beat you. A rattled Ryker is a slower Ryker, and you know it.',
@@ -279,7 +279,7 @@
       after: 6, weight: 1,
       kicker: 'DECISION // THE LINK',
       question: 'JAVAS CAN REACH THE R-IX FROM THE ROAD',
-      detail: 'The driver link runs both ways. He can push a corrupted sync down it and end the model on the deck — or hold it open and read the operator back out, if you can stay unpredictable long enough for it to keep failing to close.',
+      detail: 'The driver link runs both ways. He can push a corrupted sync down it and end the model on the deck - or hold it open and read the operator back out, if you can stay unpredictable long enough for it to keep failing to close.',
       edge: {
         label: 'BURN IT', sub: 'END THE PROGRAMME',
         tag: 'One sync and the model is gone, tonight, for good. Everything on it goes with it. Everything.',
@@ -291,7 +291,7 @@
       },
       open: {
         label: 'PULL HIM OUT', sub: 'THIRTY KILOMETRES OF IT',
-        tag: 'The link stays open only while it cannot predict you. Never take the same corner twice — not once, not anywhere — and Javas reads him back out on the way.',
+        tag: 'The link stays open only while it cannot predict you. Never take the same corner twice - not once, not anywhere - and Javas reads him back out on the way.',
         echo: [
           { speaker: 'JAVAS', expression: 'concerned', text: 'Thirty kilometres. If it gets a lock on you even once, the link shuts and he stays in there.', shot: 'over' },
           { speaker: 'PLAYER', expression: 'focus', text: 'Then it does not get one.', shot: 'player', hold: 1.1 },
@@ -334,9 +334,9 @@
         { speaker: 'RYKER', expression: 'neutral', text: 'Nine months. Nobody has done that in nine months.', shot: 'rival' },
         { speaker: 'PLAYER', expression: 'smirk', text: 'You sound pleased about it.', shot: 'player' },
         { speaker: 'RYKER', expression: 'concerned', text: 'You have no idea how boring it is up here.', shot: 'closeup', wait: 0.4, hold: 1.0 },
-        { speaker: 'GRID', expression: 'radio', text: 'EXTERNAL RELAY // TELEMETRY REQUEST\nAURORA MOTORWORKS — GRANTED', shot: 'sky', wait: 0.5 },
+        { speaker: 'GRID', expression: 'radio', text: 'EXTERNAL RELAY // TELEMETRY REQUEST\nAURORA MOTORWORKS - GRANTED', shot: 'sky', wait: 0.5 },
         { speaker: 'PLAYER', expression: 'surprised', text: 'What was that?', shot: 'player' },
-        { speaker: 'RYKER', expression: 'smug', text: 'Somebody watching. Get used to it — that is what winning buys you.', shot: 'rival' },
+        { speaker: 'RYKER', expression: 'smug', text: 'Somebody watching. Get used to it - that is what winning buys you.', shot: 'rival' },
         { speaker: 'RYKER', expression: 'neutral', text: 'Same time tomorrow. Do not make me call the channel again.', shot: 'two', hold: 0.9 },
       ],
     },
@@ -383,7 +383,7 @@
       diff: (ctx) => fork(ctx, 3, 2),
       rating: 'STREET → VECTOR',
       brief: (ctx) => fork(ctx,
-        'NOVA VEYRA BUILT HALF OF WHAT IS COMING.\nSHE HAS READ WHAT YOU DID WITH KAEL’S FILE.',
+        'NOVA VEYRA BUILT HALF OF WHAT IS COMING.\nSHE HAS READ WHAT YOU DID WITH KAEL\'S FILE.',
         'NOVA VEYRA BUILT HALF OF WHAT IS COMING.\nSHE WANTS TO SEE WHAT AURORA FLAGGED.'),
       coldOpen: (ctx) => fork(ctx, [
         { speaker: 'NOVA', expression: 'calculating', text: 'Kael showed you the file. You sat on it.', shot: 'over' },
@@ -418,7 +418,7 @@
         { speaker: 'NOVA', expression: 'neutral', text: 'It is the reason they flagged you in a fortnight and left Ryker alone for nine years.', shot: 'rival', hold: 1.0 },
         { speaker: 'PLAYER', expression: 'shocked', text: 'They left him alone because he is TOO good?', shot: 'player' },
         { speaker: 'NOVA', expression: 'concerned', text: 'They left him alone because they were finished. You do not keep interviewing a man whose answers you already have.', shot: 'closeup', wait: 0.5, hold: 1.4 },
-        { speaker: 'GRID', expression: 'radio', text: 'AURORA MOTORWORKS\nMIDNIGHT INVITATIONAL — ENTRY CONFIRMED', shot: 'sky', wait: 0.4 },
+        { speaker: 'GRID', expression: 'radio', text: 'AURORA MOTORWORKS\nMIDNIGHT INVITATIONAL - ENTRY CONFIRMED', shot: 'sky', wait: 0.4 },
         { speaker: 'NOVA', expression: 'calm', text: 'And there is the invitation.', shot: 'closeup' },
         fork(ctx,
           { speaker: 'NOVA', expression: 'calculating', text: 'Go. Win it. And when he asks you why you never said anything, have a better answer than the one you gave me.', shot: 'two' },
@@ -444,7 +444,7 @@
         { speaker: 'RYKER', expression: 'smug', text: 'Nine years, Nova. Nine years at the top of a list they read every single night.', shot: 'closeup' },
         { speaker: 'RYKER', expression: 'angry', text: 'They flagged a rookie in a fortnight. They have never once said my name.', shot: 'rival', hold: 1.0 },
         fork(ctx, [
-          { speaker: 'PLAYER', expression: 'focus', text: 'Ryker —', shot: 'player' },
+          { speaker: 'PLAYER', expression: 'focus', text: 'Ryker...', shot: 'player' },
           { speaker: 'RYKER', expression: 'angry', text: 'Do not. Whatever it is, do not do it on the grid.', shot: 'closeup', hold: 1.0 },
         ], [
           { speaker: 'RYKER', expression: 'neutral', text: 'And you. Telling me they closed my file like it was a kindness.', shot: 'closeup' },
@@ -473,7 +473,7 @@
       rating: 'RESULT STOLEN // R-IX REVEALED',
       brief: 'THE EXHIBITION. NO CREWS, NO BARRIERS.\nTHE PRIZE IS THE CAR THEY BUILT OUT OF HIM.',
       coldOpen: [
-        { speaker: 'AURORA', expression: 'radio', text: 'AURORA EXHIBITION — ASHFALL ZERO\nEAST CITY THROUGH THE CALDERA. NO SAFETY CREWS ON ROUTE.', shot: 'sky' },
+        { speaker: 'AURORA', expression: 'radio', text: 'AURORA EXHIBITION - ASHFALL ZERO\nEAST CITY THROUGH THE CALDERA. NO SAFETY CREWS ON ROUTE.', shot: 'sky' },
         { speaker: 'AURORA', expression: 'radio', text: 'PRIZE OF RECORD: R-IX PROTOTYPE AND THE AURORA SEAT ATTACHED TO IT.', shot: 'wide', hold: 0.9 },
       ],
       intro: (ctx) => [
@@ -582,9 +582,9 @@
       /* The finale's `win` is the last beat of the RACE. The ending is a scene
          of its own - see ENDINGS and startEnding. */
       win: [
-        { speaker: 'GRID', expression: 'radio', text: 'AURORA DRIVER LINK // SYNC LOST\nR-IX — MODEL DID NOT CLOSE', shot: 'sky' },
-        { speaker: 'RAPTOR', expression: 'damaged', text: 'Th— that is not— recalculating—', shot: 'rival' },
-        { speaker: 'RAPTOR', expression: 'angry', text: 'The line was correct. The line was CORRECT—', shot: 'closeup' },
+        { speaker: 'GRID', expression: 'radio', text: 'AURORA DRIVER LINK // SYNC LOST\nR-IX - MODEL DID NOT CLOSE', shot: 'sky' },
+        { speaker: 'RAPTOR', expression: 'damaged', text: 'Th... that is not... recalculating...', shot: 'rival' },
+        { speaker: 'RAPTOR', expression: 'angry', text: 'The line was correct. The line was CORRECT...', shot: 'closeup' },
         { speaker: 'PLAYER', expression: 'focus', text: 'It was. That was always the problem.', shot: 'player' },
         { speaker: 'NOVA', expression: 'calculating', text: 'It only ever had one answer. You never gave it the same question.', shot: 'over', hold: 1.2 },
       ],
@@ -655,16 +655,16 @@
       rating: 'GRID RATING // NIGHT',
       lines: [
         { speaker: 'JAVAS', expression: 'calculating', text: 'Sync is in. The model is writing over itself.', shot: 'sky' },
-        { speaker: 'RAPTOR', expression: 'damaged', text: 'Wait—', shot: 'rival', hold: 1.0 },
-        { speaker: 'RAPTOR', expression: 'concerned', text: 'Wait. I was nearly out. I could see the—', shot: 'closeup', wait: 0.5, hold: 1.4 },
-        { speaker: 'GRID', expression: 'radio', text: 'AURORA DRIVER LINK // TERMINATED\nOPERATOR — NOT RECOVERED', shot: 'sky', wait: 0.8, hold: 1.5 },
+        { speaker: 'RAPTOR', expression: 'damaged', text: 'Wait...', shot: 'rival', hold: 1.0 },
+        { speaker: 'RAPTOR', expression: 'concerned', text: 'Wait. I was nearly out. I could see the...', shot: 'closeup', wait: 0.5, hold: 1.4 },
+        { speaker: 'GRID', expression: 'radio', text: 'AURORA DRIVER LINK // TERMINATED\nOPERATOR - NOT RECOVERED', shot: 'sky', wait: 0.8, hold: 1.5 },
         { speaker: 'PLAYER', expression: 'shocked', text: '...Ryker.', shot: 'player', wait: 0.9, hold: 1.3 },
         { speaker: 'NOVA', expression: 'shocked', text: 'I know.', shot: 'over', hold: 1.1 },
         { speaker: 'KAEL', expression: 'concerned', text: 'Somebody say something. Please.', shot: 'sky', hold: 1.0 },
         { speaker: 'JAVAS', expression: 'concerned', text: 'Twelve years I built that link. It is off.', shot: 'over' },
         { speaker: 'JAVAS', expression: 'calm', text: 'That is what you asked me for, and it is the only true thing I have left to give you.', shot: 'closeup', hold: 1.2 },
         { speaker: 'GRID', expression: 'radio', text: 'AURORA MOTORWORKS // AUTONOMOUS PROGRAMME\nSUSPENDED INDEFINITELY', shot: 'sky' },
-        { speaker: 'GRID', expression: 'radio', text: 'GRID RANK 01 — VACANT\nGRID RATING UPDATED: VECTOR → NIGHT', shot: 'sky', wait: 0.5, hold: 1.4 },
+        { speaker: 'GRID', expression: 'radio', text: 'GRID RANK 01 - VACANT\nGRID RATING UPDATED: VECTOR → NIGHT', shot: 'sky', wait: 0.5, hold: 1.4 },
         { speaker: 'PLAYER', expression: 'damaged', text: 'Ryker, come in.', shot: 'closeup', wait: 1.0 },
         { speaker: 'GRID', expression: 'radio', text: 'OPEN CHANNEL // NO CARRIER', shot: 'sky', wait: 1.2, hold: 1.8 },
       ],
@@ -672,7 +672,7 @@
          who has had a channel open for thirty-one nights because nobody comes
          to Vector any more. */
       coda: [
-        { speaker: 'GRID', expression: 'radio', text: 'VECTOR RUN // 00:00\nOPEN CHANNEL — 1 LISTENING', shot: 'sky', hold: 1.4 },
+        { speaker: 'GRID', expression: 'radio', text: 'VECTOR RUN // 00:00\nOPEN CHANNEL - 1 LISTENING', shot: 'sky', hold: 1.4 },
         { speaker: 'KAEL', expression: 'neutral', text: "...You're early.", shot: 'road' },
         { speaker: 'PLAYER', expression: 'neutral', text: 'I am always early now.', shot: 'player', hold: 0.9 },
         { speaker: 'KAEL', expression: 'concerned', text: 'Nova says you drive it every night. The whole route. On your own.', shot: 'rival' },
@@ -695,13 +695,13 @@
       rating: 'GRID RATING // NIGHT',
       lines: [
         { speaker: 'JAVAS', expression: 'calculating', text: 'Link is holding. It cannot get a lock on you.', shot: 'sky' },
-        { speaker: 'RAPTOR', expression: 'angry', text: 'You always brake here. You ALWAYS—', shot: 'rival' },
+        { speaker: 'RAPTOR', expression: 'angry', text: 'You always brake here. You ALWAYS...', shot: 'rival' },
         { speaker: 'PLAYER', expression: 'focus', text: 'Not tonight.', shot: 'player', hold: 0.9 },
         { speaker: 'JAVAS', expression: 'calculating', text: 'Nine years of him coming back out. Eight. Six.', shot: 'over', wait: 0.5 },
         { speaker: 'NOVA', expression: 'concerned', text: 'Do not give it a corner. Not one.', shot: 'over' },
         { speaker: 'JAVAS', expression: 'calm', text: 'Three. Two.', shot: 'over' },
         { speaker: 'NOVA', expression: 'shocked', text: 'One.', shot: 'over', wait: 0.7, hold: 1.5 },
-        { speaker: 'GRID', expression: 'radio', text: 'AURORA DRIVER LINK // CLOSED\nOPERATOR — RELEASED', shot: 'sky', wait: 0.8, hold: 1.6 },
+        { speaker: 'GRID', expression: 'radio', text: 'AURORA DRIVER LINK // CLOSED\nOPERATOR - RELEASED', shot: 'sky', wait: 0.8, hold: 1.6 },
         { speaker: 'RYKER', expression: 'damaged', text: '...', shot: 'closeup', wait: 1.0, hold: 1.3 },
         { speaker: 'RYKER', expression: 'concerned', text: 'Eleven days.', shot: 'rival' },
         { speaker: 'PLAYER', expression: 'surprised', text: 'Ryker?', shot: 'player' },
@@ -717,7 +717,7 @@
         { speaker: 'GRID', expression: 'radio', text: 'GRID RATING UPDATED\nVECTOR → NIGHT', shot: 'sky' },
       ],
       coda: [
-        { speaker: 'GRID', expression: 'radio', text: 'VECTOR RUN // 00:00\nOPEN CHANNEL — 9,400 LISTENING', shot: 'sky', hold: 1.3 },
+        { speaker: 'GRID', expression: 'radio', text: 'VECTOR RUN // 00:00\nOPEN CHANNEL - 9,400 LISTENING', shot: 'sky', hold: 1.3 },
         { speaker: 'KAEL', expression: 'adrenaline', text: 'Nine thousand! On VECTOR! Nobody has come to Vector in a year!', shot: 'road' },
         { speaker: 'NOVA', expression: 'smug', text: 'They came to see whether it was true.', shot: 'over' },
         { speaker: 'RYKER', expression: 'neutral', text: 'It is my channel. I have had it open for thirty-one nights.', shot: 'rival', hold: 0.9 },
@@ -935,8 +935,8 @@
           const ch = line.text.charAt(i);
           if (ch === ',') this.delay += 0.06;
           else if (ch === '.' || ch === '!' || ch === '?') this.delay += 0.12;
-          else if (ch === '—' || ch === '…') this.delay += 0.16;
-          if (/[^\s.,!?—…]/.test(ch) && i - this.lastBlip >= 3) {
+          else if (ch === '…') this.delay += 0.16;
+          if (/[^\s.,!?…]/.test(ch) && i - this.lastBlip >= 3) {
             this.lastBlip = i;
             this.story.textBlip(line.speaker);
           }
@@ -1488,11 +1488,11 @@
       if (finished) {
         const E = this.ending();
         const other = E.id === 'edge' ? ENDINGS.open : ENDINGS.edge;
-        this.ui.hubStatus.textContent = 'Campaign complete — ' + E.title + '. ' + E.subtitle
+        this.ui.hubStatus.textContent = 'Campaign complete - ' + E.title + '. ' + E.subtitle
           + ' The other road, ' + other.title + ', is reachable from the same seven chapters:'
           + ' replay and decide the other way.' + trail;
       } else {
-        this.ui.hubStatus.textContent = 'Chapter ' + current + ' — ' + CHAPTERS[current].title + '. '
+        this.ui.hubStatus.textContent = 'Chapter ' + current + ' - ' + CHAPTERS[current].title + '. '
           + String(pick(CHAPTERS[current].brief, ctx, '')).replace(/\n/g, ' ') + trail;
       }
 
@@ -1555,7 +1555,7 @@
         num.textContent = 'CHAPTER ' + String(i).padStart(2, '0');
         title.textContent = c.title;
         meta.textContent = cast(c.rival).name + ' // ' + c.track;
-        state.textContent = cleared ? 'CLEARED — REPLAY' : (unlocked ? (i === current ? 'NEXT — PLAY' : 'PLAY') : 'LOCKED');
+        state.textContent = cleared ? 'CLEARED - REPLAY' : (unlocked ? (i === current ? 'NEXT - PLAY' : 'PLAY') : 'LOCKED');
         b.append(art, num, title, meta, state);
         /* Hover and keyboard focus share the same active treatment. This is
            explicit rather than relying on a tiny transform alone, so each
@@ -1736,14 +1736,14 @@
          player in his voice - which only lands if the player heard him say it
          first, from a card that would not give him a name. */
       this.dialogue.play([
-        { speaker: 'GRID', expression: 'radio', text: 'SYNX GRID // OPEN CHANNEL\nUNREGISTERED VEHICLE — NO DRIVER ID', shot: 'sky' },
+        { speaker: 'GRID', expression: 'radio', text: 'SYNX GRID // OPEN CHANNEL\nUNREGISTERED VEHICLE - NO DRIVER ID', shot: 'sky' },
         { speaker: 'UNKNOWN', expression: 'radio', text: 'Somebody is on my channel.', shot: 'low', wait: 0.6, hold: 0.9 },
         { speaker: 'UNKNOWN', expression: 'radio', text: 'Thirty-one nights I have had this open. You are the first thing on it that is not the relay.', shot: 'wheel' },
         { speaker: 'PLAYER', expression: 'neutral', text: "I'm not registered.", shot: 'player' },
         { speaker: 'UNKNOWN', expression: 'radio', text: 'I can see that. No ID, no rating, no route.', shot: 'closeup', hold: 0.9 },
         { speaker: 'UNKNOWN', expression: 'radio', text: 'Which makes you the only driver on this Grid I have never beaten.', shot: 'road', wait: 0.5, hold: 1.1 },
         { speaker: 'PLAYER', expression: 'focus', text: 'Who is this?', shot: 'player' },
-        { speaker: 'UNKNOWN', expression: 'radio', text: 'Rank one. Nine years. Ask anybody — they all say the same thing about me.', shot: 'sky', hold: 0.9 },
+        { speaker: 'UNKNOWN', expression: 'radio', text: 'Rank one. Nine years. Ask anybody - they all say the same thing about me.', shot: 'sky', hold: 0.9 },
         { speaker: 'UNKNOWN', expression: 'radio', text: 'Vector Run. Midnight. Vector to the seawall.', shot: 'road' },
         { speaker: 'UNKNOWN', expression: 'radio', text: 'Try keeping me in the frame.', shot: 'player', wait: 0.4, hold: 1.3 },
       ], {
@@ -1787,11 +1787,11 @@
       this.ui.waypointKicker.textContent = 'ROUTE LOCKED';
       this.ui.waypointTitle.textContent = 'VECTOR RUN';
       this.tutorialSteps = [
-        { id: 'accelerate', label: 'W / ↑ — ACCELERATE', test: i => i.throttle > 0.25 },
-        { id: 'steer', label: 'A / D — STEER', test: i => Math.abs(i.steer) > 0.25 },
-        { id: 'brake', label: 'S / ↓ — BRAKE', test: i => i.brake > 0.25 },
-        { id: 'boost', label: 'B — BOOST', test: i => i.boost },
-        { id: 'drift', label: 'SPACE + A / D — DRIFT', test: i => i.ebrake && Math.abs(i.steer) > 0.25 },
+        { id: 'accelerate', label: 'W / ↑ - ACCELERATE', test: i => i.throttle > 0.25 },
+        { id: 'steer', label: 'A / D - STEER', test: i => Math.abs(i.steer) > 0.25 },
+        { id: 'brake', label: 'S / ↓ - BRAKE', test: i => i.brake > 0.25 },
+        { id: 'boost', label: 'B - BOOST', test: i => i.boost },
+        { id: 'drift', label: 'SPACE + A / D - DRIFT', test: i => i.ebrake && Math.abs(i.steer) > 0.25 },
       ];
       this.tutorialIndex = 0;
       this.tutorialHold = 0;
@@ -1802,7 +1802,7 @@
     updateTutorialCard() {
       const step = this.tutorialSteps[this.tutorialIndex];
       if (!step) {
-        this.ui.tutorialText.textContent = 'VECTOR RUN — KEEP MOVING';
+        this.ui.tutorialText.textContent = 'VECTOR RUN - KEEP MOVING';
         this.ui.tutorialFill.style.transform = 'scaleX(1)';
         return;
       }
@@ -1841,7 +1841,7 @@
       if (this.g.car.sTrack > 760) this.fire('tut2', () => this.showCompact('GRID', 'radio', 'Driver profile: no ID. Plate: archived March.', 3.2));
       if (this.g.car.sTrack > 1080) this.fire('tut3', () => this.showCompact('UNKNOWN', 'radio', 'Still with me? Good. Seawall is the line.', 3.0));
       if (this.g.car.sTrack > 1360) this.fire('tut4', () => this.showCompact('UNKNOWN', 'radio', 'Eleven months that car sat there. Nobody touched it.', 3.4));
-      if (this.g.car.sTrack > 1600) this.fire('tut5', () => this.showCompact('UNKNOWN', 'radio', 'Whoever you are — you drive like he did.', 3.6));
+      if (this.g.car.sTrack > 1600) this.fire('tut5', () => this.showCompact('UNKNOWN', 'radio', 'Whoever you are - you drive like he did.', 3.6));
 
       const learned = this.tutorialIndex >= this.tutorialSteps.length;
       if ((learned && this.g.car.sTrack >= 1780) || this.t > 70) {
@@ -2303,7 +2303,7 @@
 
       const wallRemark = (escalated) => {
         if (c === 1) return { speaker: 'RYKER', expression: escalated ? 'angry' : 'amused', text: escalated ? "The wall's got a cleaner line than you." : 'You racing me or the guardrail?' };
-        if (c === 2) return { speaker: 'KAEL', expression: escalated ? 'shocked' : 'amused', text: escalated ? 'Okay — even I think that is too many walls.' : 'Four impacts! The barriers are winning!' };
+        if (c === 2) return { speaker: 'KAEL', expression: escalated ? 'shocked' : 'amused', text: escalated ? 'Okay - even I think that is too many walls.' : 'Four impacts! The barriers are winning!' };
         if (c === 3) return { speaker: 'NOVA', expression: 'calculating', text: escalated ? "You're not correcting any more. You're panicking." : 'Fourth wall. Stop steering after the mistake.' };
         if (c === 7) return { speaker: 'NOVA', expression: 'concerned', text: escalated ? 'Every impact is a data point. Stop feeding it.' : 'It logged that. Do not give it a pattern.' };
         return { speaker: escalated ? 'KAEL' : 'NOVA', expression: escalated ? 'shocked' : 'calculating', text: escalated ? 'The car is becoming a percussion instrument!' : 'Four impacts. Aurora is watching those too.' };
@@ -2329,7 +2329,7 @@
         if (g.rivalGap < -115 && g.progress > .08) return once('lead', 'RYKER', 'smug', 'You planning on racing tonight?');
         if (Math.abs(g.rivalGap) < 18 && g.progress > .18) return once('close', 'RYKER', 'neutral', '...Okay. Okay.');
         if (g.progress > .46 && g.place === 1) return once('like', 'RYKER', 'concerned', 'You take the seawall the way he did. Exactly the way he did.');
-        if (g.progress > .78) return once('end1', 'RYKER', 'neutral', 'Whatever happens at that line — you asked me a question.');
+        if (g.progress > .78) return once('end1', 'RYKER', 'neutral', 'Whatever happens at that line - you asked me a question.');
       } else if (c === 2) {
         if (g.car.offroad) return once('offroad', 'KAEL', 'amused', 'YES! Nothing out here is recording that!');
         if (took) return once('pass', 'KAEL', 'amused', 'Where are you going? I love it.');
@@ -2364,14 +2364,14 @@
         if (spotter('p_help', 'NOVA', 'calm', 'It has your Mirage exits. Brake later than you want to through here.')) return true;
         if (g.progress > .30) {
           return open
-            ? once('p_open1', 'JAVAS', 'calm', 'Link is holding. Profile five is loose — keep it guessing.')
+            ? once('p_open1', 'JAVAS', 'calm', 'Link is holding. Profile five is loose - keep it guessing.')
             : once('p_edge1', 'JAVAS', 'calculating', 'Sync window is armed. I need you flat out and I need it soon.');
         }
         if (g.progress > .48) return once('p3', 'NOVA', 'calm', 'raceMode. Spend it where it thinks it knows you.');
         if (g.progress > .62 && g.place > 1) return once('p4', 'RAPTOR', 'smug', 'You always brake here.');
         if (g.progress > .70) {
           return open
-            ? once('p_open2', 'JAVAS', 'concerned', 'Three out. Two. Do not converge now — not now.')
+            ? once('p_open2', 'JAVAS', 'concerned', 'Three out. Two. Do not converge now - not now.')
             : once('p_edge2', 'NOVA', 'concerned', 'Once he pushes it there is no taking it back. You know what is on there.');
         }
         if (g.progress > .88) return once('p5', 'RAPTOR', 'concerned', 'Why do you not drive the same way twice.');
@@ -2508,11 +2508,11 @@
            at that line is what the line itself means: the prototype was beaten
            on the deck it was built to be unbeatable on. */
         7: {
-          photo: [{ speaker: 'GRID', expression: 'radio', text: 'NEON HORIZON — DECIDED AT THE LINE\nAURORA R-IX: SECOND', shot: 'sky' }],
-          close: [{ speaker: 'GRID', expression: 'radio', text: 'NEON HORIZON — AURORA R-IX: SECOND', shot: 'sky' }],
-          landslide: [{ speaker: 'GRID', expression: 'radio', text: 'NEON HORIZON — THE PROTOTYPE NEVER HAD IT', shot: 'sky' }],
-          dominant: [{ speaker: 'GRID', expression: 'radio', text: 'NEON HORIZON — CLEAR ROAD BEHIND THE ROOKIE', shot: 'sky' }],
-          clap: [{ speaker: 'GRID', expression: 'radio', text: 'NEON HORIZON — AURORA’S OWN DECK\nAND IT WAS NOT CLOSE', shot: 'sky' }],
+          photo: [{ speaker: 'GRID', expression: 'radio', text: 'NEON HORIZON - DECIDED AT THE LINE\nAURORA R-IX: SECOND', shot: 'sky' }],
+          close: [{ speaker: 'GRID', expression: 'radio', text: 'NEON HORIZON - AURORA R-IX: SECOND', shot: 'sky' }],
+          landslide: [{ speaker: 'GRID', expression: 'radio', text: 'NEON HORIZON - THE PROTOTYPE NEVER HAD IT', shot: 'sky' }],
+          dominant: [{ speaker: 'GRID', expression: 'radio', text: 'NEON HORIZON - CLEAR ROAD BEHIND THE ROOKIE', shot: 'sky' }],
+          clap: [{ speaker: 'GRID', expression: 'radio', text: 'NEON HORIZON - AURORA\'S OWN DECK\nAND IT WAS NOT CLOSE', shot: 'sky' }],
         },
       };
       const table = wins[c];
@@ -2622,7 +2622,7 @@
       this.currentShot = 'rival';
       this.g.audio.playTrack('cutscene');
       this.dialogue.play([
-        { speaker: 'AURORA', expression: 'radio', text: 'EXHIBITION RESULT CONFIRMED\nR-IX PROTOTYPE AND SEAT AWARDED — RYKER', shot: 'sky' },
+        { speaker: 'AURORA', expression: 'radio', text: 'EXHIBITION RESULT CONFIRMED\nR-IX PROTOTYPE AND SEAT AWARDED - RYKER', shot: 'sky' },
         { speaker: 'PLAYER', expression: 'damaged', text: 'He hit me. On camera. In front of all of them.', shot: 'player' },
         { speaker: 'NOVA', expression: 'concerned', text: 'And they confirmed it in four seconds. They were not watching the race.', shot: 'over' },
         { speaker: 'RYKER', expression: 'damaged', text: '...', shot: 'closeup' },
@@ -2633,8 +2633,8 @@
         { speaker: 'RYKER', expression: 'smug', text: 'So one of us was getting in that thing tonight.', shot: 'closeup' },
         { speaker: 'NOVA', expression: 'shocked', text: 'Ryker. Get out of the car.', shot: 'over' },
         { speaker: 'RYKER', expression: 'amused', text: 'Do not look so grateful. I still won.', shot: 'rival' },
-        { speaker: 'AURORA', expression: 'radio', text: 'DRIVER LINK — HANDSHAKE ACCEPTED\nOPERATOR: RYKER', shot: 'sky' },
-        { speaker: 'PLAYER', expression: 'shocked', text: 'RYKER —', shot: 'player' },
+        { speaker: 'AURORA', expression: 'radio', text: 'DRIVER LINK - HANDSHAKE ACCEPTED\nOPERATOR: RYKER', shot: 'sky' },
+        { speaker: 'PLAYER', expression: 'shocked', text: 'RYKER...', shot: 'player' },
       ], {
         key: 'chapter_5_epilogue',
         onLine: (line) => this.onDialogueLine(line),
@@ -2974,7 +2974,7 @@
       this.t = 0;
       this.setDialogueVisible(false);
       this.showTitle('CHAPTER ' + String(id).padStart(2, '0') + ' COMPLETE', this.field('rating', ''),
-        id < LAST_CHAPTER ? 'NEXT // CHAPTER ' + String(id + 1).padStart(2, '0') + ' — ' + CHAPTERS[id + 1].title : 'WELCOME TO THE NIGHT');
+        id < LAST_CHAPTER ? 'NEXT // CHAPTER ' + String(id + 1).padStart(2, '0') + ' - ' + CHAPTERS[id + 1].title : 'WELCOME TO THE NIGHT');
       this.g.audio.playTrack('cutscene');
       this.g.audio.goBeep();
       this.cutTo('complete');
@@ -3080,7 +3080,7 @@
       this.setLayer(this.ui.letterbox, true);
       const id = this.chapter.id;
       this.ui.continueNext.textContent = id < LAST_CHAPTER
-        ? 'NEXT // CHAPTER ' + String(id + 1).padStart(2, '0') + ' — ' + CHAPTERS[id + 1].title
+        ? 'NEXT // CHAPTER ' + String(id + 1).padStart(2, '0') + ' - ' + CHAPTERS[id + 1].title
         : 'CAMPAIGN COMPLETE // EVERY CHAPTER REPLAYABLE';
       this.ui.continueYes.querySelector('b').textContent = id < LAST_CHAPTER ? 'YES' : 'CREDITS';
       this.ui.continueYes.querySelector('small').textContent = id < LAST_CHAPTER ? 'KEEP DRIVING' : 'SEE IT THROUGH';

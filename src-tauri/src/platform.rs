@@ -30,8 +30,13 @@ pub enum Renderer {
 
 /// The Chromium command line WebView2 is started with.
 ///
-/// Only Windows uses this; on Linux it is ignored and [`apply_env`] does the
-/// equivalent job.
+/// WINDOWS ONLY, AND COMPILED ONLY THERE. A command line is how WebView2 is
+/// configured and it is the only webview in the set that works that way:
+/// WebKitGTK reads the environment instead (see [`apply_env`]) and WKWebView
+/// takes neither. There used to be an empty stub here for the other two so
+/// the name always resolved, and because the one call site is itself behind
+/// a Windows cfg, that stub was a function nothing could ever call - which
+/// every non-Windows build reported, correctly, as dead code.
 /// `vsync` is a webview environment flag, not a game setting: Chromium's
 /// compositor decides when a frame is presented, and nothing inside the page
 /// can ask it not to wait for the display. That is why it is here and why
@@ -95,11 +100,6 @@ pub fn browser_args(r: Renderer, vsync: bool) -> String {
     a
 }
 
-#[cfg(not(target_os = "windows"))]
-pub fn browser_args(_r: Renderer, _vsync: bool) -> String {
-    String::new()
-}
-
 /// Configure the webview through the environment, for the platforms that are
 /// told that way rather than by a command line.
 ///
@@ -143,9 +143,9 @@ pub fn apply_env(r: Renderer) {
 /// because it is the line whoever reads the report starts from.
 ///
 /// macOS has no software fall-back to name, either. `apply_env` sets nothing
-/// there and `browser_args` returns an empty string, so the CPU renderer is
-/// a launcher row that cannot be honoured rather than a path that exists -
-/// and it says so instead of claiming a rasteriser it has not selected.
+/// there and there is no command line to set, so the CPU renderer is a
+/// launcher row that cannot be honoured rather than a path that exists, and
+/// it says so instead of claiming a rasteriser it has not selected.
 pub fn describe(r: Renderer) -> &'static str {
     #[cfg(target_os = "windows")]
     {

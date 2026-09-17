@@ -1,4 +1,4 @@
-/* SYNX MULTIPLAYER — four cars, one road.
+/* SYNX MULTIPLAYER - four cars, one road.
  *
  * The third door behind START, between the campaign and the open route. This
  * file owns three things and nothing else:
@@ -558,7 +558,7 @@
         this.status = p.state === 'ready'
           ? 'grid awake'
           : (s < 4 ? 'reaching the grid'
-            : 'waking the grid — ' + s + 's' + (s > 20 ? ' (a sleeping server takes about a minute)' : ''));
+            : 'waking the grid - ' + s + 's' + (s > 20 ? ' (a sleeping server takes about a minute)' : ''));
         if (this.shown && this.view === 'connecting') this.build();
       }).then(() => {
         this.status = 'opening the link';
@@ -660,7 +660,7 @@
     paintChrome() {
       const u = this.ui;
       const net = NR.Net;
-      if (u.name) u.name.textContent = net.name || '—';
+      if (u.name) u.name.textContent = net.name || '-';
       if (u.link) {
         const label = { offline: 'OFFLINE', waking: 'WAKING', registering: 'LINKING', connecting: 'LINKING', online: 'ONLINE' };
         u.link.textContent = label[net.state] || 'OFFLINE';
@@ -802,7 +802,7 @@
 
       this.group(u.side, 'LEAVE');
       this.action(u.side, 'back', 'CLOSE THE LINK TO THE GRID',
-        this.from === 'modes' ? 'DISCONNECT — MODE SELECT' : 'DISCONNECT — MAIN MENU',
+        this.from === 'modes' ? 'DISCONNECT - MODE SELECT' : 'DISCONNECT - MAIN MENU',
         () => this.back());
     }
 
@@ -882,7 +882,7 @@
       });
       this.action(u.side, 'server', 'POINT AT ANOTHER SERVER', 'SERVER…', () => this.editServer());
       this.action(u.side, 'back', 'CLOSE THE LINK TO THE GRID',
-        this.from === 'modes' ? 'DISCONNECT — MODE SELECT' : 'DISCONNECT — MAIN MENU',
+        this.from === 'modes' ? 'DISCONNECT - MODE SELECT' : 'DISCONNECT - MAIN MENU',
         () => this.back());
     }
 
@@ -907,7 +907,7 @@
       if (u.status) {
         let line;
         if (live.length < 2) {
-          line = 'A race needs two cars. Pass the room code to somebody, or wait here — '
+          line = 'A race needs two cars. Pass the room code to somebody, or wait here - '
             + 'this room is listed for anybody browsing.';
         } else if (mineNow && !mineNow.ready && !host) {
           line = 'Everybody else is waiting on you. Say READY when you are.';
@@ -929,7 +929,7 @@
           + (p && p.slot === me ? ' is-you' : ''));
         card.appendChild(el('small', null, 'CAR ' + String(i + 1).padStart(2, '0')
           + (p && p.slot === me ? '  //  YOU' : '')));
-        card.appendChild(el('b', null, p ? p.name : '—'));
+        card.appendChild(el('b', null, p ? p.name : '-'));
         const tags = el('span');
         if (p) {
           if (p.host) tags.appendChild(el('i', 'mp-tag host', 'HOST'));
@@ -1061,7 +1061,7 @@
       const iAmReady = !!(mine && mine.ready);
       if (!host) {
         this.action(u.side, 'ready',
-          iAmReady ? 'YOU ARE IN — SELECT TO CHANGE YOUR MIND' : 'EVERYBODY IS WAITING FOR THIS',
+          iAmReady ? 'YOU ARE IN - SELECT TO CHANGE YOUR MIND' : 'EVERYBODY IS WAITING FOR THIS',
           iAmReady ? 'READY ✓' : 'SAY YOU ARE READY',
           () => { this.g.audio.uiMove(); NR.Net.setReady(!iAmReady); },
           iAmReady ? '' : 'primary');
@@ -1075,14 +1075,14 @@
           enough
             ? (ready === others.length
               ? 'EVERYBODY IS READY'
-              : ready + ' OF ' + others.length + ' READY — YOU CAN START ANYWAY')
-            : 'A RACE NEEDS TWO CARS — NOBODY ELSE IS HERE YET',
+              : ready + ' OF ' + others.length + ' READY - YOU CAN START ANYWAY')
+            : 'A RACE NEEDS TWO CARS - NOBODY ELSE IS HERE YET',
           'DROP THE LIGHTS', () => { this.g.audio.select(); NR.Net.startRace(); },
           enough ? 'primary' : 'locked');
       }
 
       this.group(u.side, 'LEAVE');
-      this.action(u.side, 'leave', 'GIVE UP YOUR SEAT — THE ROOM CARRIES ON', 'LEAVE ROOM', () => {
+      this.action(u.side, 'leave', 'GIVE UP YOUR SEAT - THE ROOM CARRIES ON', 'LEAVE ROOM', () => {
         this.g.audio.uiMove();
         NR.Net.leaveRoom();
         this.setView('browse');
@@ -1097,7 +1097,7 @@
         this.build();
       });
       this.action(u.side, 'back', 'CLOSE THE LINK TO THE GRID',
-        this.from === 'modes' ? 'DISCONNECT — MODE SELECT' : 'DISCONNECT — MAIN MENU',
+        this.from === 'modes' ? 'DISCONNECT - MODE SELECT' : 'DISCONNECT - MAIN MENU',
         () => this.back());
     }
 
@@ -1510,7 +1510,7 @@
     confirmLeaveRace() {
       if (!this.racing || this._dialog) return;
       this.dialog({
-        kicker: 'SYNX GRID // RACE IN PROGRESS  —  THE OTHER CARS ARE STILL DRIVING',
+        kicker: 'SYNX GRID // RACE IN PROGRESS  -  THE OTHER CARS ARE STILL DRIVING',
         title: 'RACE MENU',
         body: 'A multiplayer race cannot be paused: three other cars keep going '
           + 'whatever this one does. Everything here happens immediately.',

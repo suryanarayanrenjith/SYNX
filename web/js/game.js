@@ -134,15 +134,35 @@
    * bounded at both ends so it can be neither a cut nor a wait.
    */
   const CAM_SWITCH = {
-    minLen: 0.34,        // seconds; under this the move reads as a cut
-    maxLen: 0.72,        // ...and over it the player is waiting for the game
-    perUnit: 0.0125,     // seconds of move per unit the eye has to travel
+    /* HOW LONG THE MOVE TAKES, and why these are not the first numbers
+       that were here.
+
+       The first pass ran the whole thing between a third of a second and
+       three quarters. That is long enough to not be a cut and short enough
+       to still read as one: the eye arrives before you have finished
+       noticing it left, which is a whip pan rather than a camera move.
+
+       These are roughly double. Chase to driver now takes about eight
+       tenths of a second and chase to drone about a second and a quarter,
+       which is slow enough that the travel itself is the thing you watch -
+       the bodywork coming past the lens on the way in, the road opening
+       out underneath on the way up - and still short enough that nobody
+       mid-corner is waiting on it.
+
+       The curve did not change and did not need to: smootherstep already
+       leaves and arrives with zero velocity AND zero acceleration, so what
+       was missing was time for that to be felt, not a gentler shape. */
+    minLen: 0.60,        // seconds; under this the move reads as a cut
+    maxLen: 1.25,        // ...and over it the player is waiting for the game
+    perUnit: 0.0180,     // seconds of move per unit the eye has to travel
     /* The lens opens on the way across and closes again at the far end.
-       Four degrees at most, on the longest move, and nothing at all on a
-       short one. What it buys is that the dolly reads as a camera moving
-       rather than as two poses being cross-faded. */
-    breathe: 0.115,
-    breatheMax: 4.2,
+       Smaller than it was, because the move is now long enough to read as
+       motion on its own: the same few degrees stretched over twice the
+       time stops being a cue and starts being a lens that cannot hold
+       still. Two and a half degrees at most, on the longest move, and
+       nothing at all on a short one. */
+    breathe: 0.075,
+    breatheMax: 2.6,
   };
 
   const BLOOM_LEVELS = 6;
@@ -1256,7 +1276,7 @@
     { key: 'clipToggle', label: 'RECORDING ON / OFF', def: ['f8'],
       hint: 'Starts the replay buffer, which is OFF until you ask for it. Turning it off again gives its memory straight back.' },
     { key: 'clipSave', label: 'SAVE REPLAY', def: ['f9'],
-      hint: 'Writes the last thirty seconds to a file. The buffer is already running, so this is a save rather than a start - and it does not pause the game for a moment: the file is built on the recorder’s own thread while you keep driving.' },
+      hint: 'Writes the last thirty seconds to a file. The buffer is already running, so this is a save rather than a start - and it does not pause the game for a moment: the file is built on the recorder\'s own thread while you keep driving.' },
     { key: 'clipMark', label: 'MARK HIGHLIGHT', def: ['f10'],
       hint: 'Tags this moment. Marked moments are stitched into one reel at the end of the run, automatically - and if you never mark anything, the recorder reads back over every frame it is holding and picks the best stretch itself.' },
   ];
@@ -1272,14 +1292,14 @@
     end: 'END', insert: 'INS', delete: 'DEL',
   };
   function keyLabel(k) {
-    if (!k) return '—';
+    if (!k) return '-';
     return KEY_LABELS[k] || String(k).toUpperCase();
   }
-  /* Two caps, or one, or the fact that there are none. A row reading "—" is
+  /* Two caps, or one, or the fact that there are none. A row reading "-" is
      how an unbound action says so; it is reachable, because taking a key off
      an action the player never uses is a legitimate thing to want. */
   function bindLabel(list) {
-    if (!list || !list.length) return '—';
+    if (!list || !list.length) return '-';
     return list.map(keyLabel).join('  /  ');
   }
 
@@ -1293,10 +1313,10 @@
    * matters - an action the player had cleared.
    *
    * `keyFor` returns an EMPTY STRING when the action has no key at all,
-   * rather than the em dash a CONTROLS row shows. A row is a table and an
-   * empty cell in it reads as empty; a caption is a sentence, and
-   * "BOOST READY // —" invites the player to press a key called dash. The
-   * callers drop the clause instead.
+   * rather than the placeholder a CONTROLS row shows. A row is a table and
+   * an empty cell in it reads as empty; a caption is a sentence, and
+   * "BOOST READY // -" reads as an instruction to press a key that is not
+   * on any keyboard. The callers drop the clause instead.
    */
   function boundKeys(g, action) {
     const inp = g && g.input;
@@ -3929,9 +3949,12 @@
       }
       const exitY = L.exitY;
       if (Math.abs(p.y - exitY) <= 34 && Math.abs(p.x) <= 235) return { index: rows.length, exit: true };
-      /* RESET, on the controls page only, beside the exit button rather than
-         in the list - it is not a setting, it is a way out of one. */
-      if (this.controlTab === 1 && Math.abs(p.y - exitY) <= 34
+      /* RESET, on the KEYBOARD page only, beside the exit button rather than
+         in the list - it is not a setting, it is a way out of one. Tab 0,
+         matching where js/hud.js draws it: a hit test on a different page
+         from the button is a button that cannot be clicked and a patch of
+         empty screen that can. */
+      if (this.controlTab === 0 && Math.abs(p.y - exitY) <= 34
           && p.x >= 250 && p.x <= 470) return { index: rows.length, reset: true };
       return null;
     }
@@ -3991,7 +4014,7 @@
         title: o.title || 'ARE YOU SURE?',
         body: o.body || '',
         note: o.note || '',
-        items: [o.cancel || 'NO — GO BACK', o.confirm || 'YES'],
+        items: [o.cancel || 'NO - GO BACK', o.confirm || 'YES'],
         onYes: typeof o.onYes === 'function' ? o.onYes : () => {},
       };
       this.confirmIndex = 0;
@@ -4045,8 +4068,8 @@
           ? 'This closes the game and returns you to the desktop.'
           : 'This ends the session and stops the simulation.',
         note: 'Your campaign, records and settings are already saved.',
-        cancel: 'NO — KEEP PLAYING',
-        confirm: 'YES — QUIT',
+        cancel: 'NO - KEEP PLAYING',
+        confirm: 'YES - QUIT',
         onYes: () => this.quitGame(),
       });
     }
@@ -6070,8 +6093,11 @@
         } else if (inp.hit('enter', ' ') || pointer) {
           this.saveAndExitControls();
         }
-        // R puts every key back, from anywhere on the controls page
-        if (this.controlTab === 1 && inp.hit('r')) this.resetBinds();
+        /* R puts every key back, from anywhere on the KEYBOARD page. Tab 0:
+           it was gated on the gamepad page, where the legend that advertises
+           it is not drawn any more and where there is nothing for it to
+           reset. */
+        if (this.controlTab === 0 && inp.hit('r')) this.resetBinds();
         flyby(dt);
         this.audio.update(this.car, dt, false);
         return;
@@ -7234,8 +7260,8 @@
           const tips = [];
           if (mark) tips.push(mark + ' MARKS');
           if (save) tips.push(save + ' SAVES');
-          this.toast('RECORDING ON' + (tips.length ? ' — ' + tips.join(', ') : ''), '#5affc0');
-        } else this.toast('RECORDER UNAVAILABLE' + (R.why ? ' — ' + R.why : ''), '#ff8a3a');
+          this.toast('RECORDING ON' + (tips.length ? ' - ' + tips.join(', ') : ''), '#5affc0');
+        } else this.toast('RECORDER UNAVAILABLE' + (R.why ? ' - ' + R.why : ''), '#ff8a3a');
         return;
       }
       const askedSave = this.input.actHit('clipSave');
@@ -7243,7 +7269,7 @@
       if (!askedSave && !askedMark) return;
       if (!R.on) {
         const on = keyFor(this, 'clipToggle');
-        this.toast('RECORDING IS OFF' + (on ? ' — PRESS ' + on : ''), '#ffb400');
+        this.toast('RECORDING IS OFF' + (on ? ' - PRESS ' + on : ''), '#ffb400');
         return;
       }
       /* NEITHER OF THESE BLOCKS. The save is posted to the recorder's own

@@ -1,4 +1,4 @@
-/* SYNX — the bridge to the Rust simulation core.
+/* SYNX - the bridge to the Rust simulation core.
  *
  * Everything that costs real CPU now runs in WebAssembly: course generation,
  * the world's mesh, the four-wheel solver, the rival's racing line and driver,

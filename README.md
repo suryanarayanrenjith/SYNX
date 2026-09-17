@@ -13,8 +13,8 @@
   </p>
 </div>
 
-> **Open beta:** SYNX is actively being developed. Expect changes, rough edges,
-> and occasional bugs between builds. Feedback and bug reports are welcome.
+> **Open beta:** SYNX is under active development and every build is a beta.
+> Expect changes, rough edges, and bugs. Feedback and bug reports are welcome.
 
 > **Photosensitivity warning:** SYNX contains rapidly flashing lights,
 > high-contrast strobing, and saturated neon effects. If you or someone in your
@@ -44,32 +44,22 @@ city, volcanic, industrial, and elevated neon environments.
 - Ramps, jumps, landings, and surface-aware vehicle pitch.
 - Rival AI that uses the same simulation foundation as the player's vehicle.
 - Seven campaign chapters, free roam, and multiplayer modes.
-- Three camera views — chase, driver, and drone — that the camera *travels*
-  between rather than cutting, so `C` reads as a zoom in or out.
+- Three camera views, chase, driver and drone, that the camera travels between
+  rather than cutting, so pressing `C` reads as a zoom in or out.
 - WebGL2 rendering with neon lighting, particles, reflections, and a canvas HUD.
-- Keyboard, gamepad, and touch input, with rebindable keys the interface reads
-  back rather than assumes.
+- Keyboard, gamepad, and touch input. Keys are rebindable and the interface
+  reads the live bindings back instead of assuming the defaults.
 - Replay recording, the last-thirty-seconds save buffer, and highlight markers.
 - A Tauri desktop build with a native launcher and persistent save data.
 - A Rust simulation core compiled to WebAssembly, with no `wasm-bindgen`
   runtime dependency.
 
-## Inspiration
-
-SYNX is heavily inspired by *Power Drive 2000*, a stylized 1980s
-science-fiction arcade racing game. That influence shows in SYNX's neon
-presentation, retro-futurist atmosphere, and focus on immediate arcade driving.
-SYNX is an independent project and is not affiliated with or endorsed by the
-creators of *Power Drive 2000*.
-
-For background, see the [Power Drive 2000 entry on IGDB](https://www.igdb.com/games/power-drive-2000).
-
 ## Download
 
-Every push to `main` builds all four platforms and replaces the rolling
-**[nightly release](https://github.com/suryanarayanrenjith/SYNX/releases/tag/nightly)**.
-Tagged versions are published to
-**[releases/latest](https://github.com/suryanarayanrenjith/SYNX/releases/latest)**.
+Every push to `main` builds all four platforms and publishes a new beta. The
+newest one is always the highlighted release:
+
+**[Download the latest beta](https://github.com/suryanarayanrenjith/SYNX/releases/latest)**
 
 | Platform | File |
 | --- | --- |
@@ -80,11 +70,58 @@ Tagged versions are published to
 
 `SHA256SUMS.txt` covers every file in the release.
 
-The builds are not code-signed. Windows SmartScreen prompts once (**More info →
-Run anyway**); macOS refuses a double-click, so open the app from the
+Versions increment by one patch per release: 1.0.1, 1.0.2, and so on. The
+number is assigned by the release workflow rather than committed to the tree,
+so a local build reports the floor in `src-tauri/tauri.conf.json` instead of
+the newest published build.
+
+Nothing is code-signed. Windows SmartScreen prompts once: choose **More info**,
+then **Run anyway**. macOS refuses a double-click, so open the app from the
 right-click menu the first time, or run
 `xattr -dr com.apple.quarantine /Applications/SYNX.app`. The Linux packages are
 built on Debian 12 and need glibc 2.36 or newer and a WebKitGTK 4.1 runtime.
+
+## Inspiration and provenance
+
+SYNX is built on *Power Drive 2000*, an unreleased 1980s science-fiction arcade
+racer by Megacom Games. It was made by reverse-engineering that game: the
+handling model, the drift behaviour, the ramp and landing rules, the rival
+driver, the camera work, and the chapter structure were all studied and then
+rebuilt from scratch, in Rust and JavaScript, against a different engine.
+
+**The art is not original.** The player vehicle, the road and tunnel geometry,
+the roadside billboards, the start gantry, the sky, the course centreline the
+173 km road is extended from, and a large share of the textures were extracted
+from the *Power Drive 2000* pre-alpha demo and converted into this project's
+own formats in `web/data/scene.bin` and `web/data/synx.pak`. The original mesh,
+material and texture names are still visible in `web/data/scene.json`. That is
+deliberate.
+
+What is original is the engineering around it: the simulation core, the rival
+AI, the WebGL2 renderer, the HUD and cockpit, the story and chapter scripting,
+the audio mixer, the multiplayer protocol, the replay recorder, the desktop
+host, and the build and release tooling.
+
+*Power Drive 2000* was funded on Kickstarter in 2015. The campaign ran from
+4 May to 3 June, asked for CA$45,000, and finished with CA$52,114 from
+1,960 backers. Megacom Games pitched it as "not just a racing game, it's an
+action game with a car that talks", set in "a 1980's style sci-fi world with an
+eclectic mix of environments and a variety of unique gameplay modes", with
+Windows, macOS and Linux releases promised. The only thing that ever shipped
+was a Windows pre-alpha demo, version 0.06, which is still on
+[itch.io](https://megacomgames.itch.io/power-drive-2000-pre-alpha-demo) and
+[archived at the Internet Archive](https://archive.org/details/power-drive-2000-v-0.06).
+The full game was never released and the Kickstarter page has not been updated
+since 2017.
+
+SYNX is an independent, non-commercial project. It is not affiliated with,
+authorised by, or endorsed by Megacom Games, and no claim is made to any right
+in *Power Drive 2000* or its assets, which remain the property of their owner.
+
+For background, see the
+[Power Drive 2000 entry on IGDB](https://www.igdb.com/games/power-drive-2000)
+and the
+[original Kickstarter campaign](https://www.kickstarter.com/projects/1420158244/power-drive-2000).
 
 ## Play
 
@@ -116,8 +153,8 @@ binary on other desktop targets.
 
 ```sh
 python tools/build.py             # the game
-python tools/build.py --all       # ...with tests, checks and browser smoke tests
-python tools/build.py --run       # ...and launch it
+python tools/build.py --all       # with tests, checks and browser smoke tests
+python tools/build.py --run       # and launch it
 ```
 
 To produce the installers and packages a release carries:
@@ -127,10 +164,10 @@ python tools/build.py --target x86_64-pc-windows-msvc --bundles nsis
 python tools/release.py --target x86_64-pc-windows-msvc
 ```
 
-`build.py` needs a Tauri CLI for the bundle step
-(`npm i -g @tauri-apps/cli@^2` or `cargo install tauri-cli --version "^2"`).
-`release.py` renames what the bundler produced, builds the portable archive,
-and writes the checksums into `dist/`.
+The bundle step needs a Tauri CLI (`npm i -g @tauri-apps/cli@^2` or
+`cargo install tauri-cli --version "^2"`). `release.py` renames what the
+bundler produced, builds the portable archive, and writes the checksums into
+`dist/`.
 
 ## Requirements
 
@@ -147,7 +184,7 @@ the tools report missing optional dependencies when needed.
 
 ## Controls
 
-| Action | Keyboard |
+| Action | Default |
 | --- | --- |
 | Steer | `Left` / `Right` or `A` / `D` |
 | Throttle / brake | `Up` / `Down` or `W` / `S` |
@@ -160,9 +197,10 @@ the tools report missing optional dependencies when needed.
 | Save replay | `F9` |
 | Mark highlight | `F10` |
 
-These are defaults. Every row is rebindable from the CONTROLS screen, and the
-interface reads the live bindings — the boost meter, the race-mode readout and
-the pre-race card name the key you actually have bound.
+Every row is rebindable from the CONTROLS screen, and the interface reads the
+live bindings: the boost meter, the race-mode readout, the pre-race card and
+the chapter prompts all name the key you actually have bound. Clearing a row
+unbinds it, and the interface says so rather than falling back to the default.
 
 Gamepad and touch controls are also supported. Bindings and graphics settings
 are available from the launcher and options screens.
@@ -176,7 +214,7 @@ are available from the launcher and options screens.
 | [`crates/synx-rec`](crates/synx-rec) | Replay ring, JPEG encoding, and AVI recording module used by a Web Worker. |
 | [`web`](web) | WebGL2 renderer, HUD, game modes, story scripting, audio, and browser entry points. |
 | [`src-tauri`](src-tauri) | Tauri desktop host, launcher, settings, save data, and crash diagnostics. |
-| [`tools`](tools) | Build, release, asset, check, smoke-test, and browser-probe tooling. |
+| [`tools`](tools) | Build, release, version, asset, check, smoke-test, and browser-probe tooling. |
 | [`.github/workflows`](.github/workflows) | The release pipeline: four platforms, built and published on every push. |
 | [`assets-src`](assets-src) | Local asset source directory generated from the shipped archive. |
 
@@ -189,13 +227,14 @@ host embeds the built `web/` directory into the application.
 ```sh
 cargo test --workspace --release        # the Rust unit tests
 python tools/check.py                   # the non-browser checks
-python tools/check.py --list            # ...and what they are
+python tools/check.py --list            # and what each one is
 python tools/build.py --test --check --no-host
+python tools/version.py                 # the version in the tree
 ```
 
 The checks cover shader and DOM consistency, settings, rendering data, car
 geometry, multiplayer protocol compatibility, story flow, ramps, recording,
-radio, and AI behavior. Browser-dependent checks run through `tools/smoke.py`
+radio, and AI behaviour. Browser-dependent checks run through `tools/smoke.py`
 and the `--all` build path.
 
 ## Asset pipeline
@@ -224,8 +263,9 @@ The client and server share the protocol implementation through
 
 ## Status
 
-SYNX is in open beta and under active development. The project is usable, but
-compatibility, balance, visuals, and content may change as the game evolves.
+SYNX is in open beta and under active development. Every published build is a
+beta. The project is usable, but compatibility, balance, visuals, and content
+may change as the game evolves.
 
 ## Credits
 
@@ -236,5 +276,6 @@ Created by:
 
 ## License
 
-No license file is currently included in this repository. Please contact the
-creators before redistributing the code or bundled assets.
+No license file is currently included in this repository.
+See
+[Inspiration and provenance](#inspiration-and-provenance).

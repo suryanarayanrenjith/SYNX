@@ -72,7 +72,7 @@ static SKIP_LAUNCHER: AtomicBool = AtomicBool::new(false);
 const MAIN: &str = "main";
 
 const LAUNCHER_TITLE: &str = "SYNX";
-const GAME_TITLE: &str = "SYNX — Synthwave eXtreme Racing";
+const GAME_TITLE: &str = "SYNX - Synthwave eXtreme Racing";
 
 /// The launcher's own shape. Small, fixed and centred: it is a dialogue, not a
 /// document, and a resizable one invites being made a shape its layout was
