@@ -753,6 +753,18 @@
         // A renderer change relaunches the process, so this call may never
         // return; that is a success, not a hang.
         await invoke('launch_game', { settings: this.win });
+        /* AND THE PAGE CHANGES HERE, NOT IN THE HOST.
+
+           The command has reshaped the window and returned. Navigating
+           from inside it instead - which is where this used to happen -
+           replaced the page with that same command's reply still in
+           flight, and on macOS wry aborts the process when its URL scheme
+           handler lands on a page that has gone. See launch_game.
+
+           Relative, because the origin a Tauri asset is served from is
+           `tauri://localhost` on Windows and `http://tauri.localhost`
+           elsewhere, and neither side should have to know which. */
+        window.location.assign('index.html');
       } catch (e) {
         this.busy = false;
         this.ui.play.disabled = false;

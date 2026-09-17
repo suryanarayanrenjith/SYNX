@@ -14,8 +14,18 @@
 //! # ONE WINDOW, TWO PAGES
 //!
 //! The launcher and the game are the same window. It opens on `launcher.html`,
-//! and PLAY reshapes that window to the chosen mode and navigates it to
-//! `index.html`.
+//! and PLAY reshapes that window to the chosen mode; the page then moves
+//! itself to `index.html`.
+//!
+//! THE RESHAPE IS THIS SIDE AND THE NAVIGATION IS NOT, and the split is not
+//! arbitrary. `launch_game` used to do both, which meant the page was
+//! replaced while that command's own invoke was still in flight. On macOS
+//! that is fatal: wry's URL scheme handler completes its task against a page
+//! that has gone, panics inside an `extern "C"` function that may not
+//! unwind, and the process aborts (tauri-apps/tauri#12338). Windows and
+//! Linux tolerate the same sequence, so it only ever failed on a Mac.
+//! Returning first and letting the front end navigate leaves nothing
+//! pending when the page changes.
 //!
 //! This is not a stylistic preference; the first version created a second
 //! window from inside the `launch_game` command and it did not work reliably.
@@ -397,24 +407,22 @@ fn launch_game(app: tauri::AppHandle, settings: serde_json::Value) -> Result<boo
         .get_webview_window(MAIN)
         .ok_or_else(|| "the window has gone".to_string())?;
 
-    /* The address of the game page, derived from the address of this one.
-
-       Resolved by joining rather than by being written out, because the origin
-       a Tauri asset is served from is not the same string on every platform -
-       `tauri://localhost` on Windows, `http://tauri.localhost` elsewhere - and
-       a hard-coded one is a launcher that works on the machine it was written
-       on. Joining "index.html" against the current URL is correct on all of
-       them because it never has to know what the origin is. */
-    let here = window.url().map_err(|e| format!("cannot read the current address: {e}"))?;
-    let target = here
-        .join("index.html")
-        .map_err(|e| format!("cannot resolve the game page: {e}"))?;
-
     apply_window(&app, &window, &parsed);
 
-    window
-        .navigate(target)
-        .map_err(|e| format!("could not open the game: {e}"))?;
+    /* AND THE PAGE IS NOT CHANGED HERE.
+
+       This used to end with `window.navigate(...)`, which replaced the page
+       while this very command's invoke was still waiting to return. On
+       macOS that aborts the process - see the note at the top of this file -
+       and it did so on both Intel and Apple silicon, which is why the game
+       reached the photosensitivity notice and then died there, over and
+       over, on a Mac and nowhere else.
+
+       So the command returns, the response is delivered, and the launcher
+       page moves itself. The front end resolves the address relative to its
+       own, which is also what the code removed from here was doing by hand:
+       the origin a Tauri asset is served from is not the same string on
+       every platform, so neither side may write it out. */
     Ok(true)
 }
 
