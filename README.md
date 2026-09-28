@@ -53,6 +53,18 @@ city, volcanic, industrial, and elevated neon environments.
 - A Tauri desktop build with a native launcher and persistent save data.
 - A Rust simulation core compiled to WebAssembly, with no `wasm-bindgen`
   runtime dependency.
+- Adaptive resolution that holds the frame rate by changing how many pixels
+  the frame is drawn at, never by turning a feature off, and that stands
+  itself down on a machine where fewer pixels would not have helped.
+- A cold open that is not the loading screen: the load is covered by a
+  compositor-driven preloader that cannot stutter, and the tachometer plays
+  afterwards, on a machine that has proved it is producing steady frames.
+- Impact feedback with a control on it - camera shake, a lens punch on the
+  boost and on an overtake, and a hit stop when you land a jump or hit
+  something hard.
+- A first-launch hardware profile, so a laptop with integrated graphics starts
+  somewhere it can actually run rather than at the settings the game was
+  tuned on.
 
 ## Download
 
@@ -198,12 +210,54 @@ the tools report missing optional dependencies when needed.
 | Mark highlight | `F10` |
 
 Every row is rebindable from the CONTROLS screen, and the interface reads the
-live bindings: the boost meter, the race-mode readout, the pre-race card and
-the chapter prompts all name the key you actually have bound. Clearing a row
-unbinds it, and the interface says so rather than falling back to the default.
+live bindings: the boost meter, the race-mode readout, the pre-race card, the
+opening drive's own prompts and the chapter prompts all name the key you
+actually have bound. Clearing a row unbinds it, and the interface says so
+rather than falling back to the default.
 
-Gamepad and touch controls are also supported. Bindings and graphics settings
-are available from the launcher and options screens.
+In Story Mode, `Esc` leaves a chapter's cutscene and goes back to the hub, and
+the letterbox says so while it is available. `K` skips a scene you have
+already read. During the ending, `Esc` advances to the next movement rather
+than leaving.
+
+Every chapter states what it is asking for on the panel that is up while you
+drive it. Each of those lines is that chapter's existing win condition said
+out loud - a panel that announced an objective the game did not enforce would
+be worse than one that announced nothing.
+
+Gamepad and touch controls are also supported, and the controller drives every
+screen in the game, including the driver terminal, the Story hub, the Free
+Roam board and the multiplayer lobby. Bindings and graphics settings are
+available from the launcher and options screens.
+
+## Performance
+
+The game is built to hold sixty frames a second on hardware it was never tuned
+on, and it does that by spending fewer pixels rather than by taking features
+away.
+
+**ADAPTIVE RESOLUTION** (launcher, GRAPHICS) measures the frame time and moves
+the internal resolution up and down to hold the target, which is sixty frames
+a second, or the FRAME LIMIT if one is set, or the display's own refresh if
+that is slower. RENDER SCALE stays the ceiling - this can only ever take
+pixels away - so a machine that keeps up never sees it engage at all, and the
+picture is exactly what the preset asked for. If it drops a step and the frame
+time does not improve, it decides the machine is bound by its processor rather
+than its graphics, hands the step back and stops asking for half a minute.
+
+**THE FIRST LAUNCH** reads the graphics device and starts the settings
+somewhere it can run. It happens once, before any setting has ever been saved,
+the launcher says what it chose, and every row remains yours to change.
+BENCHMARK on the launcher is the measured answer when you want one.
+
+**THE MENUS ARE CHEAP.** While a full-frame panel is over the world - the
+driver terminal, the Story hub, the Free Roam board, the multiplayer lobby -
+the renderer skips the passes that cannot be seen through it (shadows, the
+reflection probe, screen-space reflections, occlusion, volumetrics and the
+light shafts) and paces the world behind it at thirty-six frames a second. The
+panels themselves are unaffected. On the LOW preset, and whenever the adaptive
+scaler has had to give up pixels, the interface also drops its full-frame
+backdrop blurs and the sheets that animate for as long as a screen is open.
 
 ## Project structure
 
@@ -236,6 +290,35 @@ The checks cover shader and DOM consistency, settings, rendering data, car
 geometry, multiplayer protocol compatibility, story flow, ramps, recording,
 radio, and AI behaviour. Browser-dependent checks run through `tools/smoke.py`
 and the `--all` build path.
+
+Some behaviour is only visible from a machine that is struggling, or from a
+race that is being lost, so it is asked directly rather than waited for:
+
+```sh
+python tools/smoke.py --probe dynres --seconds 20   # the adaptive scaler
+python tools/smoke.py --probe lose   --seconds 20   # every chapter's losing path
+python tools/smoke.py --probe invit  --seconds 20   # what a shunt costs in chapter 4
+python tools/smoke.py --probe feel   --seconds 20   # shake, punch and hit stop
+python tools/smoke.py --probe cards  --seconds 22   # nothing drawn through anything
+python tools/smoke.py --hold hub --shot hub.png     # the chapter grid
+python tools/smoke.py --hold battle --shot vs.png   # the VS plate
+python tools/smoke.py --hold battle:6 --shot j.png # any chapter's plate
+python tools/smoke.py --hold ignition --shot i.png  # the cold open
+```
+
+A probe section needs the run to be long enough to reach it - about twenty
+seconds, rather than the ten that is plenty for a screenshot - because a
+section that never runs prints nothing and the run still reports `clean`.
+
+`--probe cards` is the one that answers "is anything drawn through anything
+else". The interface has two renderers that cannot see each other - the
+instruments are canvas, in a 1280x720 space fitted to the window; the cards
+are DOM, in viewport units - so whether a panel lands on an instrument is a
+function of the window rather than something either file can state. The
+stylesheet has a `--hud-unit` custom property that is exactly one of the
+canvas HUD's virtual units, so a card can be positioned against the
+instruments in the instruments' own coordinates; the probe measures the real
+document and says whether it worked.
 
 ## Asset pipeline
 

@@ -40,7 +40,7 @@
   /** The ABI this file was written against. The module refuses to load if the
       .wasm disagrees, which turns "a stale build" from a mystery into a line
       of text. */
-  const WANT_ABI = 18;
+  const WANT_ABI = 19;
 
   let wasm = null;      // the instance's exports
   let buffer = null;    // the ArrayBuffer the current views were made over
@@ -1261,7 +1261,7 @@
      the rim is past about seventy degrees, after which the wheel slides
      through the driver's grip instead of carrying their arms round with it.
      See GRIP in crates/synx-core/src/driver.rs. */
-  function drvPose(model, spin, hand, press) {
+  function drvPose(model, spin, hand, press, go, stop) {
     const w = M();
     if (!w || !w.synx_drv_pose) return null;
     /* The car transform has to be IN core memory to be read from there, so
@@ -1270,7 +1270,7 @@
     const at = w.synx_drv_mptr() >> 2;
     M();
     F32.set(model, at);
-    const out = w.synx_drv_pose(spin, hand, press || 0) >> 2;
+    const out = w.synx_drv_pose(spin, hand, press || 0, go || 0, stop || 0) >> 2;
     M();
     return F32.subarray(out, out + drvPose.n * 16);
   }

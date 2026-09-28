@@ -49,7 +49,7 @@
 
   let veil = null, writer = null, at = 0;
   let rows = [], lines = [];
-  let rail = null, fill = null, stamp = null;
+  let rail = null, fill = null, stamp = null, edge = null;
   let running = false, done = false, timer = 0;
 
   function build() {
@@ -57,9 +57,36 @@
     veil.className = 'intro-veil';
     veil.setAttribute('aria-hidden', 'true');
 
+    /* THE ROOM THE WHOLE OPENING STANDS IN - the preloader's horizon, its
+       sun and its frame - so the last screen before the title is visibly the
+       same place as the first. It was a black field: the one screen in the
+       opening with no floor, no light and no frame, and it sat between two
+       that have all three. */
+    const sky = doc.createElement('i');
+    sky.className = 'intro-sky';
+    const grid = doc.createElement('i');
+    grid.className = 'intro-grid';
+    const sun = doc.createElement('i');
+    sun.className = 'intro-sun';
+    sky.appendChild(grid);
+    sky.appendChild(sun);
+    veil.appendChild(sky);
+
     const bars = doc.createElement('div');
     bars.className = 'intro-bars';
     veil.appendChild(bars);
+
+    const frame = doc.createElement('div');
+    frame.className = 'intro-frame';
+    for (let i = 0; i < 4; i++) frame.appendChild(doc.createElement('i'));
+    veil.appendChild(frame);
+
+    /* The wipe's leading edge: one lit line that travels with the shutter.
+       Outside the veil, because the veil's own clip would cut it off at the
+       very edge it is meant to mark. */
+    edge = doc.createElement('i');
+    edge.className = 'intro-edge';
+    edge.setAttribute('aria-hidden', 'true');
 
     const term = doc.createElement('div');
     term.className = 'intro-term';
@@ -136,6 +163,7 @@
     veil.appendChild(hint);
 
     doc.body.appendChild(veil);
+    doc.body.appendChild(edge);
   }
 
   function nextLine() {
@@ -252,11 +280,41 @@
       }
     }
     veil.classList.add('intro-lift');
+    wipe(WIPE_MS);
     /* The same frame, on purpose: the wipe, the camera move and the first bar
        of the theme. Starting any of the three after the others reads as three
        sequences rather than one. */
     if (g && g.startIntro) g.startIntro();
     timer = setTimeout(finish, 900);
+  }
+
+  /* THE WIPE AND ITS EDGE, ON ONE CLOCK.
+     They used to be two CSS transitions - a clip-path on the veil and a
+     transform on the line - and a browser is free to run the second on the
+     compositor and the first on the main thread, which on this frame of all
+     frames is busy starting the camera move. The line then ran ahead of the
+     edge it is supposed to be, across a screen that had not moved yet. One
+     loop writes both, so whatever the frame rate they are the same number.
+     The curve is the one the stylesheet named, cubic-bezier(.65,0,.35,1),
+     which is an in-out cubic to within a pixel. */
+  const WIPE_MS = 760;
+  function wipe(ms) {
+    if (!veil) return;
+    veil.style.transition = 'none';
+    const t0 = global.performance.now();
+    const inOut = (u) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2);
+    const step = (now) => {
+      if (!veil) return;
+      const u = Math.min(1, Math.max(0, (now - t0) / ms));
+      const k = inOut(u) * 100;
+      veil.style.clipPath = 'inset(0 0 0 ' + k.toFixed(3) + '%)';
+      if (edge) {
+        edge.style.transform = 'translate3d(' + k.toFixed(3) + 'vw,0,0)';
+        edge.style.opacity = u < 1 ? String(Math.min(1, u * 12)) : '0';
+      }
+      if (u < 1) global.requestAnimationFrame(step);
+    };
+    global.requestAnimationFrame(step);
   }
 
   function finish() {
@@ -272,6 +330,8 @@
     for (const type of EVENTS) doc.removeEventListener(type, onAny, true);
     if (veil && veil.parentNode) veil.parentNode.removeChild(veil);
     veil = null;
+    if (edge && edge.parentNode) edge.parentNode.removeChild(edge);
+    edge = null;
     /* AND THE TITLE SCREEN DOES NOT GET THE PRESS THAT CLOSED THIS.
 
        Spamming ENTER through the opening used to walk the player several

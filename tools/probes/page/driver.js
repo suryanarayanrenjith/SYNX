@@ -639,7 +639,8 @@
           var mat = (q.mat && q.mat.name) || "";
           var mesh = (q.mesh && q.mesh.name) || "";
           if (mm && Math.hypot(mm[12] - g.car.x, mm[14] - g.car.z) < 4) {
-            if (/^DriverGloveP$/.test(mat)) out.gloves.push([mm[12], mm[13], mm[14]]);
+            // from the seat the gloves wear their inside material, DriverGloveIn
+            if (/^DriverGlove(In)?P$/.test(mat)) out.gloves.push([mm[12], mm[13], mm[14]]);
             if (mesh === "DriverLimb") out.arms.push([mm[12], mm[13], mm[14], mm[8], mm[9], mm[10]]);
             if (/^CabinBtn/.test(mat)) out.btn = [mm[12], mm[13], mm[14]];
           }
@@ -1167,14 +1168,98 @@
       }
       return;
     }
+    /* THE TWO STORY SCREENS THAT NOTHING COULD REACH.
+
+       The chapter grid and the VS plate are full-frame DOM panels, and the
+       only way into either is to pick STORY MODE and sit through a chapter's
+       opening - which no harness does. So the two screens a campaign is
+       actually navigated through had no way of being looked at, and the only
+       evidence that either was still drawing correctly was that nobody had
+       said otherwise.
+
+       `--hold hub` opens the chapter grid on whatever save is present.
+       `--hold battle` starts chapter one - `battle:6` any other chapter -
+       and winds its cold open and its
+       conversation past, which is the only honest way to reach the card: it
+       is a beat in a sequence and not a screen with a door on it. */
+    if (HOLD === 'hub') {
+      if (at > 6 && g.story && g.story.mode !== 'hub') {
+        g.story.openHub();
+        note('held: story hub');
+      }
+      return;
+    }
+    if (HOLD === 'battle' || HOLD.indexOf('battle:') === 0) {
+      if (at > 6 && g.story) {
+        var S = g.story;
+        if (!S.chapter) {
+          /* `--hold battle:6` photographs THAT chapter's card. Four of the
+             seven chapters put Ryker on the right-hand plate, so bare
+             `--hold battle` - which is still chapter one, unchanged - can
+             never show what Kael, Nova or Javas look like on it. Two of the
+             chapters build a world on the way in, so give those a longer
+             --seconds than a screenshot usually needs. */
+          var CH = HOLD.length > 6
+            ? Math.max(1, Math.min(7, parseInt(HOLD.slice(7), 10) || 1)) : 1;
+          S.startChapter(CH, { skipColdOpen: true });
+          note('held: chapter ' + CH + ', winding to the battle card');
+        }
+        /* Past the title card and past the conversation. `complete()` is the
+           dialogue's own way out and fires its onDone, so the sequence still
+           arrives at the card through the path a player would take. */
+        if (S.mode === 'chapterTitle') S.t = 99;
+        else if (S.mode === 'chapterDialogue' && S.dialogue.active) S.dialogue.complete();
+        else if (S.mode === 'battle') S.t = 0;   // hold it there
+      }
+      return;
+    }
     if (step === 0 && at > 4) {
       /* SwiftShader draws about five frames a second at 1280x720, so the
          budget is spent on the world rather than on the post chain: half
          resolution and the LOW preset, which is a supported configuration
          rather than a test-only path. */
       try {
+        /* THE SHIPPED DEFAULTS, FIRST, WHATEVER MACHINE THIS IS.
+
+           The game profiles the hardware on a first launch and starts a weak
+           machine somewhere sensible (see NR.Settings.seed). That is right for
+           a player and wrong for a test: this harness always runs on a fresh
+           browser profile, so every run IS a first launch, and it always runs
+           on a software rasteriser - so the graphics rows arrived already
+           turned down and `--preset 2` produced a picture with no shadows, no
+           reflections and no volumetrics in it. Worse, the picture then
+           depended on which GPU string the machine reported, so a screenshot
+           taken here and a screenshot taken on a build runner were not
+           comparable.
+
+           Every graphics row is put back to what the SCHEMA declares before
+           anything below changes one. Bindings, volumes and anything the
+           harness did not ask about are untouched. */
+        (function () {
+          var SS = window.NR && window.NR.Settings;
+          if (!SS || !SS.ROWS) return;
+          for (var i = 0; i < SS.ROWS.length; i++) {
+            var r = SS.ROWS[i];
+            if (SS.isHostKey(r.key)) continue;
+            g.settings[r.key] = r.def;
+          }
+        })();
         g.settings.quality = ${preset};
         g.settings.resolution = ${scale} >= 0 ? ${scale} : 0;
+        /* THE ADAPTIVE SCALER IS OFF IN HERE.
+
+           It is ON for a player, and it should be: it is what holds sixty
+           frames on a machine that cannot otherwise. But this harness runs on
+           a software rasteriser at about one frame a second, which is exactly
+           the signal the scaler exists to react to - so every capture would be
+           taken at whatever resolution it had walked down to by the time the
+           shot was called, and no two runs would agree.
+
+           A test that cannot reproduce its own picture is not a test. RENDER
+           SCALE above is what decides the pixels in here, and it is asked for
+           explicitly. (The benchmark exempts itself from the scaler for the
+           same reason - see Game.adaptResolution.) */
+        g.settings.dynRes = 0;
         if (${upscaler} >= 0) g.settings.upscaler = ${upscaler};
         // ...and anything else --set named, applied through the same call
         var __sets = ${sets};
@@ -1832,16 +1917,33 @@
             }
           }
         }
-        var ramps = window.NR.COURSE_RAMPS || [], missing = [];
+        /* ...OF THE RAMPS THE REEL CAN REACH. idleFlyby drives its stretches
+           and nothing else - it cuts from one `to` to the next `from` - so a
+           ramp outside every stretch is one the title-screen car never meets.
+           The Forge roof is the case in point: only Chapter 6's world builds
+           it, and no stretch goes near it. The stretches are asked of the
+           published reel, so the probe cannot disagree with the game about
+           where it drives; the margin is more than the half-body the flight
+           is armed ahead of a foot. */
+        var runs = window.NR.ATTRACT_REEL || [];
+        if (!runs.length) note("PROBLEM: NR.ATTRACT_REEL is not published - every ramp is treated as reachable");
+        var ramps = window.NR.COURSE_RAMPS || [], missing = [], reach = 0, beyond = [];
         for (var ri = 0; ri < ramps.length; ri++) {
           var r = ramps[ri], foot = r.s - (r.crest || 0) - r.len, has = false;
+          var reached = !runs.length;
+          for (var si = 0; si < runs.length && !reached; si++) {
+            reached = runs[si].from - 10 <= r.s + (r.drop || 0) && runs[si].to + 10 >= foot;
+          }
+          if (!reached) { beyond.push(r.id); continue; }
+          reach++;
           for (var bi = 0; bi < built.length; bi++) {
             if (built[bi][0] <= r.s && built[bi][1] >= foot) { has = true; break; }
           }
           if (!has) missing.push(r.id + " at " + r.s);
         }
         note("attract: " + built.length + " ramp batch(es) in the title screen's world, "
-          + (ramps.length - missing.length) + " of " + ramps.length + " ramps covered");
+          + (reach - missing.length) + " of the " + reach + " ramp(s) the reel reaches covered"
+          + (beyond.length ? "; outside every stretch: " + beyond.join(", ") : ""));
         if (missing.length) {
           note("PROBLEM: the reel can fly off " + missing.length
             + " ramp(s) the title screen does not draw: " + missing.join(", "));
@@ -2000,7 +2102,7 @@
              rows it is nowhere near. */
           var padTab = t === 1;
           var rowX0 = padTab ? -56 : -485;
-          var rowX1 = padTab ? 564 : 485;
+          var rowX1 = padTab ? 548 : 485;
           var list = [
             band('kicker', 314, 16, -200, 200),
             band('CONTROLS', 282, 30, -140, 140),
@@ -2061,11 +2163,11 @@
         var pause = [
           band('PAUSED', 186, 44, -120, 120),
           band('rule', 146, 4, -215, 215),
-          band('route name', 112, 20, -260, 260),
-          band('percent', 84, 16, -180, -30),
-          band('clock', 84, 16, 30, 180),
-          band('progress rail', 60, 8, -160, 160),
-          band('autosave', 26, 13, -230, 230),
+          band('route name', 116, 20, -260, 260),
+          band('percent', 89, 16, -180, -30),
+          band('clock', 89, 16, 30, 180),
+          band('progress rail', 66, 8, -160, 160),
+          band('autosave', 42, 13, -230, 230),
           band('footer', PPY - PPH / 2 + 26, 17, -280, 280),
         ];
         for (var pi = 0; pi < 3; pi++) {
@@ -2681,6 +2783,378 @@
       }
       PROBE = '';
       return;
+    } else if (PROBE === 'invit' && step >= 1) {
+      /* ============ WHAT A SHUNT COSTS AT THE INVITATIONAL ================
+       *
+       * Chapter 4 is the only race in the game with four cars on it, and it
+       * is the only one that resolves its own contacts: Player and Ryker go
+       * through the ordinary two-car path in Game.update, and Nova and Kael
+       * go through StoryManager.resolveInvitationalCollisions.
+       *
+       * Those two paths did not do the same thing. The ordinary one dents
+       * both cars, cracks the windscreen, breaks the clean-running combo and
+       * prints IMPACT. The invitational one played a crash sound and shook
+       * the camera, and that was all - so two of the three rivals in the one
+       * four-car race could be leaned on for twenty-five kilometres at no
+       * cost to the bodywork, while the third wrecked it.
+       *
+       * It was invisible from a normal run because the hit was AUDIBLE. You
+       * heard it, you felt the camera move, and nothing happened.
+       *
+       * So both are put the same question, with the same configuration, and
+       * asked what it cost.
+       */
+      var V = g.__invit || (g.__invit = { n: 0 });
+      V.n++;
+      if (V.n < 3 || V.done) return;
+      V.done = 1;
+
+      var st = g.story;
+      if (!st || !st.spawnInvitationalPack || !st.resolveInvitationalCollisions) {
+        note('PROBLEM: there is no invitational to test');
+        PROBE = '';
+        return;
+      }
+
+      var wasChapter = st.chapter, wasMode = st.mode, wasStart = g.startAt;
+      var wasCombo = g.combo;
+      st.chapter = { id: 4, pack: true, rival: 'RYKER', track: 'SUNSET ZERO' };
+      st.mode = 'race';
+      st.extraRacers.length = 0;
+      g.startAt = g.car.sTrack;
+      st.spawnInvitationalPack();
+      var nova = st.extraRacers[0] && st.extraRacers[0].car;
+      if (!nova) { note('PROBLEM: the invitational grid spawned no second row'); PROBE = ''; return; }
+
+      /* One shunt, from one named car, and what the player's body shows for
+         it afterwards. The configuration is the one `collide_cars` answers
+         to: an overlap AND a closing relative velocity. */
+      var shunt = function (label, other) {
+        if (g.damage && g.damage.reset) g.damage.reset();
+        g.combo = 6; g.cleanTime = 40; g.comboTimer = 3;
+        var before = (g.damage && g.damage.total) || 0;
+        st.setVehicle(other, g.car.sTrack, (g.car.lateral || 0) + 1.2, g.car.vLong || 40);
+        other.vLat = -22;
+        g.car.vLat = 6;
+        st.resolveInvitationalCollisions();
+        var after = (g.damage && g.damage.total) || 0;
+        note('invit: shunted by ' + label + ' -> damage ' + before.toFixed(3)
+             + ' -> ' + after.toFixed(3) + ', combo 6 -> ' + g.combo);
+        return { dented: after > before, combo: g.combo };
+      };
+
+      var n = shunt('NOVA', nova);
+      var r = shunt('RYKER', g.rival);
+      if (!n.dented) {
+        note('PROBLEM: a shunt from Nova leaves the bodywork untouched - two '
+             + 'of the three rivals in this race are free to lean on');
+      }
+      if (!r.dented) {
+        note('PROBLEM: a shunt from Ryker leaves the bodywork untouched');
+      }
+      if (n.combo !== 1 || r.combo !== 1) {
+        note('PROBLEM: contact did not break the clean-running combo (nova '
+             + n.combo + ', ryker ' + r.combo + ')');
+      }
+
+      if (g.damage && g.damage.reset) g.damage.reset();
+      st.extraRacers.length = 0;
+      g.storyExtraRacers = st.extraRacers;
+      st.chapter = wasChapter; st.mode = wasMode; g.startAt = wasStart;
+      g.combo = wasCombo;
+      PROBE = '';
+      return;
+    } else if (PROBE === 'feel' && step >= 1) {
+      /* ================= WHAT THE GAME DOES BACK ==========================
+       *
+       * The shake, the lens punch and the slow-motion beat are the whole of
+       * what separates an arcade racer from a driving model with a camera on
+       * it, and not one of them is visible from a screenshot: they are a
+       * tenth of a second long and they happen while something else is
+       * demanding the eye. A run that never crashes never sees them either.
+       *
+       * So each verb is asked for directly and the state is read back, and
+       * then the whole thing is asked again with IMPACT FEEDBACK at OFF -
+       * which is the accessibility setting and therefore the one that has to
+       * be right. A player who has turned the motion off must still get the
+       * rumble, the sparks, the sound and the damage; what they must not get
+       * is a moving camera, and "it looked fine to me" is not evidence.
+       */
+      var FE = g.__feel || (g.__feel = { n: 0 });
+      FE.n++;
+      if (FE.n < 3 || FE.done) return;
+      FE.done = 1;
+
+      if (!g.impact) { note('PROBLEM: there is no impact vocabulary to test'); PROBE = ''; return; }
+
+      var wasFx = g.impactFx;
+      var clear = function () {
+        g.shake = 0; g.boostKick = 0; g.flash = 0;
+        g.timeScale = 1; g.slowHold = 0; g.slowFov = 0;
+      };
+      var read = function () {
+        return { shake: +(g.shake || 0).toFixed(3), punch: +(g.boostKick || 0).toFixed(3),
+                 dilate: +(1 - (g.timeScale === undefined ? 1 : g.timeScale)).toFixed(3),
+                 hold: +(g.slowHold || 0).toFixed(3) };
+      };
+      var moved = function (r) { return r.shake > 0 || r.punch > 0 || r.dilate > 0 || r.hold > 0; };
+
+      /* ------------------------------------------------- NORMAL, ON ------ */
+      g.impactFx = 1;
+      clear(); g.impact({ shake: 0.9, punch: 1, stop: 0.4, hold: 0.14 });
+      var full = read();
+      note('feel: NORMAL  shake ' + full.shake + '  punch ' + full.punch
+           + '  dilation ' + full.dilate + '  hold ' + full.hold + 's');
+      if (!(full.shake > 0)) note('PROBLEM: a shake was asked for and the camera did not move');
+      if (!(full.punch > 0)) note('PROBLEM: a lens punch was asked for and nothing happened');
+      if (!(full.dilate > 0 && full.hold > 0)) note('PROBLEM: a hit stop was asked for and time did not slow');
+
+      /* ------------------------------------------------- HEAVY scales ---- */
+      g.impactFx = 1.5;
+      clear(); g.impact({ shake: 0.9, punch: 1, stop: 0.4, hold: 0.14 });
+      var heavy = read();
+      note('feel: HEAVY   shake ' + heavy.shake + '  punch ' + heavy.punch
+           + '  dilation ' + heavy.dilate + '  hold ' + heavy.hold + 's');
+      if (!(heavy.shake > full.shake)) note('PROBLEM: HEAVY does not shake the camera harder than NORMAL');
+      /* The stop is deliberately NOT scaled like the others: a hole in the
+         input twice as long is not twice as good. It may last longer; it may
+         not get deeper without bound. */
+      if (heavy.dilate > 0.56) {
+        note('PROBLEM: HEAVY dilates time to ' + heavy.dilate
+             + ' - past about half the game stops answering the wheel');
+      }
+
+      /* --------------------------------------------------- OFF IS OFF ---- */
+      g.impactFx = 0;
+      clear(); g.impact({ shake: 2, punch: 2, stop: 0.6, hold: 0.4, flash: 1 });
+      var off = read();
+      note('feel: OFF     shake ' + off.shake + '  punch ' + off.punch
+           + '  dilation ' + off.dilate + '  hold ' + off.hold + 's');
+      if (moved(off)) {
+        note('PROBLEM: IMPACT FEEDBACK is OFF and the camera still moved - '
+             + 'this is the accessibility setting and it has to mean it');
+      }
+
+      /* ------------------------- ...AND THE REAL EVENTS REACH IT ---------
+       *
+       * A verb that works and is never called is the same bug with an alibi.
+       *
+       * THE FIRST VERSION OF THIS STAGED THE CRASH BY HAND - set `lastHit`,
+       * set `impact`, run one frame - and it could not work: both of those
+       * are fields of the solver's own memory and the solver rewrites them
+       * inside the very call the staging was trying to influence. `impact`
+       * decays every step and was back to zero by the time the call site read
+       * it, so the call site correctly decided nothing had happened and the
+       * probe reported a hit stop that "does not fire" on a build where it
+       * fires perfectly.
+       *
+       * So the car is DRIVEN INTO THE BARRIER instead, at speed, and what is
+       * watched is the one thing that cannot be faked: whether the call site
+       * asked for a stop. Everything in between - the collision, the impulse,
+       * the impact figure, the threshold - is the game's own.
+       */
+      var asked = null, calls = 0;
+      var realImpact = g.impact;
+      g.impact = function (o) {
+        calls++;
+        if (!asked || (o.stop || 0) > (asked.stop || 0)) asked = o;
+        return realImpact.call(this, o);
+      };
+      var wasState = g.state;
+      g.state = 'racing';
+      g.impactFx = 1;
+      clear();
+      var half = (g.level && g.level.roadHalf) || 20;
+      var s0 = g.car.sTrack;
+      if (g.car.placeLateral) g.car.placeLateral(s0, half - 1.4);
+      g.car.vLong = 76; g.car.speed = 76; g.car.vLat = 30;
+      for (var fi = 0; fi < 40; fi++) {
+        try { g.update(1 / 60); } catch (e) { /* the world is mid-chapter */ }
+      }
+      g.impact = realImpact;
+      g.state = wasState;
+      note('feel: drove into the barrier at 76 -> ' + calls + ' impact call(s), '
+           + 'hardest asked for stop=' + ((asked && asked.stop) || 0)
+           + ' shake=' + ((asked && asked.shake) || 0));
+      if (!calls) {
+        note('PROBLEM: a barrier strike at speed never reached the impact '
+             + 'vocabulary - the crash has no camera response at all');
+      } else if (!(asked && asked.stop > 0)) {
+        note('PROBLEM: a barrier strike at speed shook the camera but never '
+             + 'stopped time - the threshold is above anything reachable');
+      }
+      g.impactFx = wasFx;
+      clear();
+      PROBE = '';
+      return;
+    } else if (PROBE === 'dynres' && step >= 1) {
+      /* ================== THE ADAPTIVE RESOLUTION SCALER ==================
+       *
+       * It has five behaviours and every one of them is invisible from a run
+       * that is keeping up - which is every run this harness does, because
+       * the harness switches the scaler OFF so its captures are reproducible.
+       * So it is asked directly, with frame times handed to it, which is the
+       * only way any of this can be seen:
+       *
+       *   IT GOES DOWN when the frame time is over the target.
+       *   IT STANDS DOWN when going down did not help. A machine bound by its
+       *     processor gets nothing at all from fewer pixels, and a scaler
+       *     that cannot tell walks to its floor and makes the game look worse
+       *     for no frames. One step is what it may spend finding out.
+       *   IT KEEPS GOING when going down IS helping.
+       *   IT GIVES THEM BACK when the frames come back, and stops at 1,
+       *     because the player's own RENDER SCALE is the ceiling.
+       *   OFF IS OFF.
+       *
+       * THE MACHINE IS MODELLED, NOT ASSUMED. A fill-bound machine's frame
+       * time is proportional to the pixels it is drawing, so the feed below
+       * computes each frame's time FROM the scale the scaler has just chosen.
+       * A feed that hands over a constant is not a slow graphics card - it is
+       * a slow processor, which is a different machine and is what the
+       * stand-down test uses on purpose.
+       *
+       * `onResize` is stubbed for the length of this: the decision is what is
+       * under test, and reallocating twenty render targets a few hundred
+       * times to watch it decide would take longer than the run.
+       */
+      var D = g.__dyn || (g.__dyn = { n: 0 });
+      D.n++;
+      if (D.n < 3 || D.done) return;
+      D.done = 1;
+
+      if (!g.adaptResolution || !g.setDynScale) {
+        note('PROBLEM: there is no adaptive scaler to test');
+        PROBE = '';
+        return;
+      }
+
+      var realResize = g.onResize;
+      var realMode = g.dynRes, realScale = g.dynScale, realDyn = g._dyn;
+      var steps = 0, lowest = 1;
+      g.onResize = function () {
+        steps++;
+        if (g.dynScale < lowest) lowest = g.dynScale;
+      };
+
+      var reset = function (mode) {
+        g.dynRes = mode;
+        g.dynScale = 1;
+        g._dyn = null;
+        g._capSkips = 0;
+        g._gpuSkips = 0;
+        steps = 0;
+        lowest = 1;
+      };
+      /** A machine whose frame time follows the pixel count. */
+      var fill = function (msAtFull, frames) {
+        for (var i = 0; i < frames; i++) g.adaptResolution(msAtFull * g.dynScale);
+      };
+      /** A machine whose frame time does not, whatever the pixels do. */
+      var fixed = function (ms, frames) {
+        for (var i = 0; i < frames; i++) g.adaptResolution(ms);
+      };
+
+      /* --------------------------------- 1. IT GOES DOWN, AND KEEPS GOING --
+         Thirty-four milliseconds at full resolution is under thirty frames a
+         second against a target of sixty, on a machine where the pixels are
+         the problem. It should walk down until it is holding the target. */
+      reset(2);
+      fill(34, 3000);
+      note('dynres: fill-bound at 34 ms -> ' + steps + ' step(s), settled at scale '
+           + g.dynScale.toFixed(3));
+      if (!(g.dynScale < 1)) {
+        note('PROBLEM: a machine at 29 fps was left at full resolution');
+      }
+      if (g.dynScale < 0.45 - 1e-6) {
+        note('PROBLEM: the scaler went below the floor AGGRESSIVE asks for ('
+             + g.dynScale.toFixed(3) + ')');
+      }
+      /* Holding the target is the whole point, so it has to have got there:
+         34 ms at scale s is 34s ms, and 16.7 needs s at about 0.49. */
+      if (!(34 * g.dynScale <= 19)) {
+        note('PROBLEM: it stopped before the frame time reached the target ('
+             + (34 * g.dynScale).toFixed(1) + ' ms)');
+      }
+
+      /* ------------------------------------------- 2. IT GIVES THEM BACK --
+         The same machine, no longer busy. It must climb, and it must stop at
+         one: RENDER SCALE is the player's and this may only ever subtract. */
+      var low = g.dynScale;
+      /* Long, because coming back UP is deliberately slow: six good
+         windows and a settling pause per step, which is the whole reason a
+         machine on the boundary settles instead of pumping. Eight steps of
+         that is about half a minute of play. */
+      fill(9, 16000);
+      note('dynres: then 16000 fast frames -> scale ' + g.dynScale.toFixed(3)
+           + ' (from ' + low.toFixed(3) + ')');
+      if (!(g.dynScale > low)) {
+        note('PROBLEM: the scaler never gave the pixels back');
+      }
+      if (g.dynScale > 1.0000001) {
+        note('PROBLEM: the scaler went ABOVE the render scale the player chose');
+      }
+      if (g.dynScale < 1) {
+        note('PROBLEM: it never got all the way back to the resolution the '
+             + 'player asked for');
+      }
+
+      /* ------------------------------------------------ 3. IT STANDS DOWN --
+         A processor-bound machine: 34 ms whatever the resolution is. It is
+         allowed ONE step to find that out, and then it has to hand the step
+         back and stop asking. */
+      reset(2);
+      /* Long enough to be refused three times: the wait between attempts
+         doubles (about 30 s, then 60, then 120), so a shorter feed sees
+         two refusals and reports the third as missing. */
+      fixed(34, 9000);
+      var down = !!(g._dyn && (g._dyn.standDown > 0 || g._dyn.off));
+      note('dynres: CPU-bound at 34 ms -> ' + steps + ' step(s), lowest '
+           + lowest.toFixed(3) + ', back at ' + g.dynScale.toFixed(3)
+           + ', standing down = ' + down);
+      if (!(lowest < 1)) {
+        note('PROBLEM: it never tried a step, so it never found out whether '
+             + 'fewer pixels would have helped');
+      }
+      if (g.dynScale !== 1) {
+        note('PROBLEM: it kept a step that bought nothing - a CPU-bound '
+             + 'machine would be made blurry for no frames');
+      }
+      if (!down) {
+        note('PROBLEM: it did not stand down, so it will keep paying for the '
+             + 'same answer every few seconds');
+      }
+      /* ...and it has to eventually stop asking altogether, or a machine that
+         is permanently processor-bound takes a visible step down and back up
+         every half minute for the rest of the session. */
+      note('dynres: after repeated refusals, gave up for the session = '
+           + !!(g._dyn && g._dyn.off) + ' (refusals ' + ((g._dyn && g._dyn.fails) | 0) + ')');
+      if (!(g._dyn && g._dyn.off)) {
+        note('PROBLEM: it never stopped re-asking a machine that has said no '
+             + 'three times');
+      }
+
+      /* --------------------------------------------------- 4. THE FLOOR ---
+         ON stops at 64%; AGGRESSIVE is the one allowed to go further. */
+      reset(1);
+      fill(60, 4000);
+      note('dynres: ON, fill-bound at 60 ms -> floor reached ' + g.dynScale.toFixed(3));
+      if (g.dynScale < 0.645 - 1e-6) {
+        note('PROBLEM: ON went below its own floor (' + g.dynScale.toFixed(3) + ')');
+      }
+
+      /* ----------------------------------------------------- 5. OFF IS OFF */
+      reset(0);
+      fixed(120, 600);
+      note('dynres: with the row OFF, 600 frames at 8 fps -> scale '
+           + g.dynScale.toFixed(3));
+      if (g.dynScale !== 1) {
+        note('PROBLEM: the scaler moved while the row was switched off');
+      }
+
+      g.onResize = realResize;
+      g.dynRes = realMode; g.dynScale = realScale; g._dyn = realDyn;
+      PROBE = '';
+      return;
     } else if (PROBE === 'lose' && step >= 1) {
       /* CAN EVERY CHAPTER ACTUALLY BE LOST?
        *
@@ -2707,6 +3181,22 @@
       var d5 = g.__level5Director;
       if (!d5) { note("PROBLEM: there is no chapter 5 director"); PROBE = ""; return; }
       var atTrigger = g.finishAt - d5.finishTriggerUnits() - 2;
+      /* WHICHEVER ROUTE THIS RUN HAPPENS TO BE ON.
+
+         `shouldStartFinish` opens with `isLevel5()`, which asks whether the
+         game is on route four. The harness defaults to route six, so on a
+         default run both answers below came back false and the probe reported
+         "HUNT//REDLINE does not run for a player who earned it" about a build
+         where it runs perfectly - the same shape of false alarm the chapter 6
+         section had, and for the same reason: the question was never asked.
+
+         Stubbed for the length of the two calls, exactly as `isChapter` is
+         for chapter 6 below. What is under test is WHO IS IN FRONT deciding
+         whether the scene plays, and that is a different question from which
+         road it plays on. */
+      var realIsL5 = d5.isLevel5;
+      d5.isLevel5 = function () { return true; };
+      var wasFinishAt = g.finishAt;
       var setUp = function (playerLead) {
         g.raceOver = false;
         g.state = "racing";
@@ -2719,6 +3209,8 @@
       var leads = d5.shouldStartFinish();
       setUp(-40);                     // forty units DOWN on the rival
       var trails = d5.shouldStartFinish();
+      d5.isLevel5 = realIsL5;
+      g.finishAt = wasFinishAt;
       note("lose: chapter 5 finale runs when leading = " + leads
            + ", when trailing = " + trails);
       if (!leads) {
@@ -2756,6 +3248,26 @@
       st.finishAsLegacyLoss = realLegacy;
       st.chapter = wasChapter; st.mode = wasMode; g.won = wasWon;
       st.canonicalEarned = false; st.forcedLoss = "";
+      /* ...AND THE FLAG handleFinish SET ON THE WAY THROUGH.
+
+         This is the line that made the chapter 6 assertion below unreachable,
+         and it is worth writing down because the symptom named the wrong file.
+         `handleFinish` ends a race, and ending a race sets `raceOver`. Both
+         calls above go through it, and the teardown put `chapter`, `mode` and
+         `won` back but not that - so every later section of this probe ran on
+         a game that believed the race was already finished.
+
+         `Level6Director.loseChapter` opens with `if (g.raceOver) return;`,
+         which is correct: there is nothing left to take away from a run that
+         has already ended, and finishing twice would run the whole end-of-race
+         sequence on top of itself. So the chapter 6 tick below did exactly the
+         right thing, refused the loss, and was reported as "chapter 6 ticks
+         past Javas winning without noticing" on a build where it does nothing
+         of the kind.
+
+         A probe that cannot reach its own assertion looks exactly like a probe
+         that failed. */
+      g.raceOver = false;
       note("lose: the scripted ending plays when earned = " + earnedGoesToEpilogue
            + ", when beaten = " + lostGoesToEpilogue);
       if (!earnedGoesToEpilogue) {
@@ -2797,13 +3309,19 @@
         var realIs = d6.isChapter, realMode = st.mode;
         d6.isChapter = function () { return true; };
         st.mode = "race";
+        /* A LIVE RACE, stated rather than assumed. See the note above: the
+           loss path declines outright once a run has ended, so a section that
+           wants to watch it accept one has to be asking about a run that is
+           still going. */
+        var wasOver = g.raceOver;
+        g.raceOver = false;
         d6.chapterLost = false;
         d6.started = true;
         d6.phase = "ghost";
         g.car.sTrack = 126000; if (g.rival) g.rival.sTrack = 126600;
         try { d6.afterUpdate(1 / 60); } catch (e) { /* trial machinery */ }
         st.loseRace = realLose;
-        d6.isChapter = realIs; st.mode = realMode;
+        d6.isChapter = realIs; st.mode = realMode; g.raceOver = wasOver;
         g.car.sTrack = wasCar; if (g.rival) g.rival.sTrack = was6;
         note("lose: with Javas over the line, one real tick lost the chapter = "
              + (called > 0));
@@ -3421,14 +3939,14 @@
                                point on the steering column that does not move, and every
                                hand then looks like it is leaving the rim. Only the rim is
                                the rim. */
-              if (mn === 'DriverRim' && !hub) hub = [mm[12], mm[13], mm[14]];
+              if ((mn === 'DriverRim' || mn === 'Wheel_rimGrip') && !hub) hub = [mm[12], mm[13], mm[14]];
               /* ONE PASS ONLY. A frame draws this car more than once - the shadow
                                cascades and the reflection probe each submit it again - so a
                                collector that keeps taking gloves ends up comparing a hand
                                from one pass against a hub from another. The figure is drawn
                                hands-first, so the first two gloves and the first hub after
                                them are one pass by construction. */
-                            else if (/^DriverGloveP$/.test(qn) && grip.length < 2) {
+                            else if (/^DriverGlove(In)?P$/.test(qn) && grip.length < 2) {
                               grip.push([mm[12], mm[13], mm[14]]);
                             }
             }
@@ -3527,7 +4045,7 @@
       sc.drawPart = function (p, m) {
         var mm = m || (p && p.m);
         var mn = (p.mesh && p.mesh.name) || '';
-        if (mm && /^Driver(Limb|Forearm|Glove|Rim)$/.test(mn)
+        if (mm && /^Driver(Limb|Forearm|Glove[LR]?|Rim)$/.test(mn)
             && Math.hypot(mm[12] - g.car.x, mm[14] - g.car.z) < 4) {
           /* A generated driver piece is a unit shape on its own origin, so
              the length of a matrix column IS its full extent along that
@@ -3559,7 +4077,7 @@
            their own shoulders and a hub behind a binnacle does not need to be
            on screen - but hands on a wheel do, and if they are not, nothing
            done to the arms can show up at all. */
-        if (q.n === 'DriverGlove') { hands++; if (inFrame) handsOn++; }
+        if (/^DriverGlove[LR]?$/.test(q.n)) { hands++; if (inFrame) handsOn++; }
         // the width of the thing, as a share of the frame height
         var px = deg / vfov;
         if (/Limb|Forearm|Glove/.test(q.n) && px < 0.055) thin++;
@@ -3670,7 +4188,11 @@
 
       var IDS = ['storyRaceMeta', 'storyCompact', 'storyTutorial', 'storyWaypoint',
         'storyRadio', 'storyDialogue', 'forge6Objective', 'forge6Round', 'forge6Math',
-        'forge6Skill', 'forge6Fatal', 'pred7Objective', 'pred7Event', 'pred7Checkpoint'];
+        'forge6Skill', 'forge6Fatal', 'pred7Objective', 'pred7Event', 'pred7Checkpoint',
+        /* The standings board four cars put on the right flank. It was not in
+           this list, so the multiplayer sweep was measuring one panel against
+           itself and reporting clean. */
+        'mpHud'];
 
       function visible(el) {
         if (!el) return false;
@@ -3696,9 +4218,15 @@
       function sweepOnce(label) {
         /* The director takes its own root down on any frame where its chapter
            is not the running one, so it is put back up immediately before the
-           measurement rather than a tick earlier. */
+           measurement rather than a tick earlier.
+
+           ...unless this sweep is a DIFFERENT chapter's. Both directors put
+           their objective card in the same gutter slot, which is correct -
+           only one chapter ever runs - so raising chapter 6's root during the
+           chapter 7 sweep reports a collision between two panels that can
+           never be on screen together. */
         var host = document.getElementById('forge6');
-        if (host) { host.classList.add('show'); host.setAttribute('aria-hidden', 'false'); }
+        if (host && !CD.no6) { host.classList.add('show'); host.setAttribute('aria-hidden', 'false'); }
         var live = [];
         for (var i = 0; i < IDS.length; i++) {
           var el = document.getElementById(IDS[i]);
@@ -3778,7 +4306,91 @@
             'THREE CHUTES. ONE IS RUNNING. THE PAINT WILL NOT TELL YOU WHICH.';
           rc.classList.add('show');
           sweepOnce('chapter 6 + trial card');
+          rc.classList.remove('show');
         }
+        /* -------------------------------------------------- CHAPTER 7 ----
+         *
+         * The finale, and until now the half of this probe that did not
+         * exist. It fields three panels of its own - the objective card in
+         * the gutter, the hazard call across the middle of the frame and the
+         * checkpoint chip above it - and it fields them over the same canvas
+         * gap readout chapter 6 was carefully tuned around. Nothing had ever
+         * measured them together.
+         *
+         * The hazard call is the one that matters: it is centred, it is
+         * `min(530px, 58vw)` wide, and the gap readout is drawn at a FIXED
+         * arc of the 1280x720 virtual space - so how close they come is a
+         * function of the window, which is precisely the question a
+         * stylesheet cannot answer and a screenshot at one size does not
+         * either. */
+        var d7 = document.getElementById('pred7');
+        if (!d7) note('PROBLEM: chapter 7 has no root to measure');
+        else {
+          if (g.story && g.story.hideCompact) g.story.hideCompact();
+          /* Chapter 6's card comes DOWN first. Both directors put their
+             objective card in the same gutter slot, which is correct - only
+             one chapter ever runs - so leaving the forge card up while
+             measuring the finale reports a collision between two panels that
+             can never be on screen together. */
+          CD.no6 = 1;
+          var f6 = document.getElementById('forge6');
+          if (f6) { f6.classList.remove('show'); f6.style.display = 'none'; }
+          d7.setAttribute('aria-hidden', 'false');
+          d7.classList.add('show');
+          var p7o = document.getElementById('pred7Objective');
+          var p7e = document.getElementById('pred7Event');
+          var p7c = document.getElementById('pred7Checkpoint');
+          if (p7o) {
+            document.getElementById('pred7Phase').textContent = 'CHAPTER 07 // NEON HORIZON';
+            document.getElementById('pred7ObjectiveText').textContent = 'BEAT THE R-IX';
+            document.getElementById('pred7Rule').textContent = 'NEON HORIZON // 30.0 KM';
+            p7o.classList.add('show');
+          }
+          if (p7e) {
+            document.getElementById('pred7EventKicker').textContent = 'ROUTE EVENT';
+            document.getElementById('pred7EventText').textContent = 'STRUCTURAL GLASS // HOLD YOUR LINE';
+            p7e.setAttribute('aria-hidden', 'false');
+            p7e.classList.add('show');
+          }
+          if (p7c) {
+            p7c.textContent = 'CHECKPOINT // NEON GATE';
+            p7c.setAttribute('aria-hidden', 'false');
+            p7c.classList.add('show');
+          }
+          sweepOnce('chapter 7, ' + window.innerWidth + 'x' + window.innerHeight);
+          /* ...and with the story talking over it, which is the state the
+             finale spends most of its thirty kilometres in. */
+          if (g.story && g.story.showCompact) {
+            g.story.setRoot(true);
+            g.story.showCompact('JAVAS', 'calm', 'The link is holding. Do not repeat a corner.', 30);
+          }
+          sweepOnce('chapter 7 + radio chip');
+          if (p7e) p7e.classList.remove('show');
+          if (p7c) p7c.classList.remove('show');
+          if (p7o) p7o.classList.remove('show');
+          d7.setAttribute('aria-hidden', 'true');
+          if (g.story && g.story.hideCompact) g.story.hideCompact();
+          if (f6) f6.style.display = '';
+        }
+        /* ------------------------------------------------ MULTIPLAYER ----
+           Four cars on the road puts a standings board on the right flank,
+           and the right flank is where the canvas draws the score stack and
+           the raceMode meter. Same question, different corner. */
+        var mh = document.getElementById('mpHud');
+        if (mh) {
+          mh.setAttribute('aria-hidden', 'false');
+          var rows = document.getElementById('mpHudRows');
+          if (rows && !rows.children.length) {
+            for (var q = 0; q < 4; q++) {
+              var li = document.createElement('li');
+              li.textContent = (q + 1) + '  DRIVER ' + (q + 1) + '   -' + (q * 40) + 'M';
+              rows.appendChild(li);
+            }
+            document.getElementById('mpHudBanner').textContent = 'SYNX GRID // LIVE';
+          }
+          sweepOnce('multiplayer standings');
+          mh.setAttribute('aria-hidden', 'true');
+        } else note('PROBLEM: multiplayer has no standings board to measure');
         note('cards: ' + (CD.bad ? CD.bad + ' overlapping pair(s)' : 'nothing drawn through anything else'));
         PROBE = '';
         CD.done = true;
@@ -4806,7 +5418,7 @@
   window.__smokeReport = function () {
     var g = window.__nr, o = window.__smoke;
     var r = {
-      errors: o.errors, warnings: o.warnings, net: o.net, notes: o.notes,
+      errors: o.errors, warnings: o.warnings, net: o.net, notes: o.notes, driver: o.driver,
       started: !!g, state: g && g.state,
       sceneReady: !!(g && g.scene && g.scene.ready),
       frames: frames, load: window.__synxLoad || null, glError: null, level7: null,

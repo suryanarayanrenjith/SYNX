@@ -75,6 +75,27 @@
   /* The ramp the swept arc, the needle and the readout all run along. See
      Hud.speedTint for why it goes through violet and not through amber. */
   const SPD_RAMP = [[0.00, CYAN], [0.52, VIOLET], [0.84, PINK], [1.00, RED]];
+  /* WHERE EVERY RING OF THE DIAL LIVES, as fractions of its radius - one
+     band each, and nothing shares one.
+
+     The numerals used to sit at 0.665 with the lit sweep at 0.705..0.785
+     drawn over them, so every figure the needle had passed was crossed out
+     by the arc that was supposed to be showing progress along them; and the
+     readout's top edge sat at the dial's centre, under the needle's hub. The
+     scale is now numerals inside, sweep outside them, ticks outside that,
+     and the readout down in the gap at the bottom of the sweep where the
+     needle never points - with the hub shrunk and the needle's tail cut so
+     neither reaches it. The end figures (0 and the top) come off: they sat
+     exactly where the readout needs to be, and the ends of the sweep already
+     say where the scale starts and stops. */
+  const SPD_L = {
+    num: 0.585, numSize: 0.125,       // the figures
+    arc: 0.78, arcW: 0.06,            // the lit sweep
+    major: 0.85, minor: 0.92,         // where each kind of tick starts
+    hub: 0.10, tail: 0.15,            // the pivot, and the needle behind it
+    readY: 0.40, readSize: 0.40,      // the digital readout, below the pivot
+    unitY: 0.72, unitSize: 0.10,      // ...and its unit, below that
+  };
 
   /* ---------------------------------------------------------- THE RADIO
    *
@@ -121,6 +142,13 @@
      the record readout between the two chequered flags at y -315 were sharing
      a line at the old height, and two centred readouts that touch read as one. */
   const BST = { x: 0, y: -268, w: 380, h: 17, n: 24 };
+  /* ...AND FROM THE DRIVING SEAT, where the reserve is still the one number
+     the car's own instruments do not give at a glance - the cluster carries a
+     boost read-out, but it is behind the rim, and in a slide it is behind a
+     glove. So the meter stays, slimmer, floating on the glass just above the
+     top of the wheel where the eye already is, with its reading over it
+     rather than under it (under it is the rim). */
+  const SEAT_BST = { x: 0, y: -86, w: 300, h: 11, n: 24, capAbove: true, capSize: 10, tick: 11 };
 
   // The chrome ramp the 80s logo treatment is built on: white highlight,
   // violet mid, a hard specular break, then warm gold into magenta.
@@ -430,9 +458,22 @@
     }
 
     resize(w, h, dpr) {
+      /* NOTHING CHANGED IS NOT A RESIZE.
+       *
+       * Assigning `width` or `height` reallocates the backing store and
+       * clears it, whether or not the number is different. That was harmless
+       * while this was only called from a window resize; it is not now that
+       * the adaptive scaler calls Game.onResize whenever it moves a step -
+       * the WINDOW has not changed on those frames, so this would throw away
+       * and rebuild a full-resolution 2D surface, reset the context, and
+       * blank the interface for the frame, several times a minute, for no
+       * reason at all. */
+      const cw = Math.round(w * dpr), ch = Math.round(h * dpr);
+      if (this.canvas.width === cw && this.canvas.height === ch
+          && this.w === w && this.h === h && this.dpr === dpr) return;
       this.dpr = dpr;
-      this.canvas.width = Math.round(w * dpr);
-      this.canvas.height = Math.round(h * dpr);
+      this.canvas.width = cw;
+      this.canvas.height = ch;
       // assigning width or height resets the 2D state to its defaults - see
       // the note on hRestore
       this.ctx.__f = '';
@@ -1245,24 +1286,26 @@
         c.shadowColor = col;
         c.shadowBlur = gb(r * (isMajor ? 0.10 : 0.04));
         c.beginPath();
-        const inner = isMajor ? r * 0.83 : r * 0.915;
+        const inner = isMajor ? r * SPD_L.major : r * SPD_L.minor;
         c.moveTo(Math.cos(a) * inner, Math.sin(a) * inner);
         c.lineTo(Math.cos(a) * r * 0.985, Math.sin(a) * r * 0.985);
         c.stroke();
         c.restore();
         if (!isMajor) continue;
+        // the two ends are the readout's room - see SPD_L
+        if (v < 1e-6 || v > top - 1e-6) continue;
         c.save();
         c.globalAlpha = 0.95;
         /* Ice rather than white. A pure white numeral on a violet ground is
            the one value in this interface with no hue in it at all, and the
            eye finds it before it finds the needle. */
         c.fillStyle = warm ? '#ffb8c2' : '#dceeff';
-        setFont(c, '600 ' + Math.round(r * 0.14) + 'px "Orbitron", system-ui, sans-serif');
+        setFont(c, '600 ' + Math.round(r * SPD_L.numSize) + 'px "Orbitron", system-ui, sans-serif');
         c.textAlign = 'center';
         c.textBaseline = 'middle';
         c.shadowColor = warm ? RED : CYAN;
-        c.shadowBlur = gb(r * 0.13);
-        c.fillText(String(Math.round(v)), Math.cos(a) * r * 0.665, Math.sin(a) * r * 0.665);
+        c.shadowBlur = gb(r * 0.12);
+        c.fillText(String(Math.round(v)), Math.cos(a) * r * SPD_L.num, Math.sin(a) * r * SPD_L.num);
         hRestore(c);
       }
 
@@ -1270,12 +1313,12 @@
       c.save();
       c.globalAlpha = 0.72;
       c.fillStyle = PINK;
-      setFont(c, '700 ' + Math.round(r * 0.12) + 'px "Orbitron", system-ui, sans-serif');
+      setFont(c, '700 ' + Math.round(r * SPD_L.unitSize) + 'px "Orbitron", system-ui, sans-serif');
       c.textAlign = 'center';
       c.textBaseline = 'middle';
       c.shadowColor = PINK;
-      c.shadowBlur = gb(r * 0.18);
-      c.fillText(metric ? 'KM/H' : 'MPH', 0, r * 0.62);
+      c.shadowBlur = gb(r * 0.16);
+      c.fillText(metric ? 'KM/H' : 'MPH', 0, r * SPD_L.unitY);
       hRestore(c);
 
       this._spdKey = key;
@@ -1424,12 +1467,12 @@
       if (frac > 0.004) {
         c.save();
         c.strokeStyle = tint;
-        c.lineWidth = Math.max(2, R * 0.080);
+        c.lineWidth = Math.max(2, R * SPD_L.arcW);
         c.lineCap = 'round';
         c.shadowColor = tint;
-        c.shadowBlur = gb(R * 0.26);
+        c.shadowBlur = gb(R * 0.22);
         c.beginPath();
-        c.arc(0, 0, R * 0.745, SPD_A0, aOf(value));
+        c.arc(0, 0, R * SPD_L.arc, SPD_A0, aOf(value));
         c.stroke();
         // a brighter filament down the middle of it
         c.globalAlpha = (quiet === undefined ? 1 : quiet) * 0.55;
@@ -1451,8 +1494,9 @@
         c.shadowColor = CYAN;
         c.shadowBlur = gb(R * 0.12);
         c.beginPath();
-        c.moveTo(Math.cos(pa) * R * 0.695, Math.sin(pa) * R * 0.695);
-        c.lineTo(Math.cos(pa) * R * 0.805, Math.sin(pa) * R * 0.805);
+        const p0 = SPD_L.arc - SPD_L.arcW, p1 = SPD_L.arc + SPD_L.arcW;
+        c.moveTo(Math.cos(pa) * R * p0, Math.sin(pa) * R * p0);
+        c.lineTo(Math.cos(pa) * R * p1, Math.sin(pa) * R * p1);
         c.stroke();
         c.restore();
       }
@@ -1487,14 +1531,15 @@
       const nc = g.raceModeActive ? '#45d7ff' : (over ? RED : PINK);
       c.save();
       c.rotate(a);
+      const tail = -R * SPD_L.tail;
       c.save();
       c.globalAlpha = (quiet === undefined ? 1 : quiet) * 0.5;
       c.fillStyle = '#04010c';
       c.beginPath();
-      c.moveTo(-R * 0.19, -R * 0.026 + R * 0.022);
+      c.moveTo(tail, -R * 0.026 + R * 0.022);
       c.lineTo(R * 0.905, -R * 0.008 + R * 0.022);
       c.lineTo(R * 0.905, R * 0.010 + R * 0.022);
-      c.lineTo(-R * 0.19, R * 0.030 + R * 0.022);
+      c.lineTo(tail, R * 0.030 + R * 0.022);
       c.closePath();
       c.fill();
       c.restore();
@@ -1502,10 +1547,10 @@
       c.shadowColor = nc;
       c.shadowBlur = gb(R * 0.30);
       c.beginPath();
-      c.moveTo(-R * 0.19, -R * 0.028);
+      c.moveTo(tail, -R * 0.028);
       c.lineTo(R * 0.91, -R * 0.009);
       c.lineTo(R * 0.91, R * 0.009);
-      c.lineTo(-R * 0.19, R * 0.028);
+      c.lineTo(tail, R * 0.028);
       c.closePath();
       c.fill();
       c.globalAlpha = (quiet === undefined ? 1 : quiet) * 0.95;
@@ -1521,12 +1566,12 @@
 
       // the hub, over the tail of the needle
       c.save();
-      const hub = c.createRadialGradient(0, -R * 0.05, 0, 0, 0, R * 0.16);
+      const hub = c.createRadialGradient(0, -R * 0.04, 0, 0, 0, R * SPD_L.hub * 1.25);
       hub.addColorStop(0, 'rgba(112,92,190,0.98)');
       hub.addColorStop(1, 'rgba(12,5,28,0.98)');
       c.fillStyle = hub;
       c.beginPath();
-      c.arc(0, 0, R * 0.13, 0, Math.PI * 2);
+      c.arc(0, 0, R * SPD_L.hub, 0, Math.PI * 2);
       c.fill();
       c.strokeStyle = nc;
       c.lineWidth = Math.max(1, R * 0.022);
@@ -1554,8 +1599,8 @@
          red from 74 mph onward, permanently, since the car cruises well past
          it, so the one cue that says "near the limit" said it all the time
          and therefore said nothing. */
-      const digitY = SPD.y - SPD.r * 0.26;
-      const size = SPD.r * 0.46;
+      const digitY = SPD.y - SPD.r * SPD_L.readY;
+      const size = SPD.r * SPD_L.readSize;
       /* FIXED CELLS, so the ghost sits exactly under the number.
          Both runs are centred, so a two-digit reading over a three-digit ghost
          puts every lit segment half a cell off the dark one behind it - which
@@ -1603,7 +1648,8 @@
      * the player needs to read is "how many goes have I got", which is a count
      * and not a length.
      */
-    boostMeter(g, quiet) {
+    boostMeter(g, quiet, layout) {
+      const L = layout || BST;
       const c = this.ctx;
       const car = g.car;
       const q = quiet === undefined ? 1 : quiet;
@@ -1663,8 +1709,8 @@
         : state === 'charging' ? 0.72 + 0.28 * Math.sin(g.time * 6)
         : 1;
 
-      const X = this.vx(BST.x - BST.w / 2), Y = this.vy(BST.y + BST.h / 2);
-      const W = this.vs(BST.w), H = this.vs(BST.h);
+      const X = this.vx(L.x - L.w / 2), Y = this.vy(L.y + L.h / 2);
+      const W = this.vs(L.w), H = this.vs(L.h);
       const cut = this.vs(6);
 
       // the housing: the same cut-cornered glass every other panel is made of
@@ -1691,9 +1737,9 @@
       const pad = this.vs(3);
       const inner = W - pad * 2;
       const gap = this.vs(2.2);
-      const seg = (inner - gap * (BST.n - 1)) / BST.n;
-      const live = fill * BST.n;
-      for (let i = 0; i < BST.n; i++) {
+      const seg = (inner - gap * (L.n - 1)) / L.n;
+      const live = fill * L.n;
+      for (let i = 0; i < L.n; i++) {
         /* The leading segment is drawn at partial brightness rather than
            either on or off, so a reserve that is draining reads as continuous
            at the head and as a count everywhere else. */
@@ -1717,7 +1763,7 @@
            reads as two meters; one that warms towards the end reads as a
            reserve filling up, which is what it is. Violet at the root is the
            same violet the speedometer's ring and the road's verges use. */
-        const t = i / (BST.n - 1);
+        const t = i / (L.n - 1);
         const col = mixHex2(VIOLET, cool, Math.min(1, t / 0.7));
         const lit = t > 0.80 ? mixHex2(cool, hot, (t - 0.80) / 0.20) : col;
         c.globalAlpha = q * (0.45 + 0.55 * k) * pulse;
@@ -1764,13 +1810,16 @@
         hRestore(c);
       }
 
-      // the reading, under the bar and out of the record row's way
-      this.label(caption, BST.x, BST.y - BST.h * 0.5 - 10, 10,
+      /* The reading: under the bar and out of the record row's way - or OVER
+         it, from the seat, where under it is the rim of the wheel. */
+      const capY = L.capAbove ? L.y + L.h * 0.5 + 9 : L.y - L.h * 0.5 - 10;
+      this.label(caption, L.x, capY, L.capSize || 10,
         state === 'part' ? INK.mute : edge, 'center', 800, q * (state === 'part' ? 0.7 : 0.95));
 
       // corner ticks, and only while there is something to spend
       if (state === 'live' || state === 'ready' || blue) {
-        this.brackets(BST.x, BST.y, BST.w + 26, BST.h + 20, edge, 16, q * pulse);
+        const tick = L.tick || 16;
+        this.brackets(L.x, L.y, L.w + tick * 1.6, L.h + tick * 1.25, edge, tick, q * pulse);
       }
     }
 
@@ -2017,29 +2066,105 @@
     }
 
     /** The perspective grid the whole genre is built on. */
+    /* THE HORIZON GRID, AND THE HALF OF IT THAT NEVER MOVES.
+     *
+     * Twenty-nine rays converging on a vanishing point, and twelve
+     * horizontals scrolling toward the viewer. Every one of the forty-one was
+     * stroked with `shadowBlur` set, which in a 2D context means the shape is
+     * rasterised, blurred into a scratch surface and composited - per stroke,
+     * every frame, for as long as the title screen is up.
+     *
+     * The twenty-nine rays are the same twenty-nine rays on every frame: they
+     * are a function of the window and of the horizon line, and of nothing
+     * else. So they are drawn ONCE into an offscreen buffer and blitted, and
+     * the only blurred strokes left in the frame are the twelve that actually
+     * move. On the machines this is for, that is the difference between the
+     * title screen costing four milliseconds of processor and costing one.
+     *
+     * Rebuilt when the window changes size, when the horizon moves (the
+     * loading screen and the menu use different ones) or when the HUD GLOW
+     * row changes the blur radius - all three are in the key.
+     */
+    /* THE BUFFER IS BOUNDED, and that is not a detail.
+     *
+     * A cache the size of the window times the device pixel ratio is
+     * thirty-three megabytes on a 4K panel at 2x - held for the life of the
+     * process, to hold twenty-nine straight lines, on the very machines this
+     * whole exercise is about not being wasteful on.
+     *
+     * A ray is a straight line with a soft glow on it, which is the one kind
+     * of shape that survives being drawn small and scaled up: there is no
+     * detail in it to lose. So it is rendered at no more than 1920 device
+     * pixels across and blitted to fit, which caps the cost at about eight
+     * megabytes whatever the display is and is, at the resolutions this can
+     * actually be seen at, indistinguishable from drawing it full size. */
+    gridRays(hy, colour) {
+      const key = this.w + 'x' + this.h + ':' + Math.round(hy) + ':' + GLOW.toFixed(2);
+      if (this._rayKey === key && this._rayBuf) return this._rayBuf;
+      const scale = Math.max(0.5, Math.min(this.dpr, 1920 / Math.max(1, this.w)));
+      const buf = this._rayBuf || (this._rayBuf = global.document.createElement('canvas'));
+      const W = Math.max(1, Math.round(this.w * scale));
+      const H = Math.max(1, Math.round(this.h * scale));
+      if (buf.width !== W) buf.width = W;
+      if (buf.height !== H) buf.height = H;
+      const bc = buf.getContext('2d');
+      if (!bc) { this._rayBuf = null; return null; }
+      bc.setTransform(scale, 0, 0, scale, 0, 0);
+      bc.clearRect(0, 0, this.w, this.h);
+      bc.strokeStyle = colour;
+      bc.lineWidth = Math.max(1, this.vs(1.2));
+      bc.shadowColor = colour;
+      bc.shadowBlur = gb(this.vs(6));
+      const bottom = this.h;
+      for (let i = -14; i <= 14; i++) {
+        bc.beginPath();
+        bc.moveTo(this.vx(0), hy);
+        bc.lineTo(this.vx(i * 110), bottom);
+        bc.stroke();
+      }
+      this._rayKey = key;
+      return buf;
+    }
+
     gridFloor(g, yHorizon, alpha) {
       const c = this.ctx;
+      const a0 = alpha === undefined ? 0.5 : alpha;
+      const hy = this.vy(yHorizon);
+      const bottom = this.h;
       c.save();
-      c.globalAlpha = alpha === undefined ? 0.5 : alpha;
+      // verticals converging on the vanishing point, from the cache
+      const rays = this.gridRays(hy, VIOLET);
+      if (rays) {
+        c.globalAlpha = a0;
+        /* Blitted in CSS pixels, so the buffer's own resolution - which is
+           capped, see gridRays - is a detail of the cache rather than
+           something the caller has to know about. The context's transform is
+           already the device pixel ratio, so drawing it at (0, 0, w, h)
+           stretches whatever is in the buffer across the whole frame. */
+        c.drawImage(rays, 0, 0, this.w, this.h);
+      } else {
+        c.globalAlpha = a0;
+        c.strokeStyle = VIOLET;
+        c.lineWidth = Math.max(1, this.vs(1.2));
+        c.shadowColor = VIOLET;
+        c.shadowBlur = gb(this.vs(6));
+        for (let i = -14; i <= 14; i++) {
+          c.beginPath();
+          c.moveTo(this.vx(0), hy);
+          c.lineTo(this.vx(i * 110), bottom);
+          c.stroke();
+        }
+      }
+      // horizontals, scrolling toward the viewer
       c.strokeStyle = VIOLET;
       c.lineWidth = Math.max(1, this.vs(1.2));
       c.shadowColor = VIOLET;
       c.shadowBlur = gb(this.vs(6));
-      const hy = this.vy(yHorizon);
-      const bottom = this.h;
-      // verticals converging on the vanishing point
-      for (let i = -14; i <= 14; i++) {
-        c.beginPath();
-        c.moveTo(this.vx(0), hy);
-        c.lineTo(this.vx(i * 110), bottom);
-        c.stroke();
-      }
-      // horizontals, scrolling toward the viewer
       const t = (g.time * 0.35) % 1;
       for (let i = 0; i < 12; i++) {
         const f = (i + t) / 12;
         const ly = hy + (bottom - hy) * f * f;
-        c.globalAlpha = (alpha === undefined ? 0.5 : alpha) * (0.25 + f * 0.75);
+        c.globalAlpha = a0 * (0.25 + f * 0.75);
         c.beginPath();
         c.moveTo(0, ly);
         c.lineTo(this.w, ly);
@@ -2089,14 +2214,55 @@
        phosphor tint, a soft edge falloff and a slow horizontal roll. Cheap, and
        it is what ties the panels, the chrome headline and the grid floor
        together into one object instead of three effects sharing a canvas. */
+    /* THE SCANLINES, AS ONE FILL RATHER THAN THREE HUNDRED.
+     *
+     * The strip was drawn a line at a time: `for (y = 0; y < h; y += step)
+     * fillRect(0, y, w, 1)`. At 1080p that is 216 rectangle fills every
+     * frame, each the full width of the window, on every menu screen in the
+     * game - and it is the same picture every time, because nothing about it
+     * moves.
+     *
+     * A repeating pattern is the same image in one fill. The tile is one
+     * pixel wide and `step` tall with its first row opaque, built once and
+     * rebuilt only when the window changes size; the strength the caller
+     * asks for rides on globalAlpha instead of being baked in, so the pause
+     * screen's lighter version costs nothing extra either.
+     *
+     * The pattern is in USER space, which is already scaled by the device
+     * pixel ratio - exactly as the fillRect it replaces was - so the line
+     * weight is unchanged on every display. */
+    scanPattern(step) {
+      if (this._scanPat && this._scanStep === step) return this._scanPat;
+      const tile = this._scanTile || (this._scanTile = global.document.createElement('canvas'));
+      tile.width = 1;
+      tile.height = Math.max(2, step);
+      const tc = tile.getContext('2d');
+      if (!tc) return null;
+      tc.clearRect(0, 0, 1, tile.height);
+      tc.fillStyle = '#000';
+      tc.fillRect(0, 0, 1, 1);
+      this._scanStep = step;
+      this._scanPat = this.ctx.createPattern(tile, 'repeat');
+      return this._scanPat;
+    }
+
     crt(g, strength) {
       const c = this.ctx;
       const k = strength === undefined ? 1 : strength;
       c.save();
       // scanlines
-      c.fillStyle = 'rgba(0,0,0,' + (0.20 * k) + ')';
       const step = Math.max(2, Math.round(this.vs(3)));
-      for (let y = 0; y < this.h; y += step) c.fillRect(0, y, this.w, 1);
+      const pat = this.scanPattern(step);
+      if (pat) {
+        c.globalAlpha = 0.20 * k;
+        c.fillStyle = pat;
+        c.fillRect(0, 0, this.w, this.h);
+        c.globalAlpha = 1;
+      } else {
+        // a context that would not give us a pattern still gets its strip
+        c.fillStyle = 'rgba(0,0,0,' + (0.20 * k) + ')';
+        for (let y = 0; y < this.h; y += step) c.fillRect(0, y, this.w, 1);
+      }
       // a bright band rolling slowly down the tube
       const roll = ((g.time * 0.08) % 1.4) * this.h - this.h * 0.2;
       const gr = c.createLinearGradient(0, roll - this.vs(90), 0, roll + this.vs(90));
@@ -2105,13 +2271,23 @@
       gr.addColorStop(1, 'rgba(120,220,255,0)');
       c.fillStyle = gr;
       c.fillRect(0, roll - this.vs(90), this.w, this.vs(180));
-      // corner falloff, so the picture sits inside a tube
-      const rad = c.createRadialGradient(
-        this.w / 2, this.h / 2, Math.min(this.w, this.h) * 0.30,
-        this.w / 2, this.h / 2, Math.max(this.w, this.h) * 0.72);
-      rad.addColorStop(0, 'rgba(0,0,0,0)');
-      rad.addColorStop(1, 'rgba(2,0,10,' + (0.55 * k) + ')');
-      c.fillStyle = rad;
+      /* Corner falloff, so the picture sits inside a tube.
+         The gradient is a function of the window and of nothing else, so it
+         is built once per size rather than once per frame - a radial gradient
+         with two stops is not free to construct, and this one was being
+         constructed sixty times a second to produce the same object. The
+         strength rides on globalAlpha for the same reason the strip's does. */
+      if (!this._vig || this._vigW !== this.w || this._vigH !== this.h) {
+        this._vigW = this.w; this._vigH = this.h;
+        const rad = c.createRadialGradient(
+          this.w / 2, this.h / 2, Math.min(this.w, this.h) * 0.30,
+          this.w / 2, this.h / 2, Math.max(this.w, this.h) * 0.72);
+        rad.addColorStop(0, 'rgba(0,0,0,0)');
+        rad.addColorStop(1, 'rgba(2,0,10,1)');
+        this._vig = rad;
+      }
+      c.globalAlpha = 0.55 * k;
+      c.fillStyle = this._vig;
       c.fillRect(0, 0, this.w, this.h);
       hRestore(c);
     }
@@ -2312,10 +2488,28 @@
          UP, so this corner is (-640, +360) - and it is the one corner nothing
          else in this file draws in. The instruments are along the bottom and
          down the right; the story cards come in from the middle. */
-      c.fillRect(this.vx(-628), this.vy(344), this.vs(150), this.vs(46));
+      /* THE ADAPTIVE SCALER, WHEN IT IS DOING SOMETHING.
+       *
+       * A renderer that quietly changes its own resolution and does not say
+       * so is a renderer people report as "it goes blurry sometimes". The
+       * plate grows a third line the moment the scaler is below full and
+       * loses it again the moment it is back, so the reading is always the
+       * truth about the frame being looked at - and on a machine that is
+       * keeping up there is nothing extra to read.
+       *
+       * It is only ever shown beside the frame rate, which is the row that
+       * asked to see how the game is performing. See Game.adaptResolution. */
+      const dyn = g.dynScale === undefined ? 1 : g.dynScale;
+      const scaled = dyn < 0.995;
+      c.fillRect(this.vx(-628), this.vy(scaled ? 328 : 344),
+        this.vs(150), this.vs(scaled ? 62 : 46));
       hRestore(c);
       this.label(now + ' FPS', -620, 330, 20, hue(now), 'left', 900);
       this.label('MIN ' + low, -620, 310, 13, hue(low), 'left', 700, 0.85);
+      if (scaled) {
+        this.label('RES ' + Math.round(dyn * 100) + '%', -620, 294, 13,
+          '#8b5cf6', 'left', 700, 0.9);
+      }
     }
 
     /* THE FALLBACK LOADING SCREEN.
@@ -2385,6 +2579,35 @@
       // a horizon grid under the title, the genre's signature
       this.gridFloor(g, -120, 0.30);
 
+      /* SHADE UNDER THE TYPE. The title stands on the attract drive, and the
+         drive is lit: a headlamp pool, a white verge and a pale road, any of
+         which can end up behind CONTROLS - and white on white is not a menu.
+         A soft pool of dark behind the column and a band along the foot for
+         the hints, both feathered to nothing, so it reads as the picture
+         being graded rather than as a panel being put over it. */
+      {
+        const c = this.ctx;
+        c.save();
+        c.translate(this.vx(0), this.vy(30));
+        c.scale(this.vs(430), this.vs(320));
+        const pool = c.createRadialGradient(0, 0, 0, 0, 0, 1);
+        pool.addColorStop(0, 'rgba(4,1,12,0.40)');
+        pool.addColorStop(0.62, 'rgba(4,1,12,0.20)');
+        pool.addColorStop(1, 'rgba(4,1,12,0)');
+        c.fillStyle = pool;
+        c.fillRect(-1, -1, 2, 2);
+        c.restore();
+        const top = this.vy(-282);
+        const band = c.createLinearGradient(0, top, 0, this.h);
+        band.addColorStop(0, 'rgba(4,1,12,0)');
+        band.addColorStop(0.55, 'rgba(4,1,12,0.55)');
+        band.addColorStop(1, 'rgba(4,1,12,0.78)');
+        c.save();
+        c.fillStyle = band;
+        c.fillRect(0, top, this.w, this.h - top);
+        hRestore(c);
+      }
+
       // title block
       // GUI_Title.png is a packed atlas (C64 loading screen, colour bars,
       // "BUY THE ALBUMS"), not a logo - drawing the sheet covered the game.
@@ -2429,17 +2652,29 @@
       if (this.menuSelY === undefined || this.menuSelY === null) this.menuSelY = selTarget;
       this.menuSelY += (selTarget - this.menuSelY) * Math.min(1, (this._dt || 0.016) * 20);
       const pulse = 0.55 + 0.45 * Math.sin(g.time * 4);
-      this.panel(0, this.menuSelY, 400, 66, PINK, 0.28);
-      this.brackets(0, this.menuSelY, 430, 78, AMBER, 20, pulse);
+      // the bar arrives with the row it is on, not before it
+      const cur = g.menuItems[g.menuIndex];
+      const selK = cur ? ease(Math.min(1, cur.typed / Math.max(1, cur.label.length))) : 1;
+      if (selK > 0.001) {
+        this.panel(0, this.menuSelY, 400, 66, PINK, 0.28 * selK);
+        this.brackets(0, this.menuSelY, 430, 78, AMBER, 20, pulse * selK);
+      }
 
+      /* EACH ROW ARRIVES WHOLE. They used to be typed a letter at a time
+         with a caret, so for most of a second the title read S_ over CON over
+         an underscore - three half-words being spelled out under a finished
+         logo, which is the one moment the screen is looked at hardest. A row
+         now rises the last few units into its slot and settles, on the same
+         cascade (see the menu loop in js/game.js). */
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
-        const y = menuTop - i * menuGap;
-        const shown = it.label.slice(0, Math.max(0, Math.floor(it.typed)));
+        const k = Math.max(0, Math.min(1, it.typed / Math.max(1, it.label.length)));
+        if (k <= 0.001) continue;
+        const e = overshoot(k);
+        const y = menuTop - i * menuGap - (1 - e) * 16;
         const sel = i === g.menuIndex;
-        const caret = it.typed < it.label.length && (g.time * 3 % 1) < 0.5 ? '_' : '';
-        this.neon(shown + caret, 0, y, 44, sel ? AMBER : WHITE, 'center', sel ? 900 : 700,
-          sel ? 1 : 0.72);
+        this.neon(it.label, 0, y, 44, sel ? AMBER : WHITE, 'center', sel ? 900 : 700,
+          (sel ? 1 : 0.72) * ease(k));
       }
 
       // best time, as an instrument readout
@@ -2455,9 +2690,31 @@
          outside the bracket frame this screen is drawn inside - and above them
          it has the BEST panel to argue with. The footer is the one band on
          this screen that is already nothing but small print. */
-      this.label('START  STORY MODE + FREE ROAM      ARROWS  SELECT      ENTER  CONFIRM'
-        + '      SYNX-RACING.VERCEL.APP',
-        0, -330, 13, INK.mute, 'center', 500);
+      /* WHAT IS ACTUALLY BEHIND START. The terminal has offered three doors
+         since multiplayer shipped and this line named two of them, so the one
+         mode a player would have to be told about was the one the title
+         screen did not mention. */
+      /* IN THREE PARTS, the way every other screen's foot is set: what is
+         behind START on the left, the keys in the middle as KEYS - the same
+         caps the controls card uses - and where the game lives on the right.
+         It was one line of 500-weight type at sixty per cent, which over the
+         lit road was the least legible thing in the game. */
+      {
+        const fy = -330;
+        this.label('START  //  STORY  /  MULTIPLAYER  /  FREE ROAM', -586, fy, 12,
+          INK.body, 'left', 600, 0.92);
+        this.label('SYNX-RACING.VERCEL.APP', 586, fy, 12, INK.mute, 'right', 600, 0.92);
+        const KS = 20, GAP = 9, SP = 28;
+        const kw = (t) => this.textWidth(t, KS * 0.62, 700) + KS * 0.85;
+        const lw = (t) => this.textWidth(t, 12, 700);
+        const total = kw('ARROWS') + GAP + lw('SELECT') + SP + kw('ENTER') + GAP + lw('CONFIRM');
+        let x = -total / 2;
+        x += this.keycap('ARROWS', x, fy, KS) + GAP;
+        this.label('SELECT', x, fy, 12, INK.body, 'left', 700, 0.92);
+        x += lw('SELECT') + SP;
+        x += this.keycap('ENTER', x, fy, KS) + GAP;
+        this.label('CONFIRM', x, fy, 12, INK.body, 'left', 700, 0.92);
+      }
 
       const frameW = Math.min(1230, this.vw - 30);
       const frameH = Math.min(690, this.vh - 30);
@@ -2496,47 +2753,80 @@
         quiet = 1 - Math.max(0, Math.min(1, a)) * 0.76;
       }
 
-      /* THE SPEEDOMETER, which is drawn rather than blitted. Everything about
-         it - the scale, the needle, the shift lights, why the two shipped
-         'speed' sprites could not be repaired - is in Hud.speedo. */
-      this.speedo(g);
+      /* ------------------------------------------ FROM THE DRIVING SEAT --
+       *
+       * THE CAR HAS INSTRUMENTS OF ITS OWN NOW. From the seat the dash
+       * cluster reads the speed, the revs, the gear and the reserve (see
+       * CabCluster in js/scene.js), and the boost control on the pod lights
+       * when it is pressed - so the overlay's dial, drivetrain scope, boost
+       * bar, radio panel and flags were a second set of the same instruments
+       * printed over the first, across the lower third of the one view where
+       * that third is the car.
+       *
+       * So in the seat they step back and what is left is what the car
+       * cannot tell you: the clock, the run, the rival, the score. Those stay
+       * high on the glass where they were, the clock joins them under the
+       * route rail, a new song is named once as it starts, and a slide is
+       * read out in one line above the wheel rim. It is a CROSSFADE rather
+       * than a switch, on its own clock, because the camera moving into the
+       * seat is itself a move (see Game.frameCam) and an interface that
+       * snapped halfway through it would be the only thing in the frame
+       * that cut. */
+      const inSeat = !!(g.inCar && g.inCar());
+      const dtH = Math.min(0.05, this._dt || 0.016);
+      this.povK = this.povK === undefined ? (inSeat ? 1 : 0)
+        : this.povK + ((inSeat ? 1 : 0) - this.povK) * (1 - Math.exp(-7 * dtH));
+      if (Math.abs(this.povK - (inSeat ? 1 : 0)) < 0.002) this.povK = inSeat ? 1 : 0;
+      const pk = this.povK, ck = 1 - pk;
 
-      // timer
-      this.catScope(g);
-      this.placeDigits('txt_timer_bg', '88:88:88', 0, 0.12, undefined, 10);
-      this.placeDigits('txt_timer', fmtTime(g.raceTime), 0, undefined, undefined, 10);
-      const tt = this.wgt('txt_time');
-      if (tt) {
-        // the label sat hard against the first digit; back it off its own width
-        const p = this.centre(tt);
-        this.label('TIME', p.x - 14, p.y, tt.h * 0.9, CYAN, 'center', 600);
+      if (ck > 0.001) {
+        /* THE SPEEDOMETER, which is drawn rather than blitted. Everything
+           about it - the scale, the needle, the shift lights, why the two
+           shipped 'speed' sprites could not be repaired - is in Hud.speedo. */
+        this.speedo(g);
+
+        // timer
+        this.catScope(g);
+        this.placeDigits('txt_timer_bg', '88:88:88', 0, 0.12, undefined, 10);
+        this.placeDigits('txt_timer', fmtTime(g.raceTime), 0, undefined, undefined, 10);
+        const tt = this.wgt('txt_time');
+        if (tt) {
+          // the label sat hard against the first digit; back it off its own width
+          const p = this.centre(tt);
+          this.label('TIME', p.x - 14, p.y, tt.h * 0.9, CYAN, 'center', 600);
+        }
+
+        /* ...and the radio, immediately above it. Part of the same instrument
+           stack and drawn straight after it, so anything that dims one dims
+           the other - see the veil below. */
+        this.radio(g);
+
+        /* THE BOOST METER. One meter with four readings, drawn rather than
+           blitted - see Hud.boostMeter for what the three shipped sprites were
+           doing to the middle of the frame, and why the blue reserve needed a
+           renderer of its own before this. */
+        this.boostMeter(g);
+
+        // Race flags and the record readout. This is a time trial, so the
+        // record is what shows between them.
+        this.placeSprite('Flag', 0, 0.85);
+        this.placeSprite('Flag', 1, 0.85);
+        const recW = this.wgt('txt_record');
+        if (recW && recW.active) {
+          /* A route nobody has finished has no record, and printing 00:00:00
+             for it is worse than printing nothing: it is a real time, it is
+             between the two chequered flags where a record goes, and it says
+             the player has already driven this in no seconds. Dashes say "not
+             set", which is what every clock in the game says for a time it
+             does not have. */
+          this.placeDigits('txt_record',
+            g.record != null ? fmtTime(g.record) : '--:--:--');
+        }
+        /* Nothing else is on the canvas yet, so this fades exactly the group
+           above and nothing after it. */
+        if (pk > 0.001) this.veil(ck);
       }
-
-      /* ...and the radio, immediately above it. Part of the same instrument
-         stack and drawn straight after it, so anything that dims one dims the
-         other - see the veil below. */
-      this.radio(g);
-
-      /* THE BOOST METER. One meter with four readings, drawn rather than
-         blitted - see Hud.boostMeter for what the three shipped sprites were
-         doing to the middle of the frame, and why the blue reserve needed a
-         renderer of its own before this. */
-      this.boostMeter(g);
-
-      // Race flags and the record readout. This is a time trial, so the
-      // record is what shows between them.
-      this.placeSprite('Flag', 0, 0.85);
-      this.placeSprite('Flag', 1, 0.85);
-      const recW = this.wgt('txt_record');
-      if (recW && recW.active) {
-        /* A route nobody has finished has no record, and printing 00:00:00 for
-           it is worse than printing nothing: it is a real time, it is between
-           the two chequered flags where a record goes, and it says the player
-           has already driven this in no seconds. Dashes say "not set", which
-           is what every clock in the game says for a time it does not have. */
-        this.placeDigits('txt_record',
-          g.record != null ? fmtTime(g.record) : '--:--:--');
-      }
+      if (pk > 0.001) this.drawSeatHud(g, pk);
 
       /* The gear and the rev counter live in the DRIVETRAIN panel, which is
          the instrument that is already reading the gearbox. They were here as
@@ -2564,8 +2854,12 @@
         this.label(raceTotal > 2 ? 'POSITION // 4 CARS' : 'RIVAL', RX, 282, 13, INK.mute, 'left', 700);
         const suffix = racePlace === 1 ? 'st' : (racePlace === 2 ? 'nd' : (racePlace === 3 ? 'rd' : 'th'));
         this.neon(String(racePlace) + suffix, RX, 252, 30, col, 'left', 900);
-        const txt = gap > 999 ? '999+' : gap.toFixed(0);
-        this.label((lead ? '+' : '-') + txt + ' M', RX + 75, 252, 17,
+        /* Past a kilometre it is read in kilometres. This used to cap at
+           '999+' and then put the sign in front, which printed "+999+ M" -
+           two plus signs on the one number on this side that is a delta. */
+        const txt = gap >= 1000 ? Math.min(99.9, gap / 1000).toFixed(1) + ' KM'
+          : gap.toFixed(0) + ' M';
+        this.label((lead ? '+' : '-') + txt, RX + 75, 252, 17,
           INK.body, 'left', 700, quiet);
         // a rail showing the two cars' relative positions
         const c = this.ctx;
@@ -2689,17 +2983,24 @@
            readout runs -299..-245, the clock sits under that at -328, and the
            drift meter is a hundred units inboard. Anything lower lands on the
            clock; anything further right lands on the drift bank. */
-        const bx = -444, by = -216;
+        /* From the seat the left flank is the door and the dash, so there it
+           hangs under the rival readout instead - the same bar, crossfaded
+           between the two places with the rest of the seat's layer. */
+        // (the seat's spot clears the toast stack's top slot, 167..197)
+        const spots = [[-444, -216, ck], [RIVAL_X + 100, 201, pk]];
         const col = d > 0.66 ? PINK : (d > 0.33 ? AMBER : CYAN);
-        this.label('BODY', bx - 100, by + 16, 11, INK.mute, 'left', 700, 0.85);
-        this.meterBar(bx, by, 200, 1 - d, col, 0.9);
         /* What it is costing, in the only currency this game has. Below about
            a tenth it rounds to nothing and saying "-0%" is worse than saying
            nothing at all. */
         const loss = Math.round((1 - 1 / Math.sqrt(1 + 0.42 * d)) * 100);
-        if (loss >= 1) {
-          this.label('-' + loss + '% TOP END', bx + 100, by + 16, 10, col, 'right', 800,
-            d > 0.66 ? 0.55 + 0.45 * Math.sin(g.time * 5) : 0.8);
+        for (const [bx, by, k] of spots) {
+          if (k <= 0.001) continue;
+          this.label('BODY', bx - 100, by + 16, 11, INK.mute, 'left', 700, 0.85 * k);
+          this.meterBar(bx, by, 200, 1 - d, col, 0.9 * k);
+          if (loss >= 1) {
+            this.label('-' + loss + '% TOP END', bx + 100, by + 16, 10, col, 'right', 800,
+              k * (d > 0.66 ? 0.55 + 0.45 * Math.sin(g.time * 5) : 0.8));
+          }
         }
       }
 
@@ -2707,11 +3008,23 @@
          It is deliberately the smallest thing on the screen: what the player
          needs to know is that it happened, not to be told about it. Two
          seconds, on the rail the progress bar already owns, in the same green
-         the tour's own confirmations use. */
+         the tour's own confirmations use.
+
+         ABOVE THE RAIL, NOT UNDER IT. It used to sit at y 300, which is the
+         line UNDER the rail - and that line already has two tenants: the
+         distance readout on the right, and, in Free Roam, the route banner on
+         the left at x -450. SAVED is drawn at x -452 and left aligned, so the
+         two were printed through each other on the one screen where the mark
+         fires most: a tour autosaves as it goes, and every one of them landed
+         on top of FREE ROAM // THE SPINE.
+
+         The band above the rail is empty in every mode, which is the whole
+         reason to use it - a mark that has to dodge one tenant today would
+         only have to dodge the next one later. */
       if (g.autosave && g.autosave.notify > 0 &&
           (g.state === 'racing' || g.state === 'countdown')) {
         const a = Math.min(1, g.autosave.notify / 0.5);
-        this.label('SAVED', -452, 300, T.micro, '#5affc0', 'left', 800, a * 0.85);
+        this.label('SAVED', -452, 334, T.micro, '#5affc0', 'left', 800, a * 0.85);
       }
 
       // Run progress: a thin rail across the top with a marker for the car.
@@ -2807,8 +3120,56 @@
          the word DRIFT was printed across the roof of the thing the player is
          watching - at the one moment in the game when they most need to see
          it. */
-      if (car.driftAmount > 0.04) {
-        const a = Math.min(1, car.driftAmount * 1.6);
+      /* FROM THE SEAT IT IS ONE LINE, just above the boost meter over the
+         rim, where the eye is while the car is sideways - the stacked version
+         below sits on the dash and the left pillar from in there. High enough
+         that its shade band clears the meter's reading (SEAT_BST). */
+      if (car.driftAmount > 0.04 && pk > 0.001) {
+        const a = Math.min(1, car.driftAmount * 1.6) * pk;
+        const deg = Math.abs(car.bodySlip || 0) * 57.2958;
+        const y = -32;
+        const bank = g.driftBank > 40 ? '+' + Math.round(g.driftBank * g.combo) : '';
+        const ang = deg.toFixed(0) + '°', GAP = 12;
+        // measured, so the line is centred whatever the numbers are
+        const w0 = this.textWidth('DRIFT', 18, 900), w1 = this.textWidth(ang, 15, 800);
+        const w2 = bank ? this.digitsWidth(bank, 18) : 0;
+        const span = w0 + GAP + w1 + (bank ? GAP + w2 : 0);
+        let x = -span / 2;
+        /* A BAND OF SHADE UNDER IT. From the seat this line is over the road
+           just ahead of the bonnet, which is the brightest thing in a lit
+           frame, and pink on pale tarmac is a word nobody can read. Feathered
+           at both ends so it is a shadow and not a box. */
+        {
+          const c = this.ctx, bw = span + 90, x0 = this.vx(-bw / 2), x1 = this.vx(bw / 2);
+          const sh = c.createLinearGradient(x0, 0, x1, 0);
+          sh.addColorStop(0, 'rgba(6,2,18,0)');
+          sh.addColorStop(0.18, 'rgba(6,2,18,0.55)');
+          sh.addColorStop(0.82, 'rgba(6,2,18,0.55)');
+          sh.addColorStop(1, 'rgba(6,2,18,0)');
+          c.save();
+          c.globalAlpha = a;
+          c.fillStyle = sh;
+          c.fillRect(x0, this.vy(y + 16), x1 - x0, this.vs(38));
+          hRestore(c);
+        }
+        this.neon('DRIFT', x, y, 18, PINK, 'left', 900, a);
+        x += w0 + GAP;
+        this.label(ang, x, y - 1, 15, 'rgba(255,180,215,0.9)', 'left', 800, a);
+        x += w1 + GAP;
+        if (bank) this.digits(bank, x, y + 1, 18, 'left', a, CYAN);
+        // the slide's size, as a rule under the line that grows with it
+        const c = this.ctx;
+        c.save();
+        c.globalAlpha = a * 0.85;
+        c.fillStyle = PINK;
+        c.shadowColor = PINK;
+        c.shadowBlur = gb(this.vs(8));
+        const rw = 36 + 150 * Math.min(1, car.driftAmount);
+        c.fillRect(this.vx(-rw / 2), this.vy(y - 14), this.vs(rw), this.vs(2));
+        hRestore(c);
+      }
+      if (car.driftAmount > 0.04 && ck > 0.001) {
+        const a = Math.min(1, car.driftAmount * 1.6) * ck;
         const x = -296, y = -118;
         this.neon('DRIFT', x, y, 24, PINK, 'center', 900, a);
         // the angle it is actually carrying, which is the thing being scored
@@ -2879,6 +3240,57 @@
       }
     }
 
+    /* ------------------------------------------------ THE SEAT'S LAYER --
+     *
+     * What the overlay still has to say once the car's own dash is saying
+     * the rest - see the note at the top of drawHud. `k` is how far into the
+     * seat the view has come, 0..1, and every alpha here is multiplied by it.
+     *
+     * All of it sits in the band above the header rail and under the route
+     * rail, which from the seat is the roof lining - dark, still, and the one
+     * part of the frame that is never the road.
+     */
+    drawSeatHud(g, k) {
+      const dt = Math.min(0.05, this._dt || 0.016);
+
+      // the reserve, over the rim - see SEAT_BST
+      this.boostMeter(g, k, SEAT_BST);
+
+      /* THE CLOCK, centred under the route rail, where the eye already goes
+         for how the run is going. The same seven-segment face and the same
+         ghost cells as the one it replaces, smaller. */
+      const y = 284, size = 22, track = 1.6;
+      const cells = '88:88:88';
+      const w = this.digitsWidth(cells, size, track);
+      this.digits(cells, 0, y, size, 'center', k * 0.10, undefined, track);
+      this.digits(fmtTime(g.raceTime), 0, y, size, 'center', k, AMBER, track);
+      this.label('TIME', -w / 2 - 10, y - 2, T.micro, CYAN, 'right', 800, k * 0.85);
+      /* The record rides on the other side, where the flags used to hold it -
+         and says nothing at all on a route nobody has finished. */
+      if (g.record != null) {
+        this.label('BEST  ' + fmtTime(g.record), w / 2 + 10, y - 2, T.micro, INK.mute,
+          'left', 800, k * 0.8);
+      }
+
+      /* A NEW SONG IS NAMED ONCE, as it starts, and then leaves the glass to
+         the road. The panel it replaces was a permanent fixture at the
+         bottom right; from the seat that is the dash, and a song's name is
+         the least urgent thing in the frame. Not over the region card. */
+      const a = g.audio;
+      const np = a && a.nowPlaying ? a.nowPlaying() : null;
+      if (np && np.key !== this.seatSongKey) { this.seatSongKey = np.key; this.seatSongT = 0; }
+      this.seatSongT = (this.seatSongT === undefined ? 1e3 : this.seatSongT) + dt;
+      const SONG = 4.4, st = this.seatSongT;
+      if (np && st < SONG && !g.freeRoamBanner) {
+        const s = Math.min(1, st / 0.4) * Math.min(1, (SONG - st) / 0.7);
+        const col = np.onAir ? CYAN : AMBER;
+        const head = np.onAir ? 'NOW PLAYING  //  ' + np.station + '  ' + np.freq.toFixed(1)
+          : 'NOW PLAYING';
+        this.label(head, 0, 256, T.micro, col, 'center', 800, k * s * 0.85);
+        this.neon(np.title, 0, 238, 15, WHITE, 'center', 900, k * s);
+      }
+    }
+
     // ------------------------------------------------------- options -----
 
     /* ====================================================================
@@ -2939,6 +3351,78 @@
 
       c.save();
       c.globalAlpha = alpha;
+
+      /* TRIGGERS AND BUMPERS, BEHIND THE SHOULDERS - and drawn FIRST, so the
+       * body is painted over their lower edge.
+       *
+       * A controller seen from the front shows its bumpers along the top of
+       * the shell and its triggers above and behind those, both disappearing
+       * behind the shoulder. The diagram used to draw them afterwards, on top,
+       * with each bumper's lower edge half a unit inside the silhouette - so
+       * the shell's outline ran straight through LB and RB, and each trigger
+       * sat on its bumper's frame. From the page that read as four pills
+       * stacked on a line rather than as a pad.
+       *
+       * The shoulder passes through about y -40 at x 82. Each bumper is 11
+       * tall and centred on -44, so its bottom two units are behind the shell
+       * and the rest stands clear above it; each trigger sits on top of its
+       * bumper, from -63 to -49. The whole pair still ends 17 units under the
+       * explanation band above the diagram (see the layout note on the page),
+       * which is what an earlier version collided with. */
+      const trig = (x, y, v, lbl) => {
+        const w = 28, h = 14;
+        // its own dark face first, so the fill has something to light
+        c.beginPath();
+        const x0 = X(x - w / 2), y0 = Y(y - h / 2);
+        if (c.roundRect) c.roundRect(x0, y0, S(w), S(h), [S(6), S(6), S(2), S(2)]);
+        else c.rect(x0, y0, S(w), S(h));
+        c.fillStyle = 'rgba(10,4,26,0.95)';
+        c.fill();
+        c.strokeStyle = bodyCol + '0.5)';
+        c.lineWidth = Math.max(1, S(1.1));
+        c.stroke();
+        if (v > 0.02) {
+          c.save();
+          c.clip();
+          c.fillStyle = 'rgba(255,180,0,0.80)';
+          c.shadowColor = on;
+          c.shadowBlur = gb(S(10));
+          c.fillRect(x0, y0, S(w * Math.min(1, v)), S(h));
+          hRestore(c);
+        }
+        c.fillStyle = v > 0.5 ? '#1a0d00' : bodyCol + '0.9)';
+        setFont(c, '900 ' + S(7.5) + 'px "Orbitron", system-ui, sans-serif');
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillText(lbl, X(x), Y(y - 1));
+      };
+      const bumper = (x, y, lit, lbl) => {
+        const w = 40, h = 11;
+        const x0 = X(x - w / 2), y0 = Y(y - h / 2);
+        c.beginPath();
+        if (c.roundRect) c.roundRect(x0, y0, S(w), S(h), S(5));
+        else c.rect(x0, y0, S(w), S(h));
+        c.fillStyle = lit ? 'rgba(255,180,0,0.85)' : 'rgba(18,8,42,0.96)';
+        c.fill();
+        c.strokeStyle = lit ? on : bodyCol + '0.55)';
+        c.lineWidth = Math.max(1, S(1.1));
+        if (lit) { c.shadowColor = on; c.shadowBlur = gb(S(10)); }
+        c.stroke();
+        c.shadowBlur = 0;
+        // the name in the part that stands clear of the shell
+        c.fillStyle = lit ? '#1a0d00' : bodyCol + '0.9)';
+        setFont(c, '900 ' + S(6.5) + 'px "Orbitron", system-ui, sans-serif');
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillText(lbl, X(x), Y(y - 1.5));
+      };
+      {
+        const heldB = (i) => !!(pad && pad.held(i));
+        trig(-82, -56, pad ? pad.value(B.LT) : 0, 'LT');
+        trig(82, -56, pad ? pad.value(B.RT) : 0, 'RT');
+        bumper(-82, -44, heldB(B.LB), 'LB');
+        bumper(82, -44, heldB(B.RB), 'RB');
+      }
 
       // ------------------------------------------------------------ body --
       /* Two grips and a waist, as one closed path. Drawn as a silhouette
@@ -3043,64 +3527,15 @@
         c.shadowBlur = 0;
       };
 
-      /* A trigger, which is the one control that is not a switch: it FILLS.
-         Showing it as pressed or not would throw away the only analogue
-         information on the pad, and trailing the brakes is the whole reason
-         that information exists. */
-      const trigger = (x, y, v, lbl) => {
-        const w = 26, h = 13;
-        box(x, y, w, h, false, 4);
-        if (v > 0.02) {
-          const fw = w * Math.min(1, v);
-          c.save();
-          c.beginPath();
-          const x0 = X(x - w / 2), y0 = Y(y - h / 2);
-          if (c.roundRect) c.roundRect(x0, y0, S(fw), S(h), S(4));
-          else c.rect(x0, y0, S(fw), S(h));
-          c.fillStyle = 'rgba(255,180,0,0.80)';
-          c.shadowColor = on;
-          c.shadowBlur = gb(S(10));
-          c.fill();
-          hRestore(c);
-        }
-        c.fillStyle = v > 0.5 ? '#1a0d00' : bodyCol + '0.9)';
-        setFont(c, '900 ' + S(8) + 'px "Orbitron", system-ui, sans-serif');
-        c.textAlign = 'center';
-        c.textBaseline = 'middle';
-        c.fillText(lbl, X(x), Y(y));
-      };
+      /* A trigger is the one control that is not a switch: it FILLS, because
+         showing it as pressed or not would throw away the only analogue
+         information on the pad. It is drawn behind the shell - see `trig` at
+         the top of this method. */
 
       const held = (i) => !!(pad && pad.held(i));
 
-      /* TRIGGERS AND BUMPERS, ON THE SHOULDER RATHER THAN OVER IT.
-       *
-       * The shoulder line is the bezier from (118,-26) through (96,-44)
-       * and (40,-48) to (0,-48), which at x 84 - where these are drawn -
-       * passes through y -40. The bumpers were centred at -52 with a
-       * height of 9, so their lower edge was at -47.5: seven clear units
-       * above the body, with the background visible between. A bumper that
-       * does not touch the pad is not a bumper, it is a floating pill.
-       *
-       * At -44 the lower edge lands at -39.5, half a unit INSIDE the
-       * silhouette, so the two meet. The trigger then sits above it with a
-       * three-unit gap, which is the order they are in on the hardware.
-       *
-       * It also buys the clearance this diagram did not have. The trigger
-       * pair used to reach local -74.5, which at this scale and centre is
-       * HUD -68, and the explanation band above it ends at -70. They were
-       * two units into each other; the layout checker missed it because
-       * the band it models for this diagram was written by hand and
-       * claimed -79. Both are corrected. */
-      trigger(-84, -58, pad ? pad.value(B.LT) : 0, 'LT');
-      trigger(84, -58, pad ? pad.value(B.RT) : 0, 'RT');
-      box(-84, -44, 32, 9, held(B.LB), 4);
-      box(84, -44, 32, 9, held(B.RB), 4);
-      c.fillStyle = bodyCol + '0.9)';
-      setFont(c, '900 ' + S(7) + 'px "Orbitron", system-ui, sans-serif');
-      c.textAlign = 'center';
-      c.textBaseline = 'middle';
-      c.fillText('LB', X(-84), Y(-44));
-      c.fillText('RB', X(84), Y(-44));
+      /* The triggers and bumpers are drawn before the body now - see the
+         note at the top of this method. */
 
       // sticks: left high, right low - the layout the standard mapping assumes
       stick(-66, -12, 0, 1, held(B.LS));
@@ -3300,7 +3735,10 @@
       const padTab = tab === 1;
       const LX = padTab ? -40 : -466;    // the label column
       const VX = padTab ? 330 : 250;     // the value column
-      const ROW_W = padTab ? 620 : 970;  // the selection band
+      /* The selection band. On the GAMEPAD page it runs from the label column
+         to twelve units inside the panel's right edge (560) - at 620 it ran
+         four units PAST it, a lit bar sticking out of the side of the card. */
+      const ROW_W = padTab ? 604 : 970;
 
       if (padTab) {
         /* Drawn BEFORE the rows so the selection band, which is translucent,
@@ -3477,8 +3915,11 @@
          does not move as the selection does. */
       {
         const r = rows[g.controlIndex];
+        /* The strip's own description, which still described the two-page
+           options screen this replaced - GRAPHICS + AUDIO and CONTROLS - on
+           a strip that reads KEYBOARD, GAMEPAD and MOUSE. */
         const hint = g.controlIndex < 0
-          ? 'Two pages. GRAPHICS + AUDIO is how the game looks and sounds; CONTROLS is every key the car answers to, and the mouse.'
+          ? 'Three pages. KEYBOARD rebinds every key the car answers to; GAMEPAD tunes the controller and tests it live; MOUSE sets up free look.'
           : (r ? r.hint : 'Keep the changes and return to the title.');
         const hy = L.hintY, hh = L.hintH || 46;
         c.save();
@@ -3757,15 +4198,18 @@
       this.rule(0, 146, 430, CYAN, 0.7 * k);
 
       // where the run is, so the pause screen is worth reading
+      /* Four units higher than it was, all of it: the saved line under this
+         block sat on the top edge of the first row's selection brackets, so
+         the one reassurance on the card was printed on the frame of RESUME. */
       if (g.level) {
-        this.label(g.level.name, 0, 112, T.body, INK.body, 'center', 700, k);
+        this.label(g.level.name, 0, 116, T.body, INK.body, 'center', 700, k);
         const done = Math.round((g.progress || 0) * 100);
-        this.label(done + '%  OF THE ROUTE', -104, 84, T.cap, INK.mute, 'center', 600, k);
-        this.label(fmtTime(g.raceTime), 104, 84, T.cap, INK.mute, 'center', 600, k);
+        this.label(done + '%  OF THE ROUTE', -104, 89, T.cap, INK.mute, 'center', 600, k);
+        this.label(fmtTime(g.raceTime), 104, 89, T.cap, INK.mute, 'center', 600, k);
         /* A progress rail rather than a percentage on its own. Two hundred and
            forty units of bar say the same thing the number does and say it at
            a glance, which is what a pause screen is read at. */
-        this.meterBar(0, 60, 320, Math.max(0, Math.min(1, g.progress || 0)), CYAN, k);
+        this.meterBar(0, 66, 320, Math.max(0, Math.min(1, g.progress || 0)), CYAN, k);
       }
       /* WHEN THE RUN WAS LAST WRITTEN. The pause screen is where a player
          decides whether it is safe to stop, and that decision needs this. */
@@ -3774,7 +4218,7 @@
         const when = secs < 12 ? 'JUST NOW'
           : secs < 90 ? Math.round(secs) + ' SECONDS AGO'
           : Math.round(secs / 60) + ' MINUTES AGO';
-        this.label('PROGRESS SAVED  ' + when, 0, 26, T.micro, '#5affc0', 'center', 800, k * .8);
+        this.label('PROGRESS SAVED  ' + when, 0, 42, T.micro, '#5affc0', 'center', 800, k * .8);
       }
       /* THE CARD TAKES THREE ROWS OR FOUR.
          A chapter offers RESTART FROM CHECKPOINT and a plain race has no
@@ -4022,9 +4466,14 @@
        * up behind a screen the player has already left. */
       const front = state === 'menu' || state === 'controls'
         || state === 'loading' || state === 'quit' || state === 'confirm';
-      const BASE = front ? 300 : 176;
-      const GAP = front ? 46 : 46;
-      const H = front ? 34 : 42;
+      /* ONE STEP DOWN THE TYPE SCALE, on the road. A notice was set at the
+         VALUE size in a 42-unit panel, which made the word PROGRESS SAVED
+         the loudest thing on screen - louder than the speed, the gap and
+         the clock, none of which it is more important than. It is a notice:
+         it is seen because it arrives and moves, not because it is big. */
+      const BASE = front ? 300 : 182;
+      const GAP = front ? 46 : 36;
+      const H = front ? 34 : 30;
       for (let i = this.toasts.length - 1; i >= 0; i--) {
         const t = this.toasts[i];
         t.t += dt;
@@ -4042,13 +4491,13 @@
         const slot = BASE - i * GAP;
         t.y = t.y === undefined ? slot : t.y + (slot - t.y) * Math.min(1, dt * 14);
         const y = t.y + rise;
-        let size = T.value;
-        let w = Math.max(180, this.measure(t.text, size + 2) + 64);
+        let size = front ? T.value : 19;
+        let w = Math.max(front ? 180 : 150, this.measure(t.text, size + 2) + (front ? 64 : 56));
         if (w > MAX_W) {
           size = Math.max(14, size * (MAX_W - 64) / Math.max(1, w - 64));
           w = MAX_W;
         }
-        this.panel(0, y, w, H, t.color, 0.46 * a);
+        this.panel(0, y, w, H, t.color, 0.50 * a);
         this.neon(t.text, 0, y, size, t.color, 'center', 800, a);
       }
     }

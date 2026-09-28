@@ -103,12 +103,32 @@ def run_smoke(a):
         # and failed requests, and those matter just as much on the launcher.
         # The DRIVER does not: it closes over an NR.Game, so it goes only where
         # its anchor exists, and a page without one gets the small reporter.
-        anchor = '<script src="js/pak.js'
+        # WHERE THE GAME PAGE IS RECOGNISED, and why the anchor is not a tag.
+        #
+        # This used to look for the literal '<script src="js/pak.js'. The
+        # game page's scripts are deferred now - '<script defer src=...' -
+        # so that literal stopped matching and index.html silently took the
+        # NON-game branch: no driver was injected at all, every run said
+        # "the collector is there but the DRIVER script never ran", and not
+        # one frame was driven. An anchor that carries the attributes of the
+        # tag it anchors to breaks the next time one of them changes.
+        #
+        # The src is what identifies the page, so the src is the anchor and
+        # the insertion point is the '<script' in front of it.
+        mark = 'src="js/pak.js'
         preamble = ('<script>window.__SMOKE_SERVER=%s;</script><script>%s</script>'
                     % (json.dumps(a.server), collector))
-        if anchor in html:
-            html = html.replace(anchor, preamble + '\n' + anchor)
-            html = html.replace('</body>', '<script>%s</script>\n</body>' % driver)
+        at = html.find(mark)
+        tag = html.rfind('<script', 0, at) if at >= 0 else -1
+        if tag >= 0:
+            html = html[:tag] + preamble + chr(10) + html[tag:]
+            # ...and the driver last. It is a plain inline script, so with
+            # deferred game scripts it now runs BEFORE any of them - which
+            # is fine, because every one of its branches waits on
+            # window.__nr and the collector it reports into is injected
+            # above.
+            html = html.replace('</body>',
+                                '<script>%s</script>' % driver + chr(10) + '</body>')
         else:
             html = html.replace('</head>', preamble + '<script>%s</script>%s\n</head>'
                                 % (reporter,

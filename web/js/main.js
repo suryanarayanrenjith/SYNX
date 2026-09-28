@@ -412,36 +412,42 @@
        page hides the system pointer. See installPointerFx. */
     installPointerFx();
 
-    /* ------------------------------------------- THE ORDER OF THE OPENING
+    /* =================================== THE ORDER OF THE OPENING =======
      *
-     * IGNITION, then the NOTICE, then the INTRO, then the title. The middle
-     * one is the only one that was ever here, and the reason the other two
-     * exist either side of it is the same reason: this game takes a while to
-     * load and something has to be honest about that.
+     *   PRELOADER  -> COLD OPEN -> NOTICE -> INTRO -> TITLE
      *
-     * WHAT CHANGED, AND WHY IT IS NOT JUST A NEW SCREEN.
+     * and the first two used to be one screen, which is the whole of what
+     * changed here.
      *
-     * The load used to run underneath the photosensitivity notice. That is a
-     * perfectly reasonable thing to do with a wait - except that the notice
-     * types its own text, one character at a time, on the main thread; and
-     * the load is forty-five megabytes of pack being inflated, a WebAssembly
-     * core being compiled and a hundred and seventy-five kilometres of course
-     * being built, all of it on the same main thread. The typewriter stuttered
-     * because it was competing with the game for the only thread either of
-     * them has. It was reported as the warning screen lagging, and it was.
+     * WHAT IT WAS. The tachometer in js/ignition.js was the loading screen.
+     * It covered the wait, it announced the game, and it did both at once by
+     * holding an engine on its limiter until the load finished. That is a
+     * good idea and it had one fatal property: it is a canvas, driven by
+     * requestAnimationFrame, running on exactly the thread that spends the
+     * first few seconds of every launch inflating a forty-two megabyte
+     * archive, compiling a WebAssembly core, linking nineteen shader programs
+     * and building a hundred and seventy-five kilometres of course. So the
+     * needle stuck - reliably, at the start, every launch, on the one screen
+     * whose entire job was to prove the machine had not died.
      *
-     * So the wait moves one screen earlier, onto something that does not mind
-     * it: a rev counter being held against its limiter, which looks exactly
-     * like what it is - a machine working - and whose sound is on the audio
-     * thread where a busy main thread cannot touch it. The notice is not shown
-     * until that has finished, by which point there is nothing left to load
-     * and it types on an idle machine.
+     * WHAT IT IS NOW. The wait is covered by #preload, which is markup styled
+     * inline and animated only on `transform` and `opacity` - properties the
+     * compositor advances off the main thread, so it keeps moving at sixty
+     * through a stall in which no JavaScript runs at all. It cannot stutter,
+     * because there is nothing in it for a blocked thread to stutter.
      *
-     * NOTHING HERE BLOCKS. The load below starts in the same tick as the cold
-     * open and neither waits for the other; ignition simply refuses to end
-     * until `ready` has been called, and the notice is what its callback does.
-     * Every failure path in js/ignition.js calls that callback, so a machine
-     * with no canvas, no audio or no patience still gets the warning.
+     * And the tachometer becomes what it should always have been: a COLD
+     * OPEN. It is not started until the load has finished AND the frame times
+     * have proved steady (see NR.Preload.whenSmooth - the three frames right
+     * after a cold load are routinely five times the length of the ones after
+     * them, and handing an opening sequence exactly those three frames is
+     * what "it sticks at the start" was). It then plays on an idle machine,
+     * at full rate, at its own pace, and ends when its own script ends rather
+     * than whenever the last texture happens to land.
+     *
+     * NOTHING HERE BLOCKS THE LOAD. The chain below starts in this same tick.
+     * The opening is hung off the end of it, and every failure path still
+     * reaches the notice: that is what `openOnce` is for.
      */
     let advisoryUp = false;
     const showAdvisory = () => {
@@ -449,17 +455,46 @@
       advisoryUp = true;
       advisory();
     };
+
+    if (NR.Preload) NR.Preload.begin();
+
+    /* THE OPENING IS RUN EXACTLY ONCE, from wherever gets there first.
+     *
+     * There are three ways in - the load succeeding, the load failing, and
+     * the harness skipping the lot - and all three have to end with the
+     * player in front of the safety notice. A guard here is cheaper than
+     * three call sites that each have to remember. */
+    let openingRan = false;
+    const runOpening = () => {
+      if (openingRan) return;
+      openingRan = true;
+      const toIgnition = () => {
+        /* THE COLD OPEN STARTS UNDERNEATH THE LOADER, and the loader then
+           dissolves off it. Started first, taken away second: the player sees
+           one continuous picture with a dial already sweeping behind it,
+           rather than a cut to a screen that has only just begun.
+           `begin` is synchronous and its own failure paths - no canvas, no 2D
+           context, reduced motion - call `showAdvisory` themselves, so this
+           is correct whether or not there is a cold open to show. */
+        if (NR.Ignition) NR.Ignition.begin(showAdvisory);
+        else showAdvisory();
+        if (NR.Preload) NR.Preload.finish();
+      };
+      if (NR.Preload) NR.Preload.whenSmooth(toIgnition);
+      else toIgnition();
+    };
+
     /* The harness, and js/bench.js, want one call that gets past everything
        in front of the game. It is defined here rather than inside `advisory`
-       so it exists before the advisory does - it is now the second screen,
-       and something has to be able to skip the first. */
+       so it exists before the advisory does - there are now two screens ahead
+       of it and something has to be able to skip both. */
     window.NR.dismissAdvisory = () => {
+      openingRan = true;
+      if (NR.Preload) NR.Preload.kill();
       if (NR.Ignition) NR.Ignition.skip();
       showAdvisory();
       if (NR.advisoryDismiss) NR.advisoryDismiss();
     };
-    if (NR.Ignition) NR.Ignition.begin(showAdvisory);
-    else showAdvisory();
 
     /* Two things have to exist before the game does.
 
@@ -525,12 +560,16 @@
         });
       })
       .then(function () {
-        /* THE ENGINE MAY STOP. Everything that was going to compete with the
-           notice for the main thread has finished competing: the pack is
-           decoded, the core is compiled, the course is built and the first
-           frame is on the canvas. Ignition holds its last note until this
-           line and then hands over - see the note on the opening above. */
-        if (NR.Ignition) NR.Ignition.ready();
+        /* THE LOAD IS OVER, AND THE OPENING MAY NOW HAPPEN.
+           The pack is decoded, the core is compiled, the course is built and
+           the first frame is on the canvas. Nothing is left to compete for
+           the thread - which is the condition the cold open was always
+           waiting for, and now the condition it STARTS on rather than the
+           one it is allowed to stop on. `runOpening` still waits for the
+           frames to prove steady before it hands over; see the note on the
+           order of the opening above. */
+        if (NR.Boot) NR.Boot.finish();
+        runOpening();
         /* THE WINDOW IS ALREADY OPEN, and this is the safety net rather than
            the mechanism.
 
@@ -591,11 +630,14 @@
         });
       })
       .catch(function (e) {
-        /* ...and a load that failed is still a load that finished. Without
-           this the cold open holds its limiter for its full twenty-six second
-           ceiling over a game that is never coming, and the error nobody can
-           see is behind it. */
-        if (NR.Ignition) NR.Ignition.ready();
+        /* A LOAD THAT FAILED IS STILL A LOAD THAT FINISHED, and the failure
+           card is behind two full-screen covers. Both come off - not into a
+           cold open, which would be four seconds of a revving engine in front
+           of a message saying the game cannot start, but straight to the
+           card. */
+        openingRan = true;
+        if (NR.Preload) NR.Preload.kill();
+        if (NR.Ignition) NR.Ignition.skip();
         fatal((e && e.message) ? e.message : String(e));
       });
   });

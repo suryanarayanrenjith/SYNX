@@ -4526,7 +4526,7 @@
       this.g.story.setVehicle(this.g.car,TEST_START,0,0);this.g.car.boost=1;this.g.story.setVehicle(this.g.rival,START,-6,0);this.g.storyHideRival=true;this.g.distance=TEST_START;this.g.raceOver=false;this.g.raceModeAvailable=true;this.g.blockQuickRestart=true;this.ui.phase.textContent='AURORA FORGE // CALIBRATION';this.ui.objectiveText.textContent='CLEAR THE HAULER';this.updateRule();this.showRound('ABILITY TEST // STRAIGHT 07','raceMode',raceModeBrief(this.g),3.4);this.g.story.showCompact('NOVA','calculating','Hauler ahead. Do not brake yet.',3.4);
     }
     activateRaceMode(){
-      if(this.raceModeActive||this.raceModeCooldown>0)return;this.raceModeActive=true;this.raceModeTimer=30;this.raceModeCooldown=70;this.reserveLoaded=false;this.truckCleared=true;this.truckClearT=this.g.time;this.activationTime=0;this.activationS=this.g.car.sTrack;this.activationLateral=this.g.car.lateral||0;this.activationSpeed=Math.max(28,this.g.car.vLong||this.g.car.speed||0);this.phase='modeCinematic';this.g.raceModeActive=true;this.g.raceModeBlueFuel=true;this.g.car.raceModeMultiplier=1.5;this.g.car.boosting=true;this.g.state='story';this.g.story.mode='level6Special';this.g.story.setLayer(this.g.story.ui.letterbox,true);global.document.body.classList.add('forge6-racemode','story-cinematic');this.ui.skill.classList.add('show');this.ui.skill.setAttribute('aria-hidden','false');this.skillFlash=0;if(this.g.fx&&this.g.fx.raceModeBurst)this.g.fx.raceModeBurst(this.g.car);this.g.audio.boostHit();this.g.flash=.09;this.g.shake=.48;this.g.story.showCompact('NOVA','smug','Now. Give it everything.',3.0);
+      if(this.raceModeActive||this.raceModeCooldown>0)return;this.raceModeActive=true;this.raceModeTimer=30;this.raceModeCooldown=70;this.reserveLoaded=false;this.truckCleared=true;this.truckClearT=this.g.time;this.activationTime=0;this.activationS=this.g.car.sTrack;this.activationLateral=this.g.car.lateral||0;this.activationSpeed=Math.max(28,this.g.car.vLong||this.g.car.speed||0);this.phase='modeCinematic';this.g.raceModeActive=true;this.g.raceModeBlueFuel=true;this.g.car.raceModeMultiplier=1.5;this.g.car.boosting=true;this.g.state='story';this.g.story.mode='level6Special';this.g.story.setLayer(this.g.story.ui.letterbox,true);global.document.body.classList.add('forge6-racemode','story-cinematic');this.ui.skill.classList.add('show');this.ui.skill.setAttribute('aria-hidden','false');this.skillFlash=0;if(this.g.fx&&this.g.fx.raceModeBurst)this.g.fx.raceModeBurst(this.g.car);this.g.audio.boostHit();this.g.fireRaceModeFeel();this.g.story.showCompact('NOVA','smug','Now. Give it everything.',3.0);
     }
     finishActivation(){
       this.phase='test';this.g.state='racing';this.g.story.mode='race';this.g.story.setLayer(this.g.story.ui.letterbox,false);global.document.body.classList.remove('story-cinematic');this.ui.skill.classList.remove('show');this.ui.skill.setAttribute('aria-hidden','true');this.skillFlash=0;this.g.flash=.12;this.g.shake=.42;this.g.audio.goBeep();
@@ -5876,6 +5876,15 @@
       this.facadeHorizon=TINTS.map(t=>body('Neon7Horizon'+t[0],
         [t[1][0]*1.35,t[1][1]*1.35,t[1][2]*1.5],t[2],.52));
       for(const m of this.facadeHorizon)m._horizon=true;
+      /* ...AND THEY ARE GLAZED NOW. A body glows its whole colour, which from
+         the deck was a skyline of flat neon slabs; these get the procedural
+         windows in js/scene.js (towerWindows) instead - lit and dark glass on
+         a floor grid, each floor slab a hairline of the tower's own tint, and
+         an exact average once a window is smaller than a pixel. Cell sizes
+         are a floor and a bay in world units; the back row's are larger so
+         some of the pattern still reads at a kilometre. */
+      for(const m of this.facadeFar)m.windows=[4.2,5.4,.32];
+      for(const m of this.facadeHorizon)m.windows=[5.0,6.2,.28];
       for(const m of this.facadeFar)m._city=true;
       for(const m of this.bodyNear)m._city=true;
       for(const m of this.facadeNear)m._city=true;
@@ -6438,8 +6447,14 @@
       const h=roof-FLOOR,cy=(FLOOR+roof)*.5;
       const t=tint%6;
       if(tier===0){
-        this.addWorld(list,s,lat,cy,w,h,d,this.pBodyNear[t]);
-        // the window shell, half a unit proud so it never z-fights the body
+        /* THE SHELL, AND NO BODY INSIDE IT. There used to be a glowing body
+           here with this shell half a unit proud of it - but the shell is
+           opaque and closed and a unit larger every way, so the body could
+           never be seen at all, except where the depth buffer ran out and the
+           two fought: at a kilometre from the driving seat, the whole street
+           wall strobing between its windows and a flat slab of neon. What it
+           actually contributed was that flicker and a third of the street
+           wall's vertices. See REVERSED DEPTH in js/game.js for the rest. */
         this.addWorld(list,s,lat,cy,w+1.1,h+.5,d+1.1,this.pFacadeNear[t]);
       }else if(tier>=2){
         this.addWorld(list,s,lat,cy,w,h,d,this.pFacadeHorizon[t]);

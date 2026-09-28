@@ -61,22 +61,40 @@
  * So it runs. Input is still TAKEN - swallowed at the capture phase so that
  * nothing behind it, the advisory's CONTINUE button included, can be pressed
  * through a screen the player cannot see past - it simply does not end it.
- * The only way out is the one that was always the real one: the game being
- * ready, or the ceiling being reached.
+ * It ends when its own script ends, which is about six seconds.
  *
- * THE BAR IS REAL. NR.Boot carries one number for the whole boot and every
- * file that does any of the work reports into it - see js/boot.js. The ring
- * around the dial is that number and nothing else: it does not creep on a
- * timer, it does not jump to a hundred before the world exists, and it stops
- * moving when the thread is genuinely blocked, which is honest.
+ * ===================== IT IS NOT THE LOADING SCREEN ANY MORE =============
  *
- * AND THE WINDOW OPENS ON IT. The desktop host creates its window hidden and
- * reveals it when the page says it has drawn, and that call used to be at the
- * END of the load - so on a direct launch the player got several seconds of no
- * window at all and then a game, and every frame of this screen was drawn
- * where nobody could see it. It is called from the first frame here instead.
- * That is the whole of the "it takes ages to start" report: it did not, it was
- * invisible while it did it.
+ * It was, and that was the problem.
+ *
+ * Everything above is drawn with canvas 2D from requestAnimationFrame - a
+ * ground gradient, a floor, an instrument, a ring, a wordmark, a vignette,
+ * and a dozen shadow-blurred passes among them - on the one thread that
+ * spends the opening seconds of every launch inflating a forty-two megabyte
+ * archive, compiling a WebAssembly core, linking nineteen shader programs and
+ * building a hundred and seventy-five kilometres of course. So the needle
+ * stuck. Not now and then: at the start, every launch, because that is where
+ * the heaviest passes are. The one screen whose job was to prove the machine
+ * had not died was the screen that looked like it had.
+ *
+ * Nothing that could be done to this file would have fixed it. The canvas was
+ * never what was slow.
+ *
+ * So the wait is covered by #preload instead - markup, styled inline, moving
+ * only on `transform` and `opacity`, which the compositor advances off the
+ * main thread and which therefore cannot stutter however busy that thread is.
+ * See js/preload.js.
+ *
+ * WHICH LEAVES THIS FREE TO BE WHAT IT WAS FOR. It is started only once the
+ * load has finished AND the frame times have proved steady, so it plays on an
+ * idle machine at full rate. Its length is its own: the script runs, the last
+ * pull is held for a beat, the outro lands the stamp and it is gone. Nothing
+ * about it waits for anything any more.
+ *
+ * THE RING ARMS WITH THE ENGINE. It used to be the boot's progress; there is
+ * no boot left to report by the time this is on screen, so it fills across
+ * the crank and the catch and is full as the first blip fires - systems
+ * coming up behind the needle.
  */
 (function (global) {
   'use strict';
@@ -133,19 +151,24 @@
   const OUTRO_MS = 780;
   let shown = false;      // has the host been told there is something to show
   let stamp = 0;          // how far the READY stamp has arrived, 0..1
-  /* How far the load has got, and whether it has finished. The needle is not
-     driven by these - a gauge that tracks a progress bar is a progress bar with
-     a needle on it - but the SEQUENCE is: the hold does not end until `loaded`. */
-  let loaded = false, began = 0;
-  /* A floor and a ceiling on the whole thing. The floor is so a machine that
-     loads instantly still gets the cold open rather than a flash; the ceiling
-     is so a machine that never finishes still gets a game. */
-  /* The floor is below the length of the script on purpose: what actually
-     decides when this ends is the script reaching its hold, which is at 5.32
-     seconds. The floor only matters on a path where the script is not running
-     - it is the guarantee that a machine which loads instantly still gets a
-     cold open rather than a flash. */
-  const MIN_MS = 4700, MAX_MS = 26000;
+  /* When the script first reached its hold. The outro starts HOLD_BEAT after
+     that, which is the only clock this screen runs on now. */
+  let holdAt = 0, began = 0;
+  /* HOW LONG THE LAST NOTE IS HELD, and the ceiling on the whole thing.
+   *
+   * These were a floor and a ceiling on a WAIT: the screen could not end
+   * before 4.7 seconds and could not go past 26, because it was the loading
+   * screen and it had to cover a load of unknown length. It is not the
+   * loading screen any more - js/preload.js is, and the game has finished
+   * loading before a single frame of this is drawn - so what is left is a
+   * performance with a known length.
+   *
+   * HOLD_BEAT is the pause on the limiter at the top of the last pull: long
+   * enough to read as a car being held against its stop, short enough that
+   * nobody is waiting for it. MAX_MS is now only a dead man's switch - if
+   * anything in the script ever failed to reach its hold, the screen still
+   * ends. */
+  const HOLD_BEAT = 620, MAX_MS = 12000;
 
   let rpm = 0, shownRpm = 0, shake = 0, flash = 0;
   let audio = null;
@@ -475,11 +498,21 @@
       }
     }
 
-    /* THE HOLD. The last movement, and the one that is not on a clock: the
-       engine goes to the limiter and STAYS there, bouncing, until the game
-       says it is ready. Everything above takes five and a bit seconds; a slow
-       machine spends the rest of its loading here, and what that looks like is
-       a car being held against its limiter, which is a thing that happens. */
+    /* THE PULL. The last movement, and it is on a clock now.
+     *
+     * It used to be the one part of this that was NOT: the engine went to the
+     * limiter and stayed there, bouncing, until the game said it had finished
+     * loading. That was the right shape for a loading screen and it is the
+     * wrong shape for a cold open - a machine that had already loaded sat on
+     * the limiter anyway waiting for a floor to pass, and a slow one sat on it
+     * for twenty seconds, which is not a performance, it is a wait with a
+     * noise over it.
+     *
+     * The load is finished before this screen is ever shown now (see
+     * js/preload.js), so the last movement can do what it was always trying
+     * to: one hard pull to the stop, a beat of it bouncing off the cut, and
+     * then the outro takes it. `holding` is what tells the frame loop the
+     * script has arrived; HOLD_BEAT is how long it is allowed to sit there. */
     const k = Math.min(1, (t - 4.80) / 0.52);
     const held = 2200 + (LIMITER - 2200) * ease(Math.max(0, k));
     const bounce = k >= 1 ? Math.abs(Math.sin(t * 78)) * 380 : 0;
@@ -563,28 +596,48 @@
        laid over the bottom of it. */
     const top = cy + ring + Math.max(14, r * 0.10);
     const step = Math.max(13, r * 0.115);
-    const markY = top + step * 1.15;
+    /* THE STACK IS MEASURED OFF THE NAME, not off a step the name ignores.
+       The wordmark is sized by the frame and every line under it was placed in
+       steps of the dial, so at 1920x1080 the caption's line ran two pixels
+       inside the bottom of the letters: SYSTEMS NOMINAL printed on the SYNX
+       it is supposed to sit under. Each line now starts where the thing above
+       it ENDS.
+       ...and in the preloader's order, which this screen dissolves out of:
+       the name, the rail, and under the rail one row with what is happening
+       on the left and how far along on the right. The two screens used to
+       set the same four things in two different arrangements. */
+    const size = markSize(w, r);
+    const markY = top + size * 0.5;
+    const railY = markY + size * 0.5 + step * 1.05;
+    const capY = railY + Math.max(12, step * 0.58);
+    const detailY = capY + Math.max(12, step * 0.58);
     /* ...and if the window is short enough that the stack would run off the
        bottom, the whole block slides up rather than falling off the screen. */
-    const lastY = markY + step * 3.3;
+    const lastY = detailY + step * 0.4;
     const lift = Math.max(0, lastY - h * 0.965);
     return {
       w, h, r,
       cx: w * 0.5,
       cy,
       ring,                    // the progress arc, outside the bezel
+      markSize: size,
       markY: markY - lift,     // the wordmark
-      capY: markY + step * 1.15 - lift,   // what is being worked on
-      railY: markY + step * 2.05 - lift,  // the bar
-      railW: Math.min(w * 0.44, 520),
-      detailY: markY + step * 3.0 - lift, // the count, when a phase has one
-      /* The outro stamp REPLACES the caption and the rail - by the time it
-         lands the bar is at a hundred per cent and has nothing left to say -
-         so it sits on the caption's line rather than looking for one of its
-         own. See the fade in `progress`. */
-      stampY: markY + step * 1.45 - lift,
+      railY: railY - lift,     // the bar
+      railW: Math.min(w * 0.74, 560),
+      capY: capY - lift,       // what is being worked on, and how far along
+      detailY: detailY - lift, // the count, when a phase has one
+      /* The outro stamp REPLACES the rail and the row under it - by the time
+         it lands the bar is at a hundred per cent and has nothing left to say
+         - so it sits across the two rather than looking for a line of its own.
+         See the fade in `progress`. */
+      stampY: (railY + capY) * 0.5 - lift,
     };
   }
+
+  /** How big the name is under the dial: a tenth-ish of the frame, and never
+      bigger than the dial can carry. One function, because the layout has to
+      know it to stack the lines under it. */
+  function markSize(w, r) { return Math.max(16, Math.min(w * 0.042, r * 0.30)); }
 
   /** A stroked path drawn three times, wide and faint to thin and bright.
       Canvas has no bloom; three passes and a shadow is what it has instead,
@@ -643,26 +696,32 @@
      a horizon with a grid running off it is, and it is four strokes. */
   function ground(c, L) {
     const w = L.w, h = L.h;
-    const g = c.createRadialGradient(w * 0.5, h * 0.44, 0, w * 0.5, h * 0.44, Math.max(w, h) * 0.72);
-    g.addColorStop(0, '#170e32');
-    g.addColorStop(0.5, '#0a0620');
-    g.addColorStop(1, '#02010a');
-    c.fillStyle = g;
+    /* THE PRELOADER'S ROOM, because this screen is what the preloader
+       dissolves INTO: the same base, the same violet wash high in the middle
+       and the same magenta coming up off the horizon (see #preload::before in
+       index.html, which is where these numbers come from). It used to have a
+       palette of its own - a lighter centre and a magenta and a cyan pooled
+       in the two top corners - so the dissolve crossed from one room into a
+       different one, and the opening read as two programs in a row. */
+    c.fillStyle = '#04010c';
     c.fillRect(0, 0, w, h);
-
-    /* A wash of the two house colours into the top corners, so the frame has a
-       light in it rather than being an even field with a dial on it. */
-    const washes = [
-      [w * 0.14, h * 0.10, 'rgba(255,45,155,0.16)', Math.max(w, h) * 0.46],
-      [w * 0.88, h * 0.16, 'rgba(63,240,255,0.13)', Math.max(w, h) * 0.42],
-    ];
-    for (const [x, y, col, rad] of washes) {
-      const s = c.createRadialGradient(x, y, 0, x, y, rad);
-      s.addColorStop(0, col);
-      s.addColorStop(1, 'rgba(0,0,0,0)');
-      c.fillStyle = s;
-      c.fillRect(0, 0, w, h);
-    }
+    const ellipse = (x, y, rx, ry, stops) => {
+      c.save();
+      c.translate(x, y);
+      c.scale(rx, ry);
+      const g = c.createRadialGradient(0, 0, 0, 0, 0, 1);
+      for (const [k, col] of stops) g.addColorStop(k, col);
+      c.fillStyle = g;
+      c.fillRect(-x / rx, -y / ry, w / rx, h / ry);
+      c.restore();
+    };
+    /* magenta up off the horizon, then violet high in the middle - the CSS's
+       `ellipse 120% 70% at 50% 108%` and `ellipse 90% 60% at 50% 34%`, whose
+       sizes are the two RADII as fractions of the frame */
+    ellipse(w * 0.5, h * 1.08, w * 1.2, h * 0.7,
+      [[0, 'rgba(255,46,136,0.30)'], [0.6, 'rgba(255,46,136,0)'], [1, 'rgba(255,46,136,0)']]);
+    ellipse(w * 0.5, h * 0.34, w * 0.9, h * 0.6,
+      [[0, 'rgba(90,40,190,0.28)'], [0.7, 'rgba(90,40,190,0)'], [1, 'rgba(90,40,190,0)']]);
 
     // the verticals of the floor, which never move
     const hz = h * 0.74;
@@ -788,11 +847,16 @@
     c.font = font(r * 0.095, 600);
     c.textAlign = 'center';
     c.fillText('r/min', 0, r * 0.60);
-    /* ...and the scale's multiplier, small, level with the 0 and the 10 it
-       belongs to rather than with the readout it does not. */
-    c.globalAlpha = 0.34;
-    c.font = font(r * 0.072, 600);
-    c.fillText('x1000', 0, r * 0.745);
+    /* ...and the scale's multiplier, UP ON THE SCALE, where a tachometer
+       prints it: over the hub, under the 5. It was moved to "level with the 0
+       and the 10" and landed directly under r/min instead, so the face still
+       read 5980 / r/min / x1000 - the same nine million revs a minute, one line
+       lower. The needle crosses it on every sweep, which is exactly what it
+       does on a real one. Short, because the two warning lamps stand either
+       side of it at a third of a radius out. */
+    c.globalAlpha = 0.38;
+    c.font = font(r * 0.074, 600);
+    c.fillText('×1000', 0, -r * 0.30);
     c.restore();
 
     /* The track the progress arc fills, so the ring reads as an empty gauge
@@ -814,40 +878,104 @@
      "this is a car" rather than "this is SYNX". It can do both: the dial is
      three quarters of the frame and says the first, and four letters at a
      tenth of its size say the second without arguing with it. */
-  function wordmark(c, L) {
-    const size = Math.max(16, Math.min(L.w * 0.042, L.r * 0.30));
+  /* THE HOUSE CHROME, the same seven stops as hud.chrome() and .synx-chrome:
+     white into lavender down to a hard horizon at the middle, then gold off
+     the break into magenta. This screen had a five-stop cousin of it with no
+     break and no cut lines, and set the name as 'S Y N X' in spaces - a third
+     treatment of the one word, between the loader's and the title's. */
+  const CHROME = [
+    [0.00, '#ffffff'], [0.30, '#c8b8ff'], [0.47, '#5b3fb8'],
+    [0.50, '#2a1650'], [0.53, '#ffd977'], [0.72, '#ff5fb0'], [1.00, '#7a1f6b'],
+  ];
+  let markCv = null, markKey = '', markW = 0, markH = 0;
+
+  /* Built once per size into a canvas of its own, because the airbrush's cut
+     lines are cut OUT of the glyphs - and on this screen, unlike the HUD's
+     overlay, there is a picture under the name that a cut on the live canvas
+     would punch straight through. */
+  function buildMark(size) {
+    const d = dpr();
+    const key = size.toFixed(2) + '|' + d;
+    if (markCv && markKey === key) return markCv;
+    if (!markCv) markCv = doc.createElement('canvas');
+    const probe = markCv.getContext('2d');
+    if (!probe) return null;
+    probe.font = font(size, 900);
+    track(probe, size * 0.06);
+    const tw = probe.measureText(tracked(probe, 'SYNX')).width;
+    markW = tw + size * 0.8;
+    markH = size * 1.6;
+    markCv.width = Math.max(1, Math.ceil(markW * d));
+    markCv.height = Math.max(1, Math.ceil(markH * d));
+    const m = markCv.getContext('2d');
+    m.setTransform(d, 0, 0, d, 0, 0);
+    m.clearRect(0, 0, markW, markH);
+    m.font = font(size, 900);
+    track(m, size * 0.06);
+    m.textAlign = 'center';
+    m.textBaseline = 'middle';
+    const X = markW / 2, Y = markH / 2, t = tracked(m, 'SYNX');
+    const g = m.createLinearGradient(0, Y - size * 0.62, 0, Y + size * 0.62);
+    for (const [k, col] of CHROME) g.addColorStop(k, col);
+    m.fillStyle = g;
+    m.fillText(t, X, Y);
+    m.lineWidth = Math.max(1, size * 0.028);
+    m.strokeStyle = 'rgba(255,255,255,0.65)';
+    m.strokeText(t, X, Y);
+    // the cut lines, the way the era's airbrushed logos were done
+    m.globalCompositeOperation = 'destination-out';
+    m.fillStyle = 'rgba(0,0,0,0.5)';
+    const step = Math.max(2, size * 0.11);
+    for (let ly = Y - size * 0.55; ly < Y + size * 0.55; ly += step) {
+      m.fillRect(0, ly, markW, Math.max(1, size * 0.022));
+    }
+    m.globalCompositeOperation = 'source-over';
+    markKey = key;
+    return markCv;
+  }
+
+  function wordmark(c, L, k) {
+    const rise = k === undefined ? 1 : k;
+    if (rise <= 0.002) return;
+    const size = L.markSize;
+    const im = buildMark(size);
     c.save();
+    /* THE HALO, AND ONLY THE HALO. The shadow of a copy drawn off the edge of
+       the canvas lands under the chrome with no solid glyphs of its own, so
+       the airbrush cuts show the dark room through them - as they do on every
+       other chrome headline - rather than a second, pink copy of the name. */
+    c.font = font(size, 900);
+    track(c, size * 0.06);
     c.textAlign = 'center';
     c.textBaseline = 'middle';
-    c.font = font(size, 900);
-    const t = 'S Y N X';
-    c.globalAlpha = 0.9;
-    c.shadowColor = MAG;
-    c.shadowBlur = size * 1.1;
-    c.fillStyle = 'rgba(255,45,155,0.55)';
-    c.fillText(t, L.cx, L.markY);
+    const OFF = 10000;
+    /* A shadow's offset is in DEVICE pixels - the transform does not apply
+       to it - while the text is placed through the pixel-ratio scale, so the
+       offset has to be scaled by the same amount or on a HiDPI screen the
+       halo lands off the canvas with its text. */
+    const T = c.getTransform ? c.getTransform() : null;
+    c.shadowOffsetX = OFF * (T ? Math.hypot(T.a, T.b) : dpr());
+    c.shadowColor = 'rgba(255,46,136,0.55)';
+    c.shadowBlur = size * 0.7;
+    c.fillStyle = '#000';
+    c.globalAlpha = rise;
+    c.fillText(tracked(c, 'SYNX'), L.cx - OFF, L.markY);
+    c.shadowOffsetX = 0;
     c.shadowBlur = 0;
-    // the chrome ramp the rest of the game's headlines use
-    const ramp = c.createLinearGradient(0, L.markY - size * 0.6, 0, L.markY + size * 0.6);
-    ramp.addColorStop(0.00, '#ffffff');
-    ramp.addColorStop(0.42, '#c9baff');
-    ramp.addColorStop(0.52, '#4a3390');
-    ramp.addColorStop(0.62, '#ffd977');
-    ramp.addColorStop(1.00, '#ff5fb0');
-    c.globalAlpha = 1;
-    c.fillStyle = ramp;
-    c.fillText(t, L.cx, L.markY);
+    if (im) c.drawImage(im, L.cx - markW / 2, L.markY - markH / 2, markW, markH);
     c.restore();
   }
 
   /* Corner ticks around the whole frame. The same language the rest of the
      interface is built out of, so the first screen belongs to the game. */
-  function edging(c, L) {
+  function edging(c, L, k) {
+    const rise = k === undefined ? 1 : k;
+    if (rise <= 0.002) return;
     const m = Math.max(18, Math.min(L.w, L.h) * 0.045);
     const len = Math.max(24, Math.min(L.w, L.h) * 0.065);
     const x0 = m, y0 = m, x1 = L.w - m, y1 = L.h - m;
     c.save();
-    c.globalAlpha = 0.42;
+    c.globalAlpha = 0.42 * rise;
     c.strokeStyle = 'rgba(139,92,246,0.85)';
     c.lineWidth = 2;
     c.beginPath();
@@ -990,15 +1118,17 @@
 
   /* -------------------------------------------------------- the progress --
    *
-   * The ring, the caption, the rail and the count, and every one of them is
-   * reading NR.Boot rather than a clock. See the note at the top of the file.
+   * The ring, the caption, the rail and the count. All four used to read
+   * NR.Boot; all four are the script's own clock now, because the load is
+   * over before this screen exists. See the note at the top of the file.
    */
-  function progress(c, L, p, label, detail, stamp) {
+  function progress(c, L, p, label, detail, stamp, k) {
     const r = L.ring;
     /* The caption, the rail and the count all belong to WAITING. Once the
        outro stamp is landing there is nothing left to wait for, so they go -
        which is also what stops the stamp being printed through them. */
-    const waitK = 1 - Math.min(1, Math.max(0, (stamp || 0) * 1.6));
+    const waitK = (1 - Math.min(1, Math.max(0, (stamp || 0) * 1.6)))
+      * (k === undefined ? 1 : k);
     if (p > 0.0015) {
       c.save();
       c.translate(L.cx, L.cy);
@@ -1020,77 +1150,94 @@
       c.arc(0, 0, r, A0, end);
       c.stroke();
       c.restore();
-      // the head of it, so the eye can find where it has got to
-      c.save();
-      c.fillStyle = '#eaffff';
-      c.shadowColor = CYAN;
-      c.shadowBlur = 20;
-      c.beginPath();
-      c.arc(Math.cos(end) * r, Math.sin(end) * r, Math.max(2.4, L.r * 0.020), 0, Math.PI * 2);
-      c.fill();
-      c.restore();
+      /* The head of it, so the eye can find where it has got to - while it
+         is still GOING somewhere. A full ring has no head: left on at a
+         hundred per cent it was one bright dot on one end of a symmetrical
+         gauge, which read as a fault in the ring rather than as its end. */
+      const head = Math.max(0, Math.min(1, (1 - p) * 10));
+      if (head > 0.01) {
+        c.save();
+        c.globalAlpha = head;
+        c.fillStyle = '#eaffff';
+        c.shadowColor = CYAN;
+        c.shadowBlur = 20;
+        c.beginPath();
+        c.arc(Math.cos(end) * r, Math.sin(end) * r, Math.max(2.4, L.r * 0.020), 0, Math.PI * 2);
+        c.fill();
+        c.restore();
+      }
       c.restore();
     }
 
-    // the caption: what is being worked on right now
-    c.save();
-    c.textAlign = 'center';
-    c.textBaseline = 'middle';
-    const cap = Math.max(9, Math.min(L.w * 0.0125, 15));
-    c.font = font(cap, 600);
-    c.globalAlpha = 0.86 * waitK;
-    c.fillStyle = '#9fc4e8';
-    c.shadowColor = 'rgba(63,240,255,0.5)';
-    c.shadowBlur = 12;
-    c.fillText(spaced(label || ''), L.cx, L.capY);
-    c.restore();
-
-    // the rail, which is the same number the ring is
-    const rw = L.railW, rh = Math.max(3, L.h * 0.0055);
+    /* THE RAIL AND THE ROW UNDER IT, set exactly as the preloader sets them -
+       the same measure, a two-pixel bar, and one row beneath it with the
+       phase on the left and the count on the right - because this screen
+       takes over from that one mid-dissolve and the eye should not see the
+       furniture rearrange itself. */
+    const rw = L.railW, rh = 2;
     const x = L.cx - rw / 2, y = L.railY - rh / 2;
     c.save();
     c.globalAlpha = waitK;
-    c.fillStyle = 'rgba(126,152,208,0.16)';
+    c.fillStyle = 'rgba(122,158,210,0.16)';
     c.fillRect(x, y, rw, rh);
     if (p > 0.001) {
       const g = c.createLinearGradient(x, 0, x + rw, 0);
-      g.addColorStop(0, MAG);
-      g.addColorStop(1, CYAN);
+      g.addColorStop(0, CYAN);
+      g.addColorStop(0.58, '#b46cff');
+      g.addColorStop(1, MAG);
       c.fillStyle = g;
-      c.shadowColor = CYAN;
-      c.shadowBlur = 14;
+      c.shadowColor = 'rgba(57,230,255,0.7)';
+      c.shadowBlur = 16;
       c.fillRect(x, y, rw * p, rh);
     }
     c.restore();
 
-    // ...and the number, above the rail's right-hand end
+    // what is being worked on right now, from the rail's left end
+    c.save();
+    c.textAlign = 'left';
+    c.textBaseline = 'middle';
+    c.font = font(10, 600);
+    track(c, 10 * 0.24);
+    c.globalAlpha = 0.66 * waitK;
+    c.fillStyle = 'rgb(150,184,220)';
+    c.fillText(tracked(c, label || ''), x, L.capY);
+    c.restore();
+
+    // ...and how far along, on the same row, to the rail's right end
     c.save();
     c.textAlign = 'right';
     c.textBaseline = 'middle';
-    c.font = font(Math.max(10, Math.min(L.w * 0.0125, 15)), 700);
-    c.fillStyle = '#eaf6ff';
-    c.globalAlpha = 0.92 * waitK;
-    /* ON THE CAPTION'S LINE, right-aligned to the end of the rail.
-       It used to hang three bar-heights above the rail's right end, in the gap
-       between the caption and the bar - a number belonging to neither row,
-       close enough to the caption to crowd it and close enough to the bar to
-       look like a label that had come loose. A caption on the left of a row
-       and its number on the right of the same row is what every loader in the
-       world does, and it costs a line rather than inventing one. */
-    c.fillText(Math.round(p * 100) + '%', x + rw, L.capY);
+    c.font = font(13, 900);
+    track(c, 13 * 0.12);
+    c.fillStyle = CYAN;
+    c.shadowColor = 'rgba(57,230,255,0.6)';
+    c.shadowBlur = 14;
+    c.globalAlpha = waitK;
+    c.fillText(tracked(c, Math.round(p * 100) + '%'), x + rw, L.capY);
     c.restore();
 
     if (detail) {
       c.save();
-      c.textAlign = 'center';
+      c.textAlign = 'left';
       c.textBaseline = 'middle';
-      c.font = font(Math.max(8, Math.min(L.w * 0.0098, 12)), 600);
-      c.globalAlpha = 0.5 * waitK;
-      c.fillStyle = '#7f9dc4';
-      c.fillText(spaced(detail), L.cx, L.detailY);
+      c.font = font(9, 600);
+      track(c, 9 * 0.24);
+      c.globalAlpha = 0.46 * waitK;
+      c.fillStyle = 'rgb(130,160,196)';
+      c.fillText(tracked(c, detail), x, L.detailY);
       c.restore();
     }
   }
+
+  /* LETTER-SPACING. The context has it natively now (`letterSpacing`), and
+     where it does not the old spaced-out string stands in. `tracked` returns
+     the string to draw for whichever of the two is in force, so a caller
+     never has to know. */
+  function track(c, px) {
+    if ('letterSpacing' in c) { c.letterSpacing = px.toFixed(2) + 'px'; c.__tracked = true; }
+    else c.__tracked = false;
+  }
+  function tracked(c, s) { return c.__tracked ? String(s) : spaced(s); }
 
   /** Letter-spacing, which a 2D context does not have on every engine yet. */
   function spaced(s) {
@@ -1200,8 +1347,24 @@
     shake = heat * heat * 7;
     const sx = (Math.random() - 0.5) * shake, sy = (Math.random() - 0.5) * shake;
 
-    const B = NR.Boot;
-    const p = B ? B.progress : (loaded ? 1 : 0);
+    /* THE RING IS PART OF THE PERFORMANCE NOW, not a progress bar.
+     *
+     * It used to draw NR.Boot.progress, because this screen was the loading
+     * screen. It is not: the load has finished before a frame of this is
+     * drawn (see js/preload.js), so Boot.progress is 1 on the first frame and
+     * a ring that is already full says nothing at all.
+     *
+     * So it arms with the engine. Nothing while the dial is sweeping itself,
+     * then it fills across the crank and the catch, and it is full at the
+     * moment the first blip fires - which reads as systems coming up behind
+     * the needle rather than as a bar that was finished before you looked.
+     * It is a function of the script's own clock and of nothing else. */
+    const p = Math.max(0, Math.min(1, (t - 0.95) / 1.45));
+    const capLine = t < 0.95 ? 'DIAL SELF TEST'
+      : t < 1.78 ? 'CRANKING'
+      : t < 2.40 ? 'IGNITION'
+      : t < 4.30 ? 'THROTTLE RESPONSE'
+      : 'SYSTEMS NOMINAL';
 
     cx.save();
     cx.clearRect(0, 0, vw, vh);
@@ -1217,9 +1380,37 @@
       cx.drawImage(dialFace, L.cx - side / 2, L.cy - side / 2, side, side);
     }
     dial(cx, L, shownRpm, s.live, t);
-    progress(cx, L, p, B ? B.label : 'LOADING', B ? B.detail : '', stamp);
-    wordmark(cx, L);
-    edging(cx, L);
+    /* ================= THE HANDOVER OFF THE PRELOADER ==================
+     *
+     * This screen and the preloader say the SAME FOUR THINGS - a SYNX
+     * wordmark, a caption, a percentage and a rail under them - and for the
+     * half second they overlap, both were saying them at once, in two places,
+     * with two different answers: the loader reading SYSTEMS NOMINAL at 100%
+     * while the dial underneath it read DIAL SELF TEST at 0%.
+     *
+     * That is the worst half second in the game to look unconsidered, and it
+     * is the first one the player sees.
+     *
+     * So the instrument arrives on its own. The ground, the floor and the
+     * dial are up from the first frame - they are what the loader dissolves
+     * to REVEAL - and everything that repeats the loader's furniture rises
+     * over the same 520 ms the loader spends leaving (see Preload.finish).
+     * At no instant are there two wordmarks, two rails or two percentages on
+     * the screen, and the read is one continuous movement rather than a cut
+     * between two screens that happen to be about the same thing.
+     *
+     * STAGGERED, NOT CROSS-FADED. Rising over the same 520 ms the loader
+     * spends leaving puts both sets at half strength in the middle of it,
+     * which is two ghosts rather than two captions - better, and still not
+     * one screen. So the rise WAITS until the loader is all but gone and then
+     * takes its own half second. The instrument holds the frame ALONE in
+     * between, and that beat is what makes this read as a dial coming up
+     * rather than as a slide changing. */
+    const riseT = Math.max(0, Math.min(1, (t - 0.42) / 0.55));
+    const rise = riseT * riseT * (3 - 2 * riseT);
+    progress(cx, L, p, capLine, '', stamp, rise);
+    wordmark(cx, L, rise);
+    edging(cx, L, rise);
     stampOut(cx, L, stamp);
     cx.restore();
 
@@ -1255,14 +1446,16 @@
       audio.starter(!!s.crank, s.crank || 0);
     }
 
-    /* WHEN IT IS ALLOWED TO END. Three conditions, and all of them have to be
-       true: the script has reached its hold, the floor has passed, and the
-       game has actually loaded. The ceiling overrides the last of those,
-       because a screen that waits forever is a hang however good it looks.
+    /* WHEN IT IS ALLOWED TO END, which is now a property of the performance
+       and not of the machine. The script reaches the top of its last pull,
+       it is held there for a beat, and then the outro takes it. The ceiling
+       is a dead man's switch and nothing legitimate reaches it.
 
-       And what they start is the OUTRO, not the close. */
-    const old = now - began;
-    if (!outroAt && ((s.holding && loaded && old > MIN_MS) || old > MAX_MS)) outroAt = now;
+       And what this starts is the OUTRO, not the close. */
+    if (s.holding && !holdAt) holdAt = now;
+    if (!outroAt && ((holdAt && now - holdAt >= HOLD_BEAT) || now - began > MAX_MS)) {
+      outroAt = now;
+    }
   }
 
   /* --------------------------------------------------------- the outside */
@@ -1385,9 +1578,12 @@
     }
   }
 
-  /** The game is up. Lets the hold end - it does not end it immediately. */
+  /* THE GAME IS UP - which by the time this screen exists it always is.
+   *
+   * Kept because js/bench.js and the capture harness both call it, and
+   * because the reduced-motion path reaches `begin` and returns without ever
+   * starting a frame loop. It is a no-op on the ordinary path. */
   function ready() {
-    loaded = true;
     if (NR.Boot) NR.Boot.finish();
     if (!running && !finished) close();
   }

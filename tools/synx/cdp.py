@@ -343,20 +343,82 @@ def page_target(port, tries=80, want=None):
 
 
 def attach(url, extra=(), prefix='synx-smoke-', want=None):
-    """Launch, find the page, and open a session on it."""
+    """Launch, find the page, and open a session on it.
+
+    SYNX_SMOKE_SIZE=<w>x<h> in the environment pins the viewport to exactly
+    that, which is how a frame is taken at the aspect a player actually plays
+    at - the headless default is not 16:9, and a first-person view's framing
+    changes with the aspect."""
+    size = os.environ.get('SYNX_SMOKE_SIZE', '')
+    w = h = 0
+    if size:
+        try:
+            w, h = (int(v) for v in size.lower().split('x'))
+            extra = tuple(extra) + ('--window-size=%d,%d' % (w, h),)
+        except ValueError:
+            w = h = 0
     child, profile, browser = launch(url, extra, prefix)
     port = devtools_port(profile)
     target = page_target(port, want=want)
-    return child, profile, browser, Session(target['webSocketDebuggerUrl']), port
+    session = Session(target['webSocketDebuggerUrl'])
+    if w and h:
+        session.send('Emulation.setDeviceMetricsOverride',
+                     {'width': w, 'height': h, 'deviceScaleFactor': 1, 'mobile': False})
+    return child, profile, browser, session, port
+
+
+def reap(profile):
+    """Every browser process still running out of this run's profile.
+
+    `child` is only the browser's MAIN process. Its GPU process - which is
+    where SwiftShader does the rendering, on every core it can get - and its
+    renderers are children of it, and on Windows killing a parent does not
+    touch its children. They outlived every run and went on burning the CPU
+    until somebody killed them by hand, and the next run, starved, failed to
+    start the game at all.
+
+    The profile directory is unique to one run and every process the browser
+    starts is handed it on its command line, so matching on it takes exactly
+    this run's processes and never anybody's own browser - whatever their
+    parent is by now. Quiet, and bounded: a teardown that can hang is worse
+    than the leak it is cleaning up."""
+    if os.name != 'nt' or not profile:
+        return
+    needle = os.path.basename(str(profile).rstrip('\\/')).replace("'", "''")
+    if not needle:
+        return
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' OR Name='chrome.exe'\""
+          " | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('%s') }"
+          " | ForEach-Object { Stop-Process -Id $_.ProcessId -Force"
+          " -ErrorAction SilentlyContinue }" % needle)
+    try:
+        subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def shutdown(child, profile, session=None):
     if session:
         session.close()
+    # THE WHOLE TREE, while the parent is still there to find it by. See reap.
+    if os.name == 'nt' and child.poll() is None:
+        try:
+            subprocess.run(['taskkill', '/PID', str(child.pid), '/T', '/F'],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
     try:
         child.kill()
     except OSError:
         pass
+    try:
+        child.wait(timeout=10)
+    except subprocess.SubprocessError:
+        pass
+    # ...and whatever the tree walk missed: a failed run kills the parent
+    # first, which orphans every child before this is reached.
+    reap(profile)
     # Best effort, and quiet: the browser has just been signalled and may still
     # have a file or two open, and a screenshot that was taken is worth more
     # than a temp directory that was swept.

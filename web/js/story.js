@@ -81,9 +81,9 @@
     JAVAS: {
       name: 'JAVAS', role: 'AURORA // FORMER LEAD ENGINEER', voice: '#39e6ff', body: 'rival',
       art: {
-        neutral: 'sprites/Javas_neutral.png', calm: 'sprites/Javas_neutral.png',
-        calculating: 'sprites/Javas_neutral.png', smug: 'sprites/Javas_neutral.png',
-        concerned: 'sprites/Javas_neutral.png', battle: 'sprites/Javas_neutral.png',
+        neutral: 'sprites/Javas_neutral.jpeg', calm: 'sprites/Javas_neutral.jpeg',
+        calculating: 'sprites/Javas_neutral.jpeg', smug: 'sprites/Javas_neutral.jpeg',
+        concerned: 'sprites/Javas_neutral.jpeg', battle: 'sprites/Javas_neutral.jpeg',
       },
     },
     /* The R-IX speaks on Ryker's channel, in Ryker's voice, with Ryker's face
@@ -305,6 +305,19 @@
     null,
     {
       id: 1, title: 'FIRST BLOOD', track: 'VECTOR RUN', rival: 'RYKER',
+      /* WHAT THE PANEL ON THE ROAD SAYS THIS CHAPTER IS FOR.
+
+         Every chapter had a title, a track and a rival on that panel and
+         nothing that answered "what am I doing here". Four of the seven
+         are a straight race and read as one; the other three have a set
+         piece the player is dropped into with no statement of the rule
+         until it is already happening.
+
+         Every line below is the chapter's EXISTING win condition said
+         out loud. Not one of them adds a rule: a panel that announces an
+         objective the game does not enforce is worse than a panel that
+         announces nothing, because the player then plays for it. */
+      objective: 'BEAT RYKER TO THE SEAWALL',
       cardFace: 'smug',
       levelIndex: 0, personality: 'ryker', diff: 2,
       rating: 'UNRANKED → ROOKIE',
@@ -342,6 +355,7 @@
     },
     {
       id: 2, title: 'NO BRAKES', track: 'THE SPINE', rival: 'KAEL',
+      objective: 'STAY WITH KAEL OVER THE SPINE',
       cardFace: 'amused',
       levelIndex: 1, personality: 'kael', diff: 2,
       rating: 'ROOKIE → STREET',
@@ -374,6 +388,7 @@
     },
     {
       id: 3, title: 'QUEEN OF NEON', track: 'MIRAGE CIRCUIT', rival: 'NOVA',
+      objective: 'OUT-DRIVE NOVA IN THE WET',
       cardFace: 'calculating',
       levelIndex: 2, personality: 'nova',
       /* DIFFICULTY IS CHARACTERISATION. Sitting on what Kael found puts
@@ -427,6 +442,9 @@
     },
     {
       id: 4, title: 'THE GOLDEN RUN', track: 'SUNSET ZERO', rival: 'RYKER',
+      /* Four cars, and the panel says so - this is the only chapter
+         where finishing second is not the same as losing to one man. */
+      objective: 'WIN THE INVITATIONAL // FOUR CARS',
       cardFace: 'angry',
       levelIndex: 3, personality: 'ryker', diff: 2, pack: true,
       rating: 'VECTOR → INVITATIONAL',
@@ -466,6 +484,11 @@
     },
     {
       id: 5, title: 'ASHFALL ZERO', track: 'ASHFALL ZERO', rival: 'RYKER',
+      /* It says LEAD, not WIN, and that is the chapter. Reaching the last
+         two hundred and fifty metres in front is what earns the finale -
+         see shouldStartFinish in js/chapters.js - and what happens to the
+         result after that is the story's, not the player's. */
+      objective: 'LEAD RYKER INTO THE CALDERA',
       cardFace: 'amused',
       levelIndex: 4, personality: 'ryker',
       diff: (ctx) => fork(ctx, 3, 2),
@@ -497,6 +520,7 @@
     },
     {
       id: 6, title: 'BROKEN CIRCUIT', track: 'AURORA FORGE', rival: 'JAVAS',
+      objective: 'CLEAR THE FORGE // NEVER REPEAT A LINE',
       levelIndex: 5, personality: 'nova', diff: 2,
       factoryTrial: true,
       rating: 'raceMode // SYNCHRONIZED',
@@ -536,6 +560,7 @@
     },
     {
       id: 7, title: 'PREDATOR', track: 'NEON HORIZON', rival: 'RAPTOR',
+      objective: 'BEAT THE R-IX OVER 30 KM',
       /* Not another angry Ryker - chapter 4 already is one. The R-IX wears
          his face after Aurora has had it, and the damaged plate is the one
          portrait in his set that reads as something having happened to him
@@ -833,6 +858,17 @@
      read once it is already complete, and it is the number that matters most
      because a held key SKIPS THE TYPING: the first press snaps the line to the
      end, so the dwell is all the reading time there is. */
+  /* THE SCENES A CHAPTER CAN BE WALKED OUT OF. See canLeaveScene for what
+     each of the exclusions is protecting and why. A table because the one
+     `switch (this.mode)` in this file belongs to the dispatcher and nothing
+     else may look like it - tools/check.py reads that switch out of the
+     source to find out which modes have handlers. */
+  const LEAVEABLE = [
+    'coldOpen', 'chapterTitle', 'chapterDialogue', 'battle', 'preRace',
+    'raceTransition', 'retryTitle', 'finishRoll', 'postDialogue',
+    'completeCard', 'prologue', 'prologueDialogue',
+  ];
+
   const LINE_HOLD = 0.40;
   /* ...and how long a finished line sits there on its own before the caret
      appears, as a function of its length. A beat, not a reading timer: the
@@ -872,6 +908,17 @@
          the ear expects a line of dialogue to arrive at. */
       this.cps = opts.cps || 34;
       this.active = true;
+      /* WHETHER K WILL DO ANYTHING, said on the card rather than kept as a
+         secret. `skip` has always required the scene to have been read once
+         - which is the right rule, because a skip offered on a first viewing
+         is a skip that will be taken - but the card never mentioned the key
+         under any condition, so the feature existed for whoever read the
+         source. It is shown exactly when it works. */
+      const hint = this.story.ui.skipHint;
+      if (hint) {
+        hint.classList.toggle('show',
+          !!(this.key && this.story.save.seenDialogues[this.key]));
+      }
       this.story.setDialogueVisible(true);
       this.renderLine(true);
     }
@@ -988,6 +1035,7 @@
       if (!this.active) return;
       this.active = false;
       this.story.ui.dialogue.classList.remove('typing');
+      if (this.story.ui.skipHint) this.story.ui.skipHint.classList.remove('show');
       if (this.key) {
         this.story.save.seenDialogues[this.key] = true;
         this.story.persist();
@@ -1082,9 +1130,11 @@
       const id = (n) => global.document.getElementById(n);
       return {
         root: id('storyRoot'), fade: id('storyFade'), letterbox: id('storyLetterbox'),
+        exitHint: id('storyExitHint'),
         titleCard: id('storyTitleCard'), kicker: id('storyKicker'), title: id('storyTitle'), subtitle: id('storySubtitle'),
         radio: id('storyRadio'), radioAvatar: id('storyRadioAvatar'), radioName: id('storyRadioName'), radioText: id('storyRadioText'),
         dialogue: id('storyDialogue'), portrait: id('storyPortrait'),
+        skipHint: id('storySkipHint'),
         nameplateName: id('storyNameplateName'), nameplateRole: id('storyNameplateRole'), text: id('storyText'),
         cont: id('storyContinue'),
         compact: id('storyCompact'), compactPortrait: id('storyCompactPortrait'), compactName: id('storyCompactName'),
@@ -1100,6 +1150,7 @@
         tutorial: id('storyTutorial'), tutorialText: id('storyTutorialText'), tutorialFill: id('storyTutorialFill'),
         waypoint: id('storyWaypoint'), waypointKicker: id('storyWaypointKicker'), waypointTitle: id('storyWaypointTitle'), waypointDistance: id('storyWaypointDistance'),
         raceMeta: id('storyRaceMeta'), raceChapter: id('storyRaceChapter'), raceTrack: id('storyRaceTrack'), raceRival: id('storyRaceRival'), standings: id('storyStandings'),
+        raceObjective: id('storyRaceObjective'),
       };
     }
 
@@ -1179,6 +1230,27 @@
          this, two quick taps on ENTER walk through three screens. */
 
       if (NR.Gate && !NR.Gate.open()) return;
+
+      /* THE TUTORIAL IS A DRIVE, NOT A SCREEN, so it is deliberately not a
+         "story input mode" - the guard below returns before any of this and
+         the keyboard belongs to the car. That is right for every key except
+         one: it left the opening drive as the only stretch of road in the
+         game with no way off it, because Game.update - which is what ESC
+         normally reaches - does not run while the story is exclusive either.
+
+         Handled here, ahead of the guard, so exactly one key is taken and
+         the throttle, the wheel and the handbrake are untouched. */
+      if (this.mode === 'tutorial') {
+        if (e.key === 'Escape') {
+          e.preventDefault(); e.stopImmediatePropagation();
+          if (NR.Gate) NR.Gate.lock();
+          this.setLayer(this.ui.tutorial, false);
+          this.setLayer(this.ui.waypoint, false);
+          this.leaveScene();
+        }
+        return;
+      }
+
       if (!this.isStoryInputMode()) return;
       /* ...and a committing key shuts the gate behind itself, now that this
          screen has established the key is for it. Moving between screens is
@@ -1205,6 +1277,17 @@
           && (k === 'enter' || k === ' ' || k === 'escape')) {
         stop(); this.creditSkip = true; return;
       }
+      /* ...AND THE REST OF THE ENDING, on the same key, for the same reason.
+         The credits were skippable and the fifty seconds of title card, coda
+         and record cards in front of them were not, which made the one
+         sequence in the game that most wants a second viewing the one
+         sequence that could not be got through. ESC advances a movement; it
+         never leaves, because the ending is the payoff for seven chapters
+         and an accidental press must not throw it away. */
+      if (this.isEndingMode() && k === 'escape') { stop(); this.skipEndingBeat(); return; }
+      /* LEAVING A CHAPTER. See canLeaveScene for what this is allowed on and
+         why every one of the exclusions is deliberate. */
+      if (k === 'escape' && this.canLeaveScene()) { stop(); this.leaveScene(); return; }
       if (this.dialogue.active && (k === 'enter' || k === ' ')) { stop(); this.dialogue.advance(); return; }
       if (this.dialogue.active && k === 'k') { stop(); this.dialogue.skip(); return; }
       if (this.mode === 'choice') {
@@ -1253,6 +1336,137 @@
 
     isStoryInputMode() { return this.mode !== 'none' && this.mode !== 'race' && this.mode !== 'tutorial'; }
     isExclusive() { return this.mode !== 'none' && this.mode !== 'race'; }
+
+    /* ==================== THE WAY OUT, AND WHY THERE HAD TO BE ONE =======
+     *
+     * A chapter opens with a cold open, a title card, six to ten lines of
+     * conversation, two battle cards, a grid walk and a three-second camera
+     * blend before the lights. That is the better part of a minute, and until
+     * now it could not be left by any key on the keyboard: `isExclusive` is
+     * true for every one of those modes, so Game.update - which is what turns
+     * ESC into the pause screen - never ran, and story.onKey listened for
+     * ESC on exactly three screens, none of which was a cutscene.
+     *
+     * So a player who pressed the wrong tile on the hub, or who wanted to
+     * change a binding before the lights, had one way back: sit through the
+     * whole opening, drive the race, and lose it.
+     *
+     * ESC leaves. It costs nothing to allow, because a cutscene is not
+     * progress - anything the player has actually EARNED is banked the
+     * moment it is decided (see bankChapter), so there is nothing here to
+     * lose by walking away from it.
+     *
+     * THE THREE PLACES IT IS NOT ALLOWED, and each for its own reason:
+     *
+     *   'choice'          the card says THIS ONE STAYS DECIDED and means it.
+     *   'race'/'tutorial' the player is driving; ESC is the pause menu, and
+     *                     for the tutorial that is handled separately below.
+     *   the endings       banked already, so leaving is safe - but an ending
+     *                     is the payoff for seven chapters and an accidental
+     *                     ESC should not throw it away. There, ESC SKIPS to
+     *                     the next movement instead, which is what it has
+     *                     always done on the credits.
+     */
+    /* A TABLE RATHER THAN A SWITCH, and that is not a style preference.
+       tools/check.py reads the mode dispatcher out of this file by finding
+       the first `switch (this.mode)` in it - see _dispatch_modes, and the
+       note in the repository's own memory about checks that restate their
+       source. A second switch on the same expression, anywhere above the
+       dispatcher, is read as the dispatcher and the check then fails four
+       campaign paths on perfectly healthy code. So there is exactly one
+       switch on `this.mode` in this file and this is not it. */
+    canLeaveScene() { return LEAVEABLE.indexOf(this.mode) >= 0; }
+
+    /* Advance the ending by one movement.
+     *
+     * Each of the five is ended by its own clock or by its own conversation,
+     * and each has exactly one way on. Rather than duplicate those, this
+     * winds the clock past the end of the current movement and lets the
+     * normal path take it - so the sequence still goes title -> scene ->
+     * coda -> cards -> credits and nothing can be skipped INTO. */
+    skipEndingBeat() {
+      const m = this.mode;
+      this.g.audio.select();
+      if (m === 'endingDialogue' || m === 'endingCoda') this.dialogue.complete();
+      else if (m === 'endingCredits') this.creditSkip = true;
+      else if (m === 'endingCards') this.t = 1e4;
+      else if (m === 'endingTitle' || m === 'endingCodaFade') this.t = 99;
+    }
+
+    /** Which of the ending's movements ESC fast-forwards rather than exits. */
+    isEndingMode() {
+      return this.mode === 'endingTitle' || this.mode === 'endingDialogue'
+        || this.mode === 'endingCodaFade' || this.mode === 'endingCoda'
+        || this.mode === 'endingCards' || this.mode === 'endingCredits';
+    }
+
+    /* Out of the chapter and back to wherever the player came from.
+     *
+     * The hub, normally. The TITLE for someone who has not finished the
+     * prologue - the hub is not a place they have been yet, and dropping
+     * them on a chapter grid they have never seen, in the middle of the
+     * opening, is not "back". */
+    leaveScene() {
+      const toTitle = !this.save.hasSeenPrologue
+        || this.mode === 'prologue' || this.mode === 'prologueDialogue';
+      this.dialogue.active = false;
+      this.hideCompact();
+      this.silenceCar();
+      this.g.storyExtraRacers = null;
+      this.extraRacers.length = 0;
+      this.g.storyRaptor = null;
+      this.g.raceOver = false;
+      this.forcedLoss = '';
+      this.canonicalEarned = false;
+      this.finishCallback = null;
+      this.pendingRetryChapter = 0;
+      this.showExitHint(false);
+      this.g.audio.select();
+      if (toTitle && this.replayPrologue !== true) this.returnToTitle();
+      else this.openHub();
+    }
+
+    /* The line in the bottom letterbox bar that says ESC is available.
+     *
+     * Shown from the mode rather than set by each director, so a scene added
+     * later gets it by being in `canLeaveScene` and nowhere else - which is
+     * the only arrangement where the hint and the behaviour cannot disagree. */
+    showExitHint(on, text) {
+      const el = this.ui.exitHint;
+      if (!el) return;
+      if (on) {
+        const t = text || 'ESC  LEAVE CHAPTER';
+        if (el.textContent !== t) el.textContent = t;
+      }
+      el.classList.toggle('show', !!on);
+    }
+
+    syncExitHint() {
+      if (this.isEndingMode()) { this.showExitHint(true, 'ESC  SKIP'); return; }
+      if (this.mode === 'tutorial') { this.showExitHint(true, 'ESC  LEAVE'); return; }
+      this.showExitHint(this.canLeaveScene());
+    }
+
+    /* Which of this mode's screens hide the world outright.
+     *
+     * Read by the renderer, which uses it to stop paying for passes nothing
+     * can see - see Game.worldCovered. It is a VISUAL question and therefore
+     * a different list from `duckFor`, which answers an audio one: the
+     * chapter-complete card and the retry card duck the engine to nothing
+     * and are still played over a moving car, so they are in that list and
+     * must not be in this one.
+     *
+     * These four are full-frame panels with an opaque background:
+     *
+     *   hub              the chapter grid
+     *   battle           the two battle cards and the VS plate
+     *   choice           a decision card over a blurred, washed frame
+     *   continuePrompt   the same panel language, same wash
+     */
+    coversWorld() {
+      const m = this.mode;
+      return m === 'hub' || m === 'battle' || m === 'choice' || m === 'continuePrompt';
+    }
 
     /* What should be playing right now, according to the story rather than
        according to `Game.state`.
@@ -1392,6 +1606,7 @@
       for (const el of [this.ui.titleCard, this.ui.radio, this.ui.battle, this.ui.continuePrompt, this.ui.choice, this.ui.tutorial, this.ui.waypoint, this.ui.raceMeta]) this.setLayer(el, false);
       this.setDialogueVisible(false);
       this.dialogue.active = false;
+      this.showExitHint(false);
       this.hideCompact();
     }
 
@@ -1514,7 +1729,7 @@
       };
       const first = action(finished ? 'NEW GAME PLUS' : 'LATEST SAVE',
         finished ? 'REPLAY CHAPTER 07' : 'CONTINUE STORY',
-        () => this.startChapter(finished ? LAST_CHAPTER : current, {}), true);
+        () => this.launchChapter(finished ? LAST_CHAPTER : current, {}), true);
       action('WELCOME TO THE NIGHT', 'REPLAY PROLOGUE', () => this.startPrologue(true));
       action('TUNE THE LINK', 'CONTROLS', () => { this.returnToTitle(); this.g.state = 'controls'; this.g.controlIndex = 0; });
       action('LEAVE STORY MODE', 'MAIN MENU', () => this.returnToTitle());
@@ -1578,7 +1793,7 @@
         b.addEventListener('blur', () => { if (!b.matches(':hover')) setActive(false); });
         b.addEventListener('click', () => {
           if (!unlocked) { this.g.audio.crash(0.2); return; }
-          this.startChapter(i, { replayChapter: cleared });
+          this.launchChapter(i, { replayChapter: cleared });
         });
         this.ui.chapterList.appendChild(b);
       }
@@ -1786,17 +2001,56 @@
       this.setLayer(this.ui.waypoint, true);
       this.ui.waypointKicker.textContent = 'ROUTE LOCKED';
       this.ui.waypointTitle.textContent = 'VECTOR RUN';
+      /* THE ONE PLACE IN THE GAME THAT STILL TOLD THE PLAYER A KEY IT HAD
+         NOT ASKED ABOUT.
+         Every other widget that names a key - the boost meter, the raceMode
+         readout, the pre-race card, the chapter prompts - reads the live
+         bindings, because a key name typed into a string is a lie the moment
+         somebody rebinds it. These five were typed in: a player who had
+         moved BOOST off B was taught, on their very first drive, to press a
+         key that does nothing. `label` is a function of the bindings now and
+         is resolved every time the card is painted, so a rebind made on the
+         CONTROLS screen is reflected on the next step.
+
+         `bind` names the ACTION, so the row and the test cannot drift apart
+         - the thing the card asks for is the thing `test` is watching. */
       this.tutorialSteps = [
-        { id: 'accelerate', label: 'W / ↑ - ACCELERATE', test: i => i.throttle > 0.25 },
-        { id: 'steer', label: 'A / D - STEER', test: i => Math.abs(i.steer) > 0.25 },
-        { id: 'brake', label: 'S / ↓ - BRAKE', test: i => i.brake > 0.25 },
-        { id: 'boost', label: 'B - BOOST', test: i => i.boost },
-        { id: 'drift', label: 'SPACE + A / D - DRIFT', test: i => i.ebrake && Math.abs(i.steer) > 0.25 },
+        { id: 'accelerate', bind: 'throttle', what: 'ACCELERATE', test: i => i.throttle > 0.25 },
+        { id: 'steer', bind: 'left', also: 'right', what: 'STEER', test: i => Math.abs(i.steer) > 0.25 },
+        { id: 'brake', bind: 'brake', what: 'BRAKE', test: i => i.brake > 0.25 },
+        { id: 'boost', bind: 'boost', what: 'BOOST', test: i => i.boost },
+        { id: 'drift', bind: 'ebrake', also: 'left', what: 'DRIFT', test: i => i.ebrake && Math.abs(i.steer) > 0.25, join: ' + ' },
       ];
       this.tutorialIndex = 0;
       this.tutorialHold = 0;
       this.updateTutorialCard();
       this.setLayer(this.ui.tutorial, true);
+    }
+
+    /* What a tutorial step is called, right now, on this player's bindings.
+     *
+     * An action with NOTHING bound is the case that has to be handled rather
+     * than papered over: the card says so instead of naming a key that is
+     * not there, and the step still completes on the pad, which is why the
+     * text is about the action rather than only about the key. */
+    tutorialLabel(step) {
+      const g = this.g;
+      /* ONE KEY, NOT EVERY KEY. `NR.keyFor` joins the whole list with a wide
+         separator - "ARROW UP  /  W" - which is right on the CONTROLS screen
+         where the player is auditing their bindings, and wrong on a card
+         that is already joining two ACTIONS together: "ARROW LEFT  /  A /
+         ARROW RIGHT  /  D" is not a prompt, it is a list. The first binding
+         is the one to teach; the rest still work. */
+      const one = (action) => {
+        const list = NR.boundKeys ? NR.boundKeys(g, action) : null;
+        if (!list || !list.length) return '';
+        return NR.keyLabel ? NR.keyLabel(list[0]) : String(list[0]).toUpperCase();
+      };
+      const a = one(step.bind);
+      const b = step.also ? one(step.also) : '';
+      if (!a && !b) return step.what + ' - NOTHING BOUND (SEE CONTROLS)';
+      const keys = a && b ? a + (step.join || ' / ') + b : (a || b);
+      return keys + ' - ' + step.what;
     }
 
     updateTutorialCard() {
@@ -1806,7 +2060,7 @@
         this.ui.tutorialFill.style.transform = 'scaleX(1)';
         return;
       }
-      this.ui.tutorialText.textContent = step.label;
+      this.ui.tutorialText.textContent = this.tutorialLabel(step);
       this.ui.tutorialFill.style.transform =
         'scaleX(' + (this.tutorialIndex / this.tutorialSteps.length).toFixed(4) + ')';
     }
@@ -1877,6 +2131,56 @@
     }
 
     // ---------------------------------------------------------- chapters ---
+
+    /* ============ DOES STARTING THIS CHAPTER HAVE TO BUILD A WORLD? =====
+     *
+     * Five of the seven do not: they are a stretch of the shipped course and
+     * `applyLevel` is a palette change. Two of them are not.
+     *
+     *   AURORA FORGE   nineteen kilometres of merged production hall.
+     *   NEON HORIZON   a megacity - about twenty thousand instanced boxes
+     *                  merged into a thousand baked meshes and uploaded.
+     *
+     * Both are built synchronously inside `applyLevel`, and both are CACHED,
+     * so this is only ever true the first time that route is entered in a
+     * session. That is the whole shape of the problem: it is not a recurring
+     * cost, it is one freeze, and it lands on the frame the player clicked a
+     * tile on the hub - so the hub sits there, frozen, looking exactly like a
+     * game that has stopped responding, which is what it was.
+     *
+     * Asked of the CACHES rather than of the chapter, so a chapter that has
+     * already been played once starts instantly and gets no card. */
+    chapterNeedsBuild(c) {
+      if (!c) return false;
+      const g = this.g;
+      if (c.levelIndex === 6) return !g.__level7World;
+      if (c.levelIndex === 5) {
+        const d = g.__level6Director;
+        return !(d && d.world && d.world.built);
+      }
+      return false;
+    }
+
+    /* Start a chapter, behind a card if it is going to take a moment.
+     *
+     * Everything about why a card and not a spinner is in js/staging.js: it
+     * animates on the compositor, so it keeps moving at sixty through a block
+     * in which no JavaScript runs at all, which is the only kind of cover that
+     * works for synchronous work.
+     *
+     * CALLED ONLY FROM THE PLACES NOTHING FOLLOWS. `Staging.cover` runs its
+     * work two frames later, so anything that called `startChapter` and then
+     * read the mode it had just set would be reading the mode from BEFORE the
+     * chapter started - which is exactly what `retryChapterRace` does. Retry
+     * is also the one path that cannot need this: it re-enters a world that
+     * has by definition already been built. */
+    launchChapter(id, opts) {
+      const c = CHAPTERS[id];
+      const go = () => this.startChapter(id, opts || {});
+      if (c && NR.Staging && this.chapterNeedsBuild(c)) {
+        NR.Staging.cover('CHAPTER ' + String(id).padStart(2, '0'), c.track, go);
+      } else go();
+    }
 
     startChapter(id, opts) {
       opts = opts || {};
@@ -2160,6 +2464,13 @@
       this.ui.raceChapter.textContent = 'CHAPTER ' + String(this.chapter.id).padStart(2, '0');
       this.ui.raceTrack.textContent = this.chapter.track;
       this.ui.raceRival.textContent = total === 4 ? 'GRID // 4 CARS' : 'RIVAL // ' + cast(this.chapter.rival).name;
+      /* ...and what winning means here. Resolved through `field`, so a
+         chapter whose objective depends on the path the player is on can say
+         so - and an empty one collapses the row rather than leaving a rule
+         with nothing under it. See the note in index.html. */
+      if (this.ui.raceObjective) {
+        uiText(this.ui.raceObjective, this.field('objective', ''));
+      }
       this.ui.raceMeta.classList.toggle('four-car', total === 4);
       this.updateRaceMeta();
       this.setLayer(this.ui.raceMeta, true);
@@ -2171,6 +2482,12 @@
          goes rather than being frozen mid-sentence for as long as the menu is
          open. Nothing below this line is allowed to START anything. */
       this.updateCompact(dt);
+      /* ...and the letterbox hint, which has to be told the scene is over.
+         `update` is what normally maintains it and `update` is not called
+         once the mode is 'race' - so without this the words ESC LEAVE
+         CHAPTER would still be sitting on the frame at two hundred
+         kilometres an hour. */
+      this.syncExitHint();
       if (this.mode !== 'race' || !this.chapter) return;
       if (!this.g.simulating) return;
       this.compactCooldown = Math.max(0, this.compactCooldown - dt);
@@ -2182,23 +2499,92 @@
       this.prevBoost = !!this.g.car.boosting;
     }
 
+    /* ================= WHO IS IN THIS RACE, WITHOUT THE LITTER ==========
+     *
+     * These two run on EVERY FRAME of every story race - updateRaceMeta calls
+     * rankedEntrants, rankedEntrants called raceEntrants, and raceEntrants
+     * built a fresh array of fresh objects every time. Four objects, three
+     * arrays and a closure per frame; at sixty frames a second for a
+     * thirty-kilometre finale that is a quarter of a million short-lived
+     * allocations for a list of at most four cars that only changes when a
+     * chapter starts.
+     *
+     * None of it was ever wrong. It is simply the kind of steady rubbish that
+     * turns into a collection every few seconds, and a collection in the
+     * middle of a corner is a dropped frame somebody feels - which on the
+     * hardware this pass is about is the difference that matters.
+     *
+     * So the entrants are built ONCE, into a scratch list that is rebuilt
+     * only when the shape of the race changes, and the ranking sorts that
+     * list in place. The objects are reused; only `car.sTrack` moves, and the
+     * sort reads it fresh every frame. Nothing downstream holds one of these
+     * across a frame - `captureFinishOutcome` copies out what it needs - so
+     * reusing them is safe.
+     */
     raceEntrants() {
-      const entrants = [
-        { name: 'PLAYER', car: this.g.car, player: true },
-        { name: this.chapter && this.chapter.pack ? 'RYKER' : (this.chapter ? this.chapter.rival : 'RIVAL'), car: this.g.rival },
-      ];
-      for (const e of this.extraRacers) entrants.push({ name: e.name, car: e.car, driver: e.driver });
-      return entrants.filter(e => e.car);
+      const g = this.g;
+      const extra = this.extraRacers;
+      const rivalName = this.chapter && this.chapter.pack ? 'RYKER'
+        : (this.chapter ? this.chapter.rival : 'RIVAL');
+      /* The signature is what decides whether the list has to be rebuilt: who
+         is on the grid and what the rival is called. Both are fixed for the
+         length of a chapter. */
+      const sig = rivalName + '|' + extra.length + '|' + (g.rival ? 1 : 0);
+      let E = this._entrants;
+      if (!E || this._entrantSig !== sig) {
+        this._entrantSig = sig;
+        E = this._entrants = [];
+        E.push({ name: 'PLAYER', car: g.car, player: true });
+        if (g.rival) E.push({ name: rivalName, car: g.rival, player: false });
+        for (const e of extra) {
+          if (e && e.car) E.push({ name: e.name, car: e.car, driver: e.driver, player: false });
+        }
+      } else {
+        /* A chapter can swap the object behind a seat without changing the
+           shape of the grid - the finale hands the rival Vehicle to the
+           Raptor kit, a retry resets both cars - so the cars are re-pointed
+           every time rather than trusted to have stayed put. */
+        E[0].car = g.car;
+        let i = 1;
+        if (g.rival) { E[i].car = g.rival; i++; }
+        for (const e of extra) {
+          if (e && e.car && i < E.length) { E[i].car = e.car; E[i].driver = e.driver; i++; }
+        }
+      }
+      return E;
     }
 
+    /* THE ORDER OF THE GRID AND THE ORDER OF THE RACE ARE TWO LISTS.
+     *
+     * `raceEntrants` is the SEATS: player, rival, then whoever else is on the
+     * grid, in that order, always. `rankedEntrants` is the RUNNING ORDER,
+     * which changes every time somebody passes somebody.
+     *
+     * They have to be two arrays. The obvious saving is to sort the seat list
+     * in place and hand it back - and it is wrong, because the seat list is
+     * re-pointed by INDEX when the shape of the grid is unchanged but the
+     * cars behind it are not (a retry, the finale handing the rival Vehicle
+     * to the Raptor kit). Sort that list once and index 0 stops being the
+     * player, so the next re-point puts the player's car in somebody else's
+     * seat. The sorted view is a second array over the same objects; it costs
+     * one array for the life of the manager and nothing per frame.
+     *
+     * The comparator is unchanged: position first, and a dead heat inside a
+     * third of a metre is given to the player, because a photo finish the
+     * game cannot separate is one the player should be told they won. */
     rankedEntrants() {
-      return this.raceEntrants().slice().sort((a, b) => {
+      const E = this.raceEntrants();
+      const R = this._ranked || (this._ranked = []);
+      R.length = 0;
+      for (let i = 0; i < E.length; i++) R.push(E[i]);
+      R.sort((a, b) => {
         const gap = b.car.sTrack - a.car.sTrack;
         if (Math.abs(gap) > .35) return gap;
         if (a.player) return -1;
         if (b.player) return 1;
         return a.name.localeCompare(b.name);
       });
+      return R;
     }
 
     updateRaceMeta() {
@@ -2208,7 +2594,25 @@
       this.g.place = place;
       this.g.storyRacePlace = place;
       this.g.storyRaceTotal = total;
-      this.g.storyRaceStandings = ranked.map((e, i) => ({ name: e.name, place: i + 1, sTrack: e.car.sTrack }));
+      /* ...and the snapshot the HUD reads, written into a list that is kept
+         rather than rebuilt. Same reasoning as raceEntrants above: four
+         objects a frame for a table of at most four rows. */
+      const S = this._standSnap || (this._standSnap = []);
+      S.length = 0;
+      for (let i = 0; i < ranked.length; i++) {
+        const e = ranked[i];
+        const row = this._standPool && this._standPool[i];
+        if (row) {
+          row.name = e.name; row.place = i + 1; row.sTrack = e.car.sTrack;
+          S.push(row);
+        } else {
+          if (!this._standPool) this._standPool = [];
+          const made = { name: e.name, place: i + 1, sTrack: e.car.sTrack };
+          this._standPool[i] = made;
+          S.push(made);
+        }
+      }
+      this.g.storyRaceStandings = S;
       if (ranked.length > 1) {
         const other = place === 1 ? ranked[1] : ranked[0];
         this.g.storyLeaderGap = Math.abs(this.g.car.sTrack - other.car.sTrack);
@@ -2580,6 +2984,11 @@
          and the offer to go again. */
       if (this.chapter.canonicalLoss && this.canonicalEarned && !this.forcedLoss) {
         this.finishOutcome = this.captureFinishOutcome();
+        /* BANKED AT THE LINE. See bankChapter: the result is decided here and
+           everything after it is a scene about the result. A player who
+           closes the game, or walks out of the epilogue with ESC, has still
+           earned what they earned. */
+        this.bankChapter();
         this.finishCallback = null;
         this.g.state = 'story';
         this.g.cursorHiddenForRun = false;
@@ -2593,6 +3002,12 @@
         return true;
       }
       this.finishOutcome = this.captureFinishOutcome();
+      /* ...and the ordinary result, banked on the same principle. A win is a
+         win at the line; the finish roll and the conversation after it are
+         what the chapter says ABOUT the win, not a condition of it. `won` is
+         false here for a lost race and bankChapter declines it, so a defeat
+         still writes nothing at all. See bankChapter. */
+      this.bankChapter();
       this.finishCallback = callback;
       this.mode = 'finishRoll';
       this.t = 0;
@@ -2709,6 +3124,12 @@
       const E = ENDINGS[this.endingId()] || ENDINGS.open;
       this.endingData = E;
       this.save.endingSeen = E.id;
+      /* BANKED BEFORE THE ENDING PLAYS, not after the credits. See
+         bankChapter: the R-IX has already been beaten by the time this runs,
+         and three minutes of ending is a reward for that rather than a
+         condition of it. `completeChapter` still runs at the far end of the
+         credit roll and finds this already done. */
+      this.bankChapter();
       this.persist();
       this.silenceCar();
       this.mode = 'endingTitle';
@@ -2945,23 +3366,46 @@
      * own result properly, above. What this stops is the NEXT one being
      * written without a losing condition and nobody noticing for a month.
      */
-    completeChapter() {
-      const earnedLoss = !!(this.chapter.canonicalLoss && this.canonicalEarned);
-      if (!this.g.won && !earnedLoss) {
-        if (global.console && global.console.warn) {
-          global.console.warn('SYNX: chapter ' + this.chapter.id
-            + ' tried to complete without being won - treating it as a loss');
-        }
-        if (!this.forcedLoss) this.forcedLoss = 'BEATEN';
-        return this.finishAsLegacyLoss();
-      }
-      const id = this.chapter.id;
-      this.finishCallback = null;
+    /* ===================== THE SAVE IS WRITTEN WHEN THE RESULT IS KNOWN ===
+     *
+     * It used to be written when the TALKING STOPPED, which is a different
+     * moment and sometimes a very long way from it.
+     *
+     * The worst case is the one the whole campaign builds to. Beating the
+     * R-IX runs an ending: a title card, a scene, a fade to Vector Run at
+     * midnight, a coda, three record cards and a credit roll - the best part
+     * of three minutes - and `completeChapter` was called at the END of all
+     * of it. Close the window during the credits, or alt-F4 on the coda,
+     * and the seventh chapter had never been completed: the hub still said
+     * 6 / 7, the campaign was not finished, and FREE ROAM - which is gated
+     * on chapter seven being in that list - stayed locked on a save that had
+     * beaten the game.
+     *
+     * The same shape, smaller, applies to every other chapter: a win is a
+     * win at the line, and the eight lines of conversation afterwards are a
+     * reward for it rather than a condition of it.
+     *
+     * So banking the result is now its own step, it is taken the moment the
+     * result is decided, and it is idempotent - every path that used to call
+     * `completeChapter` still does, and finds the work already done.
+     *
+     * The GATE is unchanged and still lives here: a chapter is banked when
+     * the player WON it, or when it is the one chapter whose written ending
+     * is a defeat and that ending was earned. Nothing else banks, and a
+     * director that finishes its own sequence without deciding a result gets
+     * the same refusal it always did.
+     */
+    bankChapter() {
+      const c = this.chapter;
+      if (!c) return false;
+      const earnedLoss = !!(c.canonicalLoss && this.canonicalEarned);
+      if (!this.g.won && !earnedLoss) return false;
+      const id = c.id;
       this.pendingRetryChapter = 0;
       if (this.save.completedChapters.indexOf(id) < 0) this.save.completedChapters.push(id);
       this.save.highestUnlockedChapter = Math.max(this.save.highestUnlockedChapter, Math.min(LAST_CHAPTER, id + 1));
       this.save.currentChapter = Math.min(LAST_CHAPTER, id + 1);
-      if (this.save.unlockedTracks.indexOf(this.chapter.track) < 0) this.save.unlockedTracks.push(this.chapter.track);
+      if (this.save.unlockedTracks.indexOf(c.track) < 0) this.save.unlockedTracks.push(c.track);
       if (id < LAST_CHAPTER && this.save.unlockedTracks.indexOf(CHAPTERS[id + 1].track) < 0) this.save.unlockedTracks.push(CHAPTERS[id + 1].track);
       if (id === 3 && this.save.unlockedTutorialMechanics.indexOf('advancedDriftCalibration') < 0) this.save.unlockedTutorialMechanics.push('advancedDriftCalibration');
       if (id === 6 && this.save.unlockedTutorialMechanics.indexOf('raceMode') < 0) this.save.unlockedTutorialMechanics.push('raceMode');
@@ -2969,6 +3413,20 @@
 
       this.g.cleared[id - 1] = Math.max(this.g.cleared[id - 1] | 0, 1);
       try { global.NR.Save.setJSON(LEGACY_PROGRESS_KEY, this.g.cleared); } catch (e) { /* ignore */ }
+      return true;
+    }
+
+    completeChapter() {
+      if (!this.bankChapter()) {
+        if (global.console && global.console.warn) {
+          global.console.warn('SYNX: chapter ' + (this.chapter ? this.chapter.id : '?')
+            + ' tried to complete without being won - treating it as a loss');
+        }
+        if (!this.forcedLoss) this.forcedLoss = 'BEATEN';
+        return this.finishAsLegacyLoss();
+      }
+      const id = this.chapter.id;
+      this.finishCallback = null;
 
       this.mode = 'completeCard';
       this.t = 0;
@@ -3095,7 +3553,7 @@
       this.g.audio.select();
       if (!yes) { this.openHub(); return; }
       if (id >= LAST_CHAPTER) this.showFinale();
-      else this.startChapter(id + 1, {});
+      else this.launchChapter(id + 1, {});
     }
 
     updateContinuePrompt(dt) {
@@ -3199,12 +3657,36 @@
       const g = this.g;
       const entrants = this.raceEntrants();
       let hardest = 0, impactCar = null;
+      /* WHO THE PLAYER ACTUALLY HIT, and how hard.
+       *
+       * THE BUG THIS CLOSES. Everything below used to be a noise and a shake:
+       * a collision here never marked the bodywork, never cracked the glass,
+       * never broke the clean-running combo and never printed IMPACT. That is
+       * not what a collision does anywhere else in the game - Game.update
+       * dents both cars, cracks the screen and resets the combo the moment
+       * the player touches Ryker - so in the one chapter with four cars on
+       * the road, two of the three rivals could be leaned on for twenty-five
+       * kilometres at no cost while the third wrecked the car.
+       *
+       * It was also invisible from the outside, because the sound and the
+       * shake were there: the hit was audible and free.
+       *
+       * The flag the ordinary path reads cannot be used here - see the note
+       * at the bottom of this method - so the contact is carried out rather
+       * than signalled. */
+      let playerHit = 0, playerInto = null;
       const touched = new Set();
       for (let i = 0; i < entrants.length; i++) {
         for (let j = i + 1; j < entrants.length; j++) {
           const hit = NR.collideCars(entrants[i].car, entrants[j].car);
           if (hit <= 0) continue;
           touched.add(entrants[i].car); touched.add(entrants[j].car);
+          if (entrants[i].player || entrants[j].player) {
+            if (hit > playerHit) {
+              playerHit = hit;
+              playerInto = (entrants[i].player ? entrants[j] : entrants[i]).car;
+            }
+          }
           if (hit > hardest) {
             hardest = hit;
             impactCar = entrants[i].player ? entrants[i].car : (entrants[j].player ? entrants[j].car : entrants[i].car);
@@ -3216,6 +3698,32 @@
         g.shake = Math.max(g.shake || 0, .25 + Math.min(.5, hardest / 20));
         if (g.fx && impactCar) g.fx.sparks(impactCar, Math.min(1, hardest / 14));
       }
+      /* ...and everything a shunt costs, on the same threshold and with the
+         same numbers Game.update uses for the two-car case. The rival in the
+         pair is dented too when it is Ryker, because he is the one entrant
+         with a damage record of his own; Nova and Kael have no bodywork to
+         keep. */
+      if (playerHit > 2.2 && playerInto) {
+        const f = Math.min(1, playerHit / 14);
+        if (g.pad) g.pad.vibrate(0.25 + f * 0.5, 70 + f * 130);
+        g.dentBetween(g.car, g.damage, playerInto, f);
+        if (playerInto === g.rival) g.dentBetween(g.rival, g.rivalDamage, g.car, f);
+        if (g.glass && f > 0.42) g.shake += g.glass.impact(g.car, f * 0.8, 'car') || 0;
+        if (g.damage) g.car.damage = g.damage.total || 0;
+        /* A race you are leaning on other cars through is not a clean race,
+           and the multiplier on the left of the screen is what says so. */
+        g.combo = 1;
+        g.comboTimer = 0;
+        g.cleanTime = 0;
+        if (f > 0.3) g.hud.toast('IMPACT', '#ff2e88');
+      }
+      /* THE FLAG IS CLEARED, AND IT HAS TO BE.
+         `collide_cars` sets `last_hit` on both bodies it separates, and this
+         runs AFTER Game.update has already read and cleared the player's for
+         this frame - so anything left set here would be delivered on the NEXT
+         frame, out of order, against a contact that has already been paid
+         for. That is why the consequences above are carried out here rather
+         than handed to the ordinary path. */
       touched.forEach(car => { car.lastHit = false; car.lastHitType = null; });
     }
 
@@ -3223,6 +3731,11 @@
 
     update(dt) {
       this.updateCompact(dt);
+      /* What ESC does right now, said in the letterbox. Derived from the mode
+         on every frame rather than set by each director, so it cannot claim a
+         way out that is not there - or, worse, stay on screen after the scene
+         that offered it has ended. See canLeaveScene. */
+      this.syncExitHint();
       switch (this.mode) {
         case 'hub': this.updateHub(dt); break;
         case 'prologue': this.updatePrologue(dt); break;

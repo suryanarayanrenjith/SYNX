@@ -47,6 +47,9 @@
 //!         lamp, and a car with a lamp for a boost button is a car nobody
 //!         is driving. How far it sinks is in the tenth slot of its record.
 //!
+//! PEDAL   a BUTTON driven by the throttle or the brake instead of by the
+//!         boost, and the foot resting on it, which travels with it.
+//!
 //! REACH   a part with two poses that moves between them. The right hand
 //!         lets go of the wheel, crosses to the console, presses the boost
 //!         button and comes back - which is a thing a person does, and
@@ -119,6 +122,25 @@ pub const ARM: f32 = 6.0;
  * between the two is the shuffle. */
 pub const HAND_LOCK: f64 = 1.6;
 pub const BUTTON: f32 = 3.0;
+/* THE TWO PEDALS, AND THE FEET ON THEM.
+ *
+ * Mechanically these are BUTTONs: a part that sinks along its own down axis
+ * by `travel` when it is asked for. What makes them their own kinds is only
+ * WHICH NUMBER asks. A button on the wheel is the boost and reads `press`; a
+ * pedal is the driver's right or left foot and reads the throttle or the
+ * brake, and those are three different channels that are routinely all
+ * moving at once - lifting to brake while the boost is still held is an
+ * ordinary thing to do in this game, and one channel could not describe it.
+ *
+ * The FOOT carries the same kind as the pedal it is on, so it travels with
+ * it. That is a translation rather than an ankle rotation, which is a
+ * simplification: at the distance either of these is ever seen - through
+ * tinted glass from the chase camera, or from the seat where the footwell is
+ * about fifty degrees below the eye line and out of frame - a rotation would
+ * cost a joint solve to describe something under a centimetre on screen.
+ */
+pub const PEDAL_GO: f32 = 7.0;
+pub const PEDAL_STOP: f32 = 8.0;
 pub const REACH: f32 = 4.0;
 
 /// One part, as the table describes it.
@@ -669,8 +691,18 @@ impl Rig {
     /// `hand_angle` is where the hands would LIKE to be, and is not the same
     /// number: it is clamped here to whatever the arms can actually hold.
     /// `press` is 0..1 of however hard the boost is being asked for. It moves
-    /// the parts that are controls, and the hand that goes to them.
-    pub fn pose(&mut self, model: &[f32], spin_angle: f64, hand_angle: f64, press: f64) {
+    /// the parts that are controls, and the hand that goes to them. `go` and
+    /// `stop` are the throttle and the brake, on the same terms, for the two
+    /// pedals and the feet on them.
+    pub fn pose(
+        &mut self,
+        model: &[f32],
+        spin_angle: f64,
+        hand_angle: f64,
+        press: f64,
+        go: f64,
+        stop: f64,
+    ) {
         let mut m: M4 = identity();
         for i in 0..16 {
             m[i] = *model.get(i).unwrap_or(&0.0) as f64;
@@ -766,11 +798,22 @@ impl Rig {
                    translation rather than to the matrix so the housing
                    around it does not move with it. */
                 let (mut t, pitch, roll) = self.placed(&p, press);
-                if k == BUTTON && press > 0.0 {
+                /* Which number moves this control. See PEDAL_GO: the only
+                   difference between a button and a pedal is the channel. */
+                let ch = if k == BUTTON {
+                    press
+                } else if k == PEDAL_GO {
+                    go
+                } else if k == PEDAL_STOP {
+                    stop
+                } else {
+                    0.0
+                };
+                if ch > 0.0 && p.travel != 0.0 {
                     let (cp, sp) = (pitch.cos(), pitch.sin());
                     let (cr, sr) = (roll.cos(), roll.sin());
                     let down = [-sr, -cp * cr, -sp * cr];
-                    let d = press.clamp(0.0, 1.0) * p.travel;
+                    let d = ch.clamp(0.0, 1.0) * p.travel;
                     t = [t[0] + down[0] * d, t[1] + down[1] * d, t[2] + down[2] * d];
                 }
                 let mut l = trs(t, pitch, roll);
@@ -1043,7 +1086,7 @@ mod tests {
     fn a_grip_never_leaves_the_rim() {
         let mut r = rig();
         let m = eye();
-        r.pose(&m, 0.0, 0.0, 0.0);
+        r.pose(&m, 0.0, 0.0, 0.0, 0.0, 0.0);
         let hub = origin(&r, 0);
         let rest = origin(&r, 2);
         let radius = dist(rest, hub);
@@ -1053,7 +1096,7 @@ mod tests {
         let mut moved: f64 = 0.0;
         for step in -8..=8 {
             let a = step as f64 * 0.18;
-            r.pose(&m, a, a, 0.0);
+            r.pose(&m, a, a, 0.0, 0.0, 0.0);
             let hub_now = origin(&r, 0);
             let grip = origin(&r, 2);
             assert!(
@@ -1089,7 +1132,7 @@ mod tests {
         let mut span = (f64::MAX, f64::MIN);
         for step in -8..=8 {
             let a = step as f64 * 0.18;
-            r.pose(&m, a, a, 0.0);
+            r.pose(&m, a, a, 0.0, 0.0, 0.0);
             let arm = origin(&r, 3);
             // the bone's origin is its midpoint, so both ends are one half-axis away
             let half = [
@@ -1144,7 +1187,7 @@ mod tests {
         let mut bend = (f64::MAX, f64::MIN);
         for step in -12..=12 {
             let a = step as f64 * 0.16;
-            r.pose(&m, a, a, 0.0);
+            r.pose(&m, a, a, 0.0, 0.0, 0.0);
             // the forearm, by its own matrix: origin at the middle, z the shaft
             let mid = origin(&r, 1);
             let half = [
@@ -1197,7 +1240,7 @@ mod tests {
     fn the_hands_follow_a_real_corner() {
         let mut r = rig();
         let m = eye();
-        r.pose(&m, 0.0, 0.0, 0.0);
+        r.pose(&m, 0.0, 0.0, 0.0, 0.0, 0.0);
         let hub = origin(&r, 0);
         let rest = origin(&r, 2);
         let angle = |p: [f64; 3], q: [f64; 3]| -> f64 {
@@ -1206,7 +1249,7 @@ mod tests {
             (dot3(a, b) / (len3(a) * len3(b)).max(1e-9)).clamp(-1.0, 1.0).acos()
         };
         // a quarter turn of wheel, which is what a normal corner now asks for
-        r.pose(&m, 1.57, 1.57, 0.0);
+        r.pose(&m, 1.57, 1.57, 0.0, 0.0, 0.0);
         let went = angle(rest, origin(&r, 2));
         assert!(
             went > 1.0,
@@ -1217,7 +1260,7 @@ mod tests {
            at three radians and the hands are nowhere near it: that gap IS the
            shuffle, and a hand that kept up with the rim here would be under
            the wheel with the arm through the windscreen. */
-        r.pose(&m, 3.2, 3.2, 0.0);
+        r.pose(&m, 3.2, 3.2, 0.0, 0.0, 0.0);
         let far = angle(rest, origin(&r, 2));
         assert!(
             far < 2.0,
@@ -1246,9 +1289,9 @@ mod tests {
             0.0, -0.4, 0.2,  0.0, 0.0, 0.0,
         ];
         r.load(&table);
-        r.pose(&eye(), 1.4, 1.4, 1.0);
+        r.pose(&eye(), 1.4, 1.4, 1.0, 0.0, 0.0);
         let a = [r.out[12] as f64, r.out[13] as f64, r.out[14] as f64];
-        r.pose(&eye(), -1.4, -1.4, 1.0);
+        r.pose(&eye(), -1.4, -1.4, 1.0, 0.0, 0.0);
         let b = [r.out[12] as f64, r.out[13] as f64, r.out[14] as f64];
         assert!(
             dist(a, b) < 1e-5,
@@ -1262,9 +1305,9 @@ mod tests {
             dist(a, [0.0, -0.4, 0.2])
         );
         // at rest it still rides the rim, or it never held the wheel at all
-        r.pose(&eye(), 1.4, 1.4, 0.0);
+        r.pose(&eye(), 1.4, 1.4, 0.0, 0.0, 0.0);
         let held = [r.out[12] as f64, r.out[13] as f64, r.out[14] as f64];
-        r.pose(&eye(), -1.4, -1.4, 0.0);
+        r.pose(&eye(), -1.4, -1.4, 0.0, 0.0, 0.0);
         let other = [r.out[12] as f64, r.out[13] as f64, r.out[14] as f64];
         assert!(dist(held, other) > 0.1, "an unpressed hand did not ride the wheel");
     }
@@ -1274,9 +1317,9 @@ mod tests {
     fn the_wheel_does_not_move_the_body() {
         let mut r = rig();
         let m = eye();
-        r.pose(&m, 0.0, 0.0, 0.0);
+        r.pose(&m, 0.0, 0.0, 0.0, 0.0, 0.0);
         let rest = origin(&r, 4);
-        r.pose(&m, 1.45, 1.45, 0.0);
+        r.pose(&m, 1.45, 1.45, 0.0, 0.0, 0.0);
         let locked = origin(&r, 4);
         assert!(
             dist(rest, locked) < 1e-6,
@@ -1291,12 +1334,12 @@ mod tests {
     fn the_figure_rides_the_car() {
         let mut r = rig();
         let mut m = eye();
-        r.pose(&m, 0.3, 0.3, 0.0);
+        r.pose(&m, 0.3, 0.3, 0.0, 0.0, 0.0);
         let before: Vec<[f64; 3]> = (0..r.len()).map(|i| origin(&r, i)).collect();
         m[12] = 120.0;
         m[13] = 4.0;
         m[14] = -37.5;
-        r.pose(&m, 0.3, 0.3, 0.0);
+        r.pose(&m, 0.3, 0.3, 0.0, 0.0, 0.0);
         for i in 0..r.len() {
             let a = before[i];
             let b = origin(&r, i);
@@ -1429,9 +1472,9 @@ mod tests {
             0.0, 0.5, 0.0,  0.1, 0.1, 0.1,  0.0, 0.0,  BUTTON, 0.0, 0.02, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
         r.load(&table);
-        r.pose(&eye(), 0.0, 0.0, 0.0);
+        r.pose(&eye(), 0.0, 0.0, 0.0, 0.0, 0.0);
         let rest = r.out[13];
-        r.pose(&eye(), 0.0, 0.0, 1.0);
+        r.pose(&eye(), 0.0, 0.0, 1.0, 0.0, 0.0);
         let down = r.out[13];
         assert!(
             ((rest - down) as f64 - 0.02).abs() < 1e-5,
@@ -1439,10 +1482,10 @@ mod tests {
             rest - down
         );
         // ...and half a press is half the travel, so it can follow a ramp
-        r.pose(&eye(), 0.0, 0.0, 0.5);
+        r.pose(&eye(), 0.0, 0.0, 0.5, 0.0, 0.0);
         assert!((((rest - r.out[13]) as f64) - 0.01).abs() < 1e-5, "the travel is not linear");
         // an unpressed button is exactly where the table put it
-        r.pose(&eye(), 0.0, 0.0, 0.0);
+        r.pose(&eye(), 0.0, 0.0, 0.0, 0.0, 0.0);
         assert!((r.out[13] - rest).abs() < 1e-6, "it did not come back up");
     }
 
@@ -1472,24 +1515,24 @@ mod tests {
         ];
         r.load(&table);
 
-        r.pose(&eye(), 0.0, 0.0, 0.0);
+        r.pose(&eye(), 0.0, 0.0, 0.0, 0.0, 0.0);
         assert!(r.out[12].abs() < 1e-6, "at rest the hand has already moved: {}", r.out[12]);
-        r.pose(&eye(), 0.0, 0.0, 1.0);
+        r.pose(&eye(), 0.0, 0.0, 1.0, 0.0, 0.0);
         assert!((r.out[12] - 1.0).abs() < 1e-6, "it did not arrive: {}", r.out[12]);
-        r.pose(&eye(), 0.0, 0.0, 0.0);
+        r.pose(&eye(), 0.0, 0.0, 0.0, 0.0, 0.0);
         assert!(r.out[12].abs() < 1e-6, "it did not come back: {}", r.out[12]);
 
         /* THE EASE. At the half way point a smoothstep is exactly half, so
            that says nothing on its own - what separates it from a straight
            line is the ENDS. A tenth of the way through, a linear hand is a
            tenth of the way across; an eased one has barely left. */
-        r.pose(&eye(), 0.0, 0.0, 0.1);
+        r.pose(&eye(), 0.0, 0.0, 0.1, 0.0, 0.0);
         let early = r.out[12] as f64;
         assert!(early < 0.05, "the hand left at a constant speed: {early:.4} at 10%");
-        r.pose(&eye(), 0.0, 0.0, 0.9);
+        r.pose(&eye(), 0.0, 0.0, 0.9, 0.0, 0.0);
         let late = r.out[12] as f64;
         assert!(late > 0.95, "the hand arrived at a constant speed: {late:.4} at 90%");
-        r.pose(&eye(), 0.0, 0.0, 0.5);
+        r.pose(&eye(), 0.0, 0.0, 0.5, 0.0, 0.0);
         assert!(((r.out[12] as f64) - 0.5).abs() < 1e-5, "it is not symmetrical");
     }
 
@@ -1503,7 +1546,7 @@ mod tests {
             0.0, 0.0, 0.0,  0.15, 0.15, 0.0,  0.0, 0.0,  BONE, 99.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
         r.load(&table);
-        r.pose(&eye(), 0.4, 0.4, 0.0);
+        r.pose(&eye(), 0.4, 0.4, 0.0, 0.0, 0.0);
         assert_eq!(r.len(), 1);
         assert!(r.out.iter().all(|v| v.is_finite()), "a bad reference produced a NaN pose");
     }

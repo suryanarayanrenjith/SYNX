@@ -144,6 +144,20 @@
     { where: 'launcher', tab: 1, key: 'upscaler', label: 'UPSCALER',
       opts: ['BILINEAR', 'FSR - SPATIAL', 'FSR - SHARP'], def: 2,
       hint: 'How a sub-native frame is reconstructed. BILINEAR is the plain stretch a browser does on its own. FSR is an edge-directed filter that follows the shape of the image rather than blurring across it; SHARP adds a contrast-adaptive pass. Nothing to do at or above NATIVE.' },
+    /* THE ROW THAT RESCUES A MACHINE THAT IS SHORT OF FILL RATE, without
+       asking it to give up a single feature. Everything else on this screen
+       is a decision about what the game HAS; this is a decision about how
+       many pixels of it there are, made continuously, by measurement.
+
+       It can only ever take pixels AWAY, so the row above remains the
+       ceiling. On hardware that holds the target it never engages at all and
+       the picture is untouched. See Game.adaptResolution - including why it
+       stands itself down on a machine that is bound by its processor rather
+       than by its graphics, where lowering the resolution buys nothing and
+       costs the picture. */
+    { where: 'launcher', tab: 1, key: 'dynRes', label: 'ADAPTIVE RESOLUTION',
+      opts: ['OFF', 'ON', 'AGGRESSIVE'], def: 1,
+      hint: 'Holds 60 frames a second (or the FRAME LIMIT) by drawing fewer pixels when the machine cannot afford them, and gives them straight back when it can. No feature is ever switched off and RENDER SCALE above stays the ceiling, so a machine that keeps up never sees it. ON will not go below 64%; AGGRESSIVE will go to 45%.' },
 
     { where: 'launcher', tab: 1, group: 'DETAIL', key: 'quality', label: 'PRESET',
       opts: ['LOW', 'MEDIUM', 'HIGH', 'ULTRA'], def: 2,
@@ -228,6 +242,25 @@
       hint: 'Contrast-adaptive sharpening over the finished frame. It restores the bite a temporal resolve costs, and too much of it rings on the neon.' },
     { where: 'launcher', tab: 1, key: 'grain', label: 'CRT FILTER', opts: ['OFF', 'ON'], def: 1,
       hint: 'Scanlines and film grain over the finished frame.' },
+    /* ================== HOW HARD THE GAME HITS BACK =====================
+     *
+     * The camera shake, the lens punch and the tenth of a second the world
+     * slows down for when something actually happens to the car: a hard
+     * impact, a jump landed from height, the moment a boost lights.
+     *
+     * This is the row that decides whether the game reads as an arcade racer
+     * or as a camera on a rail, and it is a row rather than a constant for
+     * two reasons. It is TASTE - some people want the screen thrown around
+     * and some people do not - and it is ACCESSIBILITY: a shaking frame and
+     * a sudden time dilation are exactly what somebody prone to motion
+     * sickness needs to be able to turn down, and this game already warns
+     * about what it does to a screen.
+     *
+     * OFF leaves the physical feedback - the rumble, the sparks, the sound,
+     * the damage - and takes away only what moves the picture. */
+    { where: 'launcher', tab: 1, key: 'impactFx', label: 'IMPACT FEEDBACK',
+      opts: ['OFF', 'SUBTLE', 'NORMAL', 'HEAVY'], def: 2,
+      hint: 'Camera shake, the lens punch on a boost, and the slow-motion beat when you land a jump or hit something hard. OFF keeps the rumble, the sparks and the sound and simply stops moving the camera - which is the setting to use if a moving frame makes you unwell.' },
     /* The one row on this screen that is not about the 3D at all.
        The instruments are drawn on a 2D canvas, and every glowing thing on
        them is a blur the context rasterises separately and composites - which
@@ -299,6 +332,206 @@
       hint: 'Damps the camera behind the pointer. More is calmer and less immediate.' },
   ];
 
+  /* =====================================================================
+   * WHAT THIS MACHINE LOOKS LIKE, ON THE FIRST LAUNCH AND ONLY THEN
+   * =====================================================================
+   *
+   * The shipped defaults are HIGH, NATIVE, every pass on. That is the right
+   * answer for the machine the game was tuned on and it is a bad first
+   * impression on the one most people have: a laptop with integrated
+   * graphics opens the game, gets eleven frames a second on the title
+   * screen, and forms its entire opinion of the project before it has found
+   * out that there is a launcher with eleven rows on it.
+   *
+   * So on a FIRST launch - no saved settings blob at all, which is the only
+   * time this is consulted - the renderer string is read and used to pick a
+   * starting preset. It is never consulted again: the moment the player
+   * touches any row, their file exists and their choices are the only thing
+   * that decides anything. Nothing here ever overrides a saved value.
+   *
+   * WHY A NAME AND NOT A MEASUREMENT. A measurement is what the BENCHMARK is
+   * for, and it is the honest answer - but it takes eight seconds of driving
+   * and it cannot run before the game has loaded, which is after the moment
+   * this has to answer. What this is doing is choosing where to START, and
+   * for that a name is enough: the difference between "Intel UHD Graphics"
+   * and "NVIDIA GeForce RTX 4070" is not a subtle one, and the launcher
+   * still offers BENCHMARK for a real answer.
+   *
+   * WHAT IT LOOKS AT, in order of how much it settles:
+   *
+   *   The renderer string, which on every desktop platform this ships to
+   *   arrives through WEBGL_debug_renderer_info as something like
+   *   "ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0)".
+   *
+   *   MAX_TEXTURE_SIZE and the shader precision, which separate a real GPU
+   *   from a software rasteriser even when the name gives nothing away.
+   *
+   *   hardwareConcurrency and deviceMemory, which say nothing about the
+   *   graphics but a great deal about the class of machine.
+   *
+   * EVERY BRANCH ERRS LOW. A player on a fast machine who starts on HIGH
+   * instead of ULTRA loses some supersampling until they open the launcher
+   * once. A player on a weak machine who starts on ULTRA loses the game.
+   */
+  /* `have` is a live context, when the caller already has one.
+     The game does: it is asked this from inside its own constructor, with a
+     WebGL2 context already built, and making a SECOND one only to read two
+     strings off it is a device allocation and a context teardown for nothing.
+     The launcher has none - it deliberately never makes one, so that the
+     screen for choosing the software renderer cannot fail for the same reason
+     the player came to it - and gets the throwaway. */
+  function guessTier(have) {
+    const out = { tier: 2, why: 'default' };
+    let r = '', v = '', maxTex = 0, cores = 0, mem = 0;
+    try {
+      let gl = have || null, own = null;
+      if (!gl) {
+        own = global.document.createElement('canvas');
+        gl = own.getContext('webgl2');
+      }
+      if (gl) {
+        const d = gl.getExtension('WEBGL_debug_renderer_info');
+        r = String(gl.getParameter(d ? d.UNMASKED_RENDERER_WEBGL : gl.RENDERER) || '');
+        v = String(gl.getParameter(d ? d.UNMASKED_VENDOR_WEBGL : gl.VENDOR) || '');
+        maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 0;
+        /* Only ever OUR OWN throwaway. Losing a context that was handed in
+           would take the renderer down with it, which is a spectacular way
+           for a settings default to fail. */
+        if (own) {
+          const lose = gl.getExtension('WEBGL_lose_context');
+          if (lose) lose.loseContext();
+        }
+      }
+      cores = global.navigator && global.navigator.hardwareConcurrency || 0;
+      mem = global.navigator && global.navigator.deviceMemory || 0;
+    } catch (e) { return out; }
+
+    const s = (r + ' ' + v).toLowerCase();
+    out.renderer = r;
+
+    /* A SOFTWARE RASTERISER IS NOT A SLOW GPU, it is a different thing
+       entirely, and the only setting that helps it is the smallest one. The
+       launcher's own SOFTWARE renderer row lands here, and so does a machine
+       whose driver refused to give ANGLE a device. */
+    if (/swiftshader|llvmpipe|softpipe|software|microsoft basic render|warp/.test(s)) {
+      out.tier = 0; out.soft = true; out.why = 'software rasteriser';
+      return out;
+    }
+    /* No 3D name at all, or a texture ceiling below anything this century:
+       treat it as the weakest thing that can still run. */
+    if (!r || (maxTex && maxTex < 8192)) {
+      out.tier = 0; out.why = 'unidentified or very limited device';
+      return out;
+    }
+
+    /* The parts that are unambiguously fast. Matched on the family rather
+       than the model, because a list of models is a list that is out of date
+       the week after it is written. */
+    /* `apple gpu` is what a Mac reports rather than a model number: WebKit
+       answers UNMASKED_RENDERER_WEBGL with "Apple GPU" on Apple silicon and
+       with an Intel or AMD string on everything older, so the generic name is
+       itself the identification. Every machine that says it is at least an
+       M1, and an M1 runs this at HIGH without noticing. */
+    const fast = /(rtx\s*[2-9]\d{3})|(gtx\s*1[06-9]\d{2})|(radeon\s*rx\s*[5-9]\d{3})|(radeon\s*rx\s*(vega|6|7)\d{3})|(apple\s*m[1-9])|(apple\s*gpu)|(arc\s*a[3-7]\d{2})|(quadro\s*rtx)|(geforce\s*(rtx|gtx\s*16))/;
+    /* ...and the ones that are unambiguously integrated. Intel's HD/UHD/Iris
+       lines, AMD's older APU graphics, and the mobile parts that turn up in
+       a Windows-on-ARM machine. */
+    const slow = /(intel.*(hd|uhd)\s*graphics)|(intel.*iris(?!.*xe))|(hd\s*graphics\s*[3-6]\d{3})|(vega\s*[3-9]\b)|(radeon\s*r[2-7]\s)|(mali)|(adreno)|(powervr)|(gma)|(mesa\s*intel)/;
+    /* Between the two: Iris Xe, an integrated 700M/800M, an older discrete
+       card. These run the game well at MEDIUM and badly at HIGH. */
+    const middling = /(iris\s*xe)|(radeon\s*(7|8)\d{2}m)|(gtx\s*[79]\d{2})|(geforce\s*mx)|(uhd\s*graphics\s*7\d{2})|(intel.*graphics)/;
+
+    if (fast.test(s)) out.tier = 3;
+    else if (slow.test(s)) out.tier = 1;
+    else if (middling.test(s)) out.tier = 2;
+    else out.tier = 2;
+    out.why = r;
+
+    /* THE MACHINE AROUND THE GPU STILL GETS A VOTE. This renderer is not
+       only fill-bound: it submits a few hundred draw calls and steps a
+       four-wheel solver for two cars on the main thread, and a two-core
+       machine feels that whatever is in the other socket. */
+    if (cores && cores <= 2) out.tier = Math.min(out.tier, 1);
+    else if (cores && cores <= 4) out.tier = Math.min(out.tier, 2);
+    if (mem && mem <= 4) out.tier = Math.min(out.tier, 1);
+    /* A very fast part is still allowed to be a very fast part on a machine
+       with four cores - it is the WEAK side this is protecting against. */
+    if (fast.test(s) && cores >= 6) out.tier = 3;
+    return out;
+  }
+
+  /* The starting rows for each tier. Only the picture is touched: nothing
+     here changes a binding, a volume or anything the player would have to
+     un-choose. ULTRA is deliberately not a starting point for anybody - it
+     is a supersampled setting and it should be asked for. */
+  function tierDefaults(o, t) {
+    if (t.tier >= 3) {
+      o.quality = 2;            // HIGH
+      o.resolution = 3;         // NATIVE
+      return;
+    }
+    if (t.tier === 2) {
+      o.quality = 1;            // MEDIUM
+      o.resolution = 3;         // NATIVE
+      o.volumetrics = 0;
+      return;
+    }
+    if (t.tier === 1) {
+      o.quality = 0;            // LOW
+      o.resolution = 2;         // 80%
+      o.shadows = 0;
+      o.volumetrics = 0;
+      o.reflections = 0;
+      o.motionBlur = 0;
+      o.glowQuality = 0;        // the four-tap pyramid
+      o.particles = 0;
+      o.viewDistance = 0;
+      o.hudGlow = 1;
+      o.dynRes = 1;
+      return;
+    }
+    /* Tier 0: a software rasteriser, or a device that could not be
+       identified at all. Everything that can be declined is declined, and
+       the adaptive scaler is given its full range - this is the machine it
+       was written for. */
+    o.quality = 0;
+    o.resolution = 0;           // 50%
+    o.shadows = 0;
+    o.volumetrics = 0;
+    o.reflections = 0;
+    o.motionBlur = 0;
+    o.ao = 0;
+    o.bloom = 1;
+    o.glowQuality = 0;
+    o.flare = 0;
+    o.particles = 0;
+    o.viewDistance = 0;
+    o.roadLights = 1;
+    o.grain = 0;
+    o.hudGlow = 0;
+    o.dynRes = 2;
+    o.fps_cap = 1;              // 30, which a software path can hold
+  }
+
+  /* ONE CALL, for the two screens that can be the first thing a player sees.
+   *
+   * The launcher opens before the game and writes a complete settings blob
+   * the moment PLAY is pressed, so a tier chosen only inside the game would
+   * be chosen only for someone who had never opened the launcher - which on
+   * the desktop build is nobody. Both call this, both call it only when there
+   * is no saved blob at all, and it is the same answer either way. */
+  function seed(obj, gl) {
+    try {
+      const t = guessTier(gl);
+      tierDefaults(obj, t);
+      if (typeof console !== 'undefined' && console.info) {
+        console.info('SYNX: first launch - starting at tier ' + t.tier
+          + ' (' + (t.why || '') + ')');
+      }
+      return t;
+    } catch (e) { return null; }
+  }
+
   /* WHICH BLOB A ROW IS SAVED IN.
    *
    * Two keys, because two different things read them. The host reads the
@@ -344,6 +577,8 @@
   NR.Settings = {
     QUALITY, RENDER_SCALES, ROWS, FPS_CAPS, HOST_KEYS,
     rowsFor, rowByKey, defaults, isHostKey,
+    /* The first-launch hardware profile. See the note above guessTier. */
+    guessTier, seed,
     /** Where the game's own settings live. */
     KEY: 'synx.settings.v1',
     /** ...and where the launcher's window answers live. */

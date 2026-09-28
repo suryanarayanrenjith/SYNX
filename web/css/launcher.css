@@ -224,20 +224,27 @@ html, body {
     linear-gradient(150deg, var(--glass-hi), var(--glass) 62%);
   clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
+/* THE EDGE FOLLOWS THE CUT. It was a rectangular one-pixel ring - a mask of
+   the padding box XOR the content box - clipped to the cut shape afterwards,
+   so at the two cut corners the ring was simply cut off: two straight edges
+   ending in mid-air and no diagonal between them. Side by side on the button
+   row that read as two boxes out of register, one drawn over the other.
+   The ring is the cut shape with the same shape inset by a pixel taken out
+   of it (even-odd), so all six edges are lit, diagonals included. */
 .synx-cut::before {
   content: "";
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  padding: 1px;
+  --w: 1px;
+  --d: calc(var(--cut) + var(--w) * .414);
   background: linear-gradient(150deg, var(--edge, var(--cyan)), rgba(139,92,246,.42) 55%, var(--edge, var(--cyan)));
-  clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  filter: drop-shadow(0 0 7px var(--edge, var(--cyan)));
+  clip-path: polygon(evenodd,
+    var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut), var(--cut) 0,
+    var(--d) var(--w), var(--w) var(--d), var(--w) calc(100% - var(--w)),
+    calc(100% - var(--d)) calc(100% - var(--w)), calc(100% - var(--w)) calc(100% - var(--d)),
+    calc(100% - var(--w)) var(--w), var(--d) var(--w));
   opacity: .86;
 }
 
@@ -361,7 +368,11 @@ html, body {
   padding: 13px 24px;
   --cut: 10px;
   --edge: rgba(139, 92, 246, .5);
-  background: rgba(10, 14, 30, .55);
+  /* Near-opaque glass. At .55 the sun's bands ran straight through BENCHMARK
+     and DEFAULTS in hot pink, so the row read as stripes with words on them. */
+  background: rgba(10, 8, 26, .84);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   color: var(--ink-body);
   font: 900 10px/1 var(--font);
   letter-spacing: .18em;

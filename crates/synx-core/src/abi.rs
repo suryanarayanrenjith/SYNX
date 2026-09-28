@@ -1781,7 +1781,13 @@ pub extern "C" fn synx_drv_mptr() -> *mut f32 {
 
 /// Every part's world matrix, for one figure, against whatever is in MODEL.
 #[no_mangle]
-pub extern "C" fn synx_drv_pose(spin: f32, hand: f32, press: f32) -> *mut f32 {
+pub extern "C" fn synx_drv_pose(
+    spin: f32,
+    hand: f32,
+    press: f32,
+    go: f32,
+    stop: f32,
+) -> *mut f32 {
     let r = rig();
     if r.is_empty() {
         return r.out_ptr();
@@ -1790,6 +1796,6 @@ pub extern "C" fn synx_drv_pose(spin: f32, hand: f32, press: f32) -> *mut f32 {
     /* TWO ANGLES. `spin` is how far the rim has turned and `hand` how far the
        hands have gone round with it - the same number until the rim is past
        about seventy degrees, and then not. See GRIP in driver.rs. */
-    r.pose(m, spin as f64, hand as f64, press as f64);
+    r.pose(m, spin as f64, hand as f64, press as f64, go as f64, stop as f64);
     r.out_ptr()
 }

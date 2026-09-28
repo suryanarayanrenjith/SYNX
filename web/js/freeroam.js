@@ -209,10 +209,27 @@
         this.close();
         g.enterFreeRoam({ region: i, rival: OPPONENTS[this.opponent].diff });
       };
-      /* Whichever comes first. A tab that is not being composited - or a
-         harness with a stub for a frame callback - never gets a rAF, and a
-         DRIVE that silently does nothing is worse than one that skips the
-         courtesy frame. */
+      /* THE LONGEST WAIT IN THE GAME GETS THE CARD THE GAME HAS FOR IT.
+
+         A tour prebuilds Aurora Forge's hall AND Neon Horizon's megacity,
+         because either of them landing mid-drive is a stutter in the middle
+         of a hundred and twenty-seven kilometres. That is both of the two
+         expensive builds in the game, back to back, on one frame.
+
+         Two frames of courtesy was enough to get the words BUILDING THE ROAD
+         onto the tile and no further: the board then sat frozen for the whole
+         of it. NR.Staging is the project's own answer to exactly this - every
+         moving thing on that card is a compositor animation, so it runs at
+         sixty through a block in which no script executes at all. See
+         js/staging.js.
+
+         The fallback is the old courtesy frame, for a page with no staging
+         module and for a harness whose rAF is a stub: a DRIVE that silently
+         does nothing is worse than one that skips the cover. */
+      if (NR.Staging) {
+        NR.Staging.cover('FREE ROAM', 'BUILDING THE ROAD', go);
+        return;
+      }
       let fired = false;
       const once = () => { if (!fired) { fired = true; go(); } };
       if (global.requestAnimationFrame) {

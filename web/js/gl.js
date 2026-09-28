@@ -57,6 +57,20 @@
       o[0] = -o[0];
       return o;
     },
+    /* REVERSED DEPTH: the same frustum with depth running 1 at the near plane
+       to 0 at the far one, for a [0,1] clip range (EXT_clip_control). With a
+       floating-point depth buffer that puts the float's dense end - near zero
+       - at the far distance, where a fixed-point buffer has almost nothing
+       left, and the precision comes out close to uniform all the way to the
+       horizon. See REVERSED DEPTH in js/game.js for why the world needs it. */
+    perspectiveRevLH(o, fovy, aspect, near, far) {
+      const f = 1 / Math.tan(fovy / 2);
+      o.fill(0);
+      o[0] = -f / aspect; o[5] = f; o[11] = -1;
+      o[10] = near / (far - near);
+      o[14] = (far * near) / (far - near);
+      return o;
+    },
     /* Sub-pixel jitter, applied in clip space after the projection is built.
        Shifting the third column's x and y offsets NDC by a fraction of a pixel
        without touching the depth range, which is what temporal anti-aliasing
@@ -240,7 +254,23 @@
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     let internal = gl.RGBA8, type = gl.UNSIGNED_BYTE;
-    if (opts.float && gl.getExtension('EXT_color_buffer_half_float')) {
+    /* HALF-FLOAT, AND THE TWO DIFFERENT WAYS A DRIVER SAYS YES TO IT.
+     *
+     * Rendering into RGBA16F is not core WebGL2: it needs an extension, and
+     * there are TWO that grant it. `EXT_color_buffer_half_float` is the one
+     * this asked for, and a number of drivers - several Intel and Mali
+     * WebGL2 stacks among them - expose only `EXT_color_buffer_float`, which
+     * makes every sized float format renderable including this one.
+     *
+     * Asking for one and not the other meant those machines silently fell to
+     * RGBA8 for the HDR scene buffer: the whole frame clamped at 1.0 before
+     * the tonemapper ever saw it, so the neon stopped blooming, the AgX knee
+     * had nothing above white to roll off, and the picture banded in every
+     * gradient. It looked like a different game, and nothing reported an
+     * error. Both extensions are enabled now; either one is enough. */
+    if (opts.float
+        && (gl.getExtension('EXT_color_buffer_half_float')
+            || gl.getExtension('EXT_color_buffer_float'))) {
       internal = gl.RGBA16F; type = gl.HALF_FLOAT;
     }
     gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, gl.RGBA, type, null);
@@ -272,13 +302,18 @@
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, normTex, 0);
     }
     let depth = null, depthTex = null;
+    /* A FLOAT depth buffer when asked for one - which is only worth having
+       with reversed depth, see M4.perspectiveRevLH. Core WebGL2, and
+       point-sampled like the fixed-point one, since depth is never filtered. */
+    const dFmt = opts.depth32f ? gl.DEPTH_COMPONENT32F : gl.DEPTH_COMPONENT24;
+    const dType = opts.depth32f ? gl.FLOAT : gl.UNSIGNED_INT;
     if (opts.depthTex) {
       // sampleable depth: volumetrics, fog and reflections all need to know
       // how far away the scene is, which a renderbuffer cannot tell them
       depthTex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, depthTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, w, h, 0,
-        gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+      gl.texImage2D(gl.TEXTURE_2D, 0, dFmt, w, h, 0,
+        gl.DEPTH_COMPONENT, dType, null);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -304,8 +339,8 @@
         }
         if (this.depthTex) {
           gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, nw, nh, 0,
-            gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+          gl.texImage2D(gl.TEXTURE_2D, 0, dFmt, nw, nh, 0,
+            gl.DEPTH_COMPONENT, dType, null);
         }
         if (this.depth) {
           gl.bindRenderbuffer(gl.RENDERBUFFER, this.depth);

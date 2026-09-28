@@ -23,6 +23,30 @@
 }
 
 :root {
+  /* ============ ONE HUD VIRTUAL UNIT, IN CSS PIXELS ====================
+   *
+   * This interface is drawn by two renderers that cannot see each other. The
+   * instruments are canvas, laid out in a 1280x720 space about its own centre
+   * with +y UP, fitted to the window in BOTH axes; the cards are DOM, laid out
+   * in viewport units from the top-left. Nothing in the stylesheet could say
+   * "clear of the gap readout", because the gap readout is at an arc length in
+   * a space the stylesheet has never heard of - so whether a card lands on an
+   * instrument was a function of the window, and the answer was found by
+   * players rather than by anybody reading either file.
+   *
+   * The fit is `k = min(width / 1280, height / 720)`, which is exactly what
+   * `min(0.078125vw, 0.13888889vh)` is. So this one value is the bridge: any
+   * DOM panel can now be placed against the instruments in the instruments'
+   * own coordinates, and it stays placed at every window shape.
+   *
+   *   x   left:  calc(50% + <vx> * var(--hud-unit))
+   *   y   top:   calc(50% - <vy> * var(--hud-unit))     (+y is UP)
+   *
+   * The numbers to clear come from js/hud.js and are published on
+   * NR.HUD_RIVAL; --probe cards measures the result against the real document
+   * rather than trusting either side of this. */
+  --hud-unit: min(0.078125vw, 0.13888889vh);
+
   /* The canvas HUD's palette, from the constants at the top of js/hud.js. The
      DOM interface reads from here so there is only ever one set of colours. */
   --pink: #ff2e88;
@@ -293,9 +317,24 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
   letter-spacing: .22em;
   text-shadow: 0 0 10px rgba(255,59,30,.54);
 }
+/* WHERE THE HAZARD CALL GOES, AND WHY IT IS NOT A ROUND NUMBER.
+ *
+ * It was at `clamp(108px, 15vh, 164px)`, which is the band the canvas draws
+ * the RIVAL / POSITION / GAP group in - so on Chapter 7, the finale, for the
+ * whole of thirty kilometres, the one call the player has to read was printed
+ * through the one number they are watching. `--probe cards` measures it at
+ * 108x15 pixels of overlap at the harness's own window size, and the amount
+ * changes with the window, which is why neither stylesheet nor screenshot had
+ * ever settled it.
+ *
+ * It is placed against the INSTRUMENTS now rather than against the viewport.
+ * The gap group occupies virtual y 219..292 and the toast stack sits at
+ * 159..193; this sits at 140 and below, which is clear of both at every window
+ * shape the fit can produce. See --hud-unit at the top of this file. */
 #pred7Event {
   position: absolute;
-  left: 50%; top: clamp(108px, 15vh, 164px);
+  left: 50%;
+  top: calc(50% - 140 * var(--hud-unit));
   width: min(530px, 58vw);
   padding: 10px 34px 11px;
   text-align: center;
@@ -476,7 +515,32 @@ body.race-active #synxCursor { opacity: 0 !important; }
   max-width: min(92vw, 560px);
 }
 .panel h3 { margin: 0 0 10px; color: var(--pink); font-size: 20px; }
-#fatal p { font-size: 13px; opacity: 0.85; line-height: 1.7; margin: 0; }
+#fatal p { font-size: 13px; opacity: 0.85; line-height: 1.7; margin: 0; white-space: pre-wrap; }
+
+/* The one control on this card, and it is hidden unless pressing it would
+   actually do something - see the context-loss handler in js/game.js. A
+   button on a screen that says the game cannot start is a button that cannot
+   help, and offering one there would be worse than offering none. */
+#fatalAgain {
+  margin: 20px auto 0;
+  display: block;
+  padding: 11px 26px;
+  border: 1px solid var(--cyan);
+  background: rgba(57, 230, 255, .10);
+  color: #eaf6ff;
+  font: 800 12px/1 var(--font);
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
+#fatalAgain:hover,
+#fatalAgain:focus-visible {
+  background: rgba(57, 230, 255, .22);
+  box-shadow: 0 0 22px -4px var(--cyan);
+  outline: none;
+}
+#fatalAgain[hidden] { display: none; }
 
 #touch { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
 .tbtn {
@@ -883,20 +947,27 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
     linear-gradient(150deg, var(--glass-hi), var(--glass) 62%);
   clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
+/* THE EDGE FOLLOWS THE CUT. It was a rectangular one-pixel ring - a mask of
+   the padding box XOR the content box - clipped to the cut shape afterwards,
+   so at the two cut corners it simply stopped: two straight edges ending in
+   mid-air with no diagonal between them, on every DOM panel and button in
+   the game, while the canvas panels (hud.panel) light all six edges. The ring
+   is the cut shape with the same shape inset by a pixel taken out of it
+   (even-odd), so the diagonals are lit too. */
 .synx-cut::before {
   content: "";
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  padding: 1px;
+  --w: 1px;
+  --d: calc(var(--cut) + var(--w) * .414);
   background: linear-gradient(150deg, var(--edge, var(--cyan)), rgba(139,92,246,.42) 55%, var(--edge, var(--cyan)));
-  clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  filter: drop-shadow(0 0 7px var(--edge, var(--cyan)));
+  clip-path: polygon(evenodd,
+    var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut), var(--cut) 0,
+    var(--d) var(--w), var(--w) var(--d), var(--w) calc(100% - var(--w)),
+    calc(100% - var(--d)) calc(100% - var(--w)), calc(100% - var(--w)) calc(100% - var(--d)),
+    calc(100% - var(--w)) var(--w), var(--d) var(--w));
   opacity: .86;
 }
 
@@ -1007,68 +1078,167 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
 .story-bar-bottom::after { top: 0; }
 #storyLetterbox.show .story-bar { transform: scaleY(1); }
 
-/* Weather. A downpour that reads as depth: two sheets at different speeds and
-   angles, the near one brighter and faster, both masked off at the horizon. */
-#storyRoot.rain::before,
-#storyRoot.rain::after {
-  content: "";
+/* ------------------------------------------------------------ the way out --
+
+   What ESC does, in the bottom letterbox bar - which is the one band of the
+   frame every cinematic in the campaign already keeps clear, and the one place
+   a hint can live without being over the picture or over the dialogue card.
+
+   It is deliberately quiet: small, tracked out, and at a third opacity until
+   the pointer is nowhere near it, because it is an affordance rather than an
+   instruction. A player who does not need it should be able to not see it. */
+#storyExitHint {
   position: absolute;
-  inset: -30%;
-  z-index: 4;
+  left: 50%;
+  bottom: 0;
+  transform: translate(-50%, 0);
+  height: var(--story-safe);
+  display: grid;
+  place-items: center;
+  padding: 0 14px;
+  font: 700 10px/1 var(--font);
+  letter-spacing: .26em;
+  color: rgba(168, 200, 235, .52);
+  text-shadow: 0 0 10px rgba(57, 230, 255, .28);
+  opacity: 0;
   pointer-events: none;
+  transition: opacity 260ms var(--ease, ease);
+  white-space: nowrap;
+}
+#storyExitHint.show { opacity: 1; }
+@media (max-width: 720px) {
+  #storyExitHint { font-size: 8.5px; letter-spacing: .18em; }
+}
+
+/* ------------------------------------------------------------- weather --
+
+   A downpour that reads as depth: two sheets at different distances, the near
+   one brighter, faster and steeper, both masked off at the horizon.
+
+   WHY THIS IS THREE ELEMENTS AND NOT TWO PSEUDO-ELEMENTS.
+
+   The first version was two pseudo-elements on #storyRoot animating
+   `background-position`. That is the obvious way to make a pattern move and
+   it is the most expensive one there is: background-position is not a
+   composited property, so every frame of Chapter 3 re-rasterised two
+   full-screen elements - each carrying two repeating gradients, two mask
+   layers intersected on top of them, and a blur - on the main thread, in
+   competition with the renderer, the physics and the director. It was, by a
+   wide margin, the single most expensive thing on the screen, and none of it
+   was the game.
+
+   A TRANSFORM IS THE SAME MOVEMENT FOR NONE OF THE COST. The layer is
+   rasterised once, with its mask and its gradients baked in, and then simply
+   moved by the compositor - which is what a compositor is for. The work goes
+   from "repaint the window" to "draw a texture at an offset", and it leaves
+   the main thread entirely.
+
+   To do that the effect has to be split, because two things here move at
+   different rates and one of them must not move at all:
+
+     .rain-sheet   the horizon fade and the tilt. STATIC. If this moved, the
+                   place where the rain fades into the distance would travel
+                   up the screen with it, which is not a thing weather does.
+     .rain-sheet i the streaks, and the column mask that cuts them into drops
+                   rather than ruled lines. TRANSLATED, and by exactly one
+                   period of its own streak pattern (--drop), so the loop has
+                   no seam in it: the pattern after the move is the pattern
+                   before it.
+
+   THE TILT IS A ROTATION, not a gradient angle. A tilted repeating gradient
+   tiles along its own normal, so a vertical translation moves it diagonally
+   by an amount that depends on the angle, and the seamless period stops being
+   a number anybody can write down. Rotating the whole sheet instead keeps the
+   pattern axis-aligned and the arithmetic exact, and it tilts the column mask
+   with it, which is correct - rain leans as one thing.
+
+   The far sheet used to carry `filter: blur(.7px)` for depth. A filter forces
+   a separate rasterisation of the whole layer, which is most of what was
+   being saved here; the same depth reads off thinner, dimmer, slower streaks,
+   which is what distance actually does to rain. */
+#storyRain {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+  display: none;
+  /* Its own containment scope, so nothing inside the weather can invalidate
+     the layout or the paint of the story cards drawn over it. Deliberately
+     NOT `strict`, which also contains SIZE - this element takes its size from
+     its insets and has no business being measured as if it were empty. */
+  contain: layout paint style;
+}
+#storyRoot.rain #storyRain { display: block; }
+
+.rain-sheet {
+  position: absolute;
+  /* Oversized because it is rotated: a sheet the size of the window leaves
+     the corners bare the moment it is turned. */
+  inset: -42%;
   mix-blend-mode: screen;
-  /* Two masks, intersected. The first is the horizon: rain fades out into the
-     distance rather than lying at full strength across the sky. The second
-     runs ACROSS the streaks and is what turns a ruled line into a drop - a
-     falling streak is a couple of dozen pixels long, not the height of the
-     screen. */
-  mask-composite: intersect;
-  -webkit-mask-composite: source-in;
+  transform: rotate(var(--tilt));
+  /* The horizon. Rain fades out into the distance rather than lying at full
+     strength across the sky, and it fades again at the very bottom where it
+     would otherwise run into the instruments. */
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, rgba(0, 0, 0, .30) 13%, #000 34%, #000 84%, rgba(0, 0, 0, .35) 100%);
+  mask-image: linear-gradient(180deg, transparent 0, rgba(0, 0, 0, .30) 13%, #000 34%, #000 84%, rgba(0, 0, 0, .35) 100%);
 }
-#storyRoot.rain::before {
-  /* The far sheet: fine, dim, slow, and slightly out of focus, because it is
-     forty metres away. Two layers inside it at different rates, so even the
-     distance has depth in it. */
-  opacity: .17;
-  filter: blur(.7px);
-  background-image:
-    repeating-linear-gradient(96deg, transparent 0 25px,
-      rgba(150,205,255,.10) 25.5px, rgba(168,215,255,.34) 26.5px,
-      rgba(150,205,255,.10) 27.5px, transparent 28px 61px),
-    repeating-linear-gradient(101deg, transparent 0 37px,
-      rgba(140,196,250,.22) 38px, transparent 39px 88px);
-  mask-image:
-    linear-gradient(180deg, transparent 0, rgba(0,0,0,.35) 9%, #000 30%, #000 84%, rgba(0,0,0,.35) 100%),
-    repeating-linear-gradient(6deg, #000 0 34px, transparent 62px 96px);
-  animation: story-rain-far 1.9s linear infinite;
+
+.rain-sheet > i {
+  position: absolute;
+  inset: 0;
+  display: block;
+  /* THE STREAKS. One repeating gradient down the sheet: a gap, then a drop
+     with a soft head and a hard tail. `--drop` is the period, and it is the
+     exact distance the animation travels. */
+  background-image: repeating-linear-gradient(
+    180deg,
+    transparent 0 calc(var(--drop) - var(--len)),
+    rgba(214, 238, 255, 0) calc(var(--drop) - var(--len)),
+    var(--col) calc(var(--drop) - var(--len) * 0.35),
+    rgba(214, 238, 255, 0) var(--drop));
+  /* ...and the columns they fall in. A vertical-stripe pattern is invariant
+     under a vertical translation, which is the whole reason the tilt is a
+     rotation: this mask travels with the streaks without smearing them. */
+  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 var(--thick), transparent var(--thick) var(--col-gap));
+  mask-image: repeating-linear-gradient(90deg, #000 0 var(--thick), transparent var(--thick) var(--col-gap));
+  animation: rain-fall var(--spd) linear infinite;
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
 }
-#storyRoot.rain::after {
-  /* The near sheet: brighter, thicker, and fast enough that a single drop is
-     a streak rather than a dot. */
-  opacity: .26;
-  background-image:
-    repeating-linear-gradient(103deg, transparent 0 15px,
-      rgba(206,236,255,.16) 15.5px, rgba(226,244,255,.60) 16.6px,
-      rgba(206,236,255,.16) 17.6px, transparent 18px 44px),
-    repeating-linear-gradient(107deg, transparent 0 29px,
-      rgba(190,226,255,.40) 30px, transparent 31.4px 70px);
-  mask-image:
-    linear-gradient(180deg, transparent 0, rgba(0,0,0,.28) 7%, #000 26%, #000 90%, rgba(0,0,0,.45) 100%),
-    repeating-linear-gradient(13deg, #000 0 46px, transparent 78px 124px);
-  animation: story-rain-near .78s linear infinite;
+
+.rain-far {
+  --tilt: 5.5deg;
+  --drop: 96px;
+  --len: 30px;
+  --col: rgba(168, 215, 255, .38);
+  --thick: 1px;
+  --col-gap: 27px;
+  --spd: 1.55s;
+  opacity: .34;
 }
-/* Animated on background-position, not on the element: that is what lets the
-   two sheets inside one pseudo-element fall at different speeds. */
-@keyframes story-rain-far {
-  from { background-position: 0 0, 0 0; }
-  to   { background-position: -46px 210px, -30px 138px; }
+
+.rain-near {
+  --tilt: 9deg;
+  --drop: 132px;
+  --len: 56px;
+  --col: rgba(226, 244, 255, .72);
+  --thick: 1.6px;
+  --col-gap: 46px;
+  --spd: .62s;
+  opacity: .46;
 }
-@keyframes story-rain-near {
-  from { background-position: 0 0, 0 0; }
-  to   { background-position: -78px 330px, -52px 246px; }
+
+/* Exactly one period. The pattern at 100% is the pattern at 0%, so the frame
+   the animation restarts on is identical to the one before it. */
+@keyframes rain-fall {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(0, var(--drop), 0); }
 }
+
 @media (prefers-reduced-motion: reduce) {
-  #storyRoot.rain::before, #storyRoot.rain::after { animation: none; }
+  .rain-sheet > i { animation: none; }
 }
 
 /* ------------------------------------------------------------ title card -- */
@@ -1482,6 +1652,15 @@ img.is-boss {
   font: 700 9px/1 var(--font);
   letter-spacing: .2em;
 }
+/* K, and only on a scene that has already been read. Hidden by default and
+   revealed by DialogueController.play, so the card never advertises a key
+   that would do nothing if it were pressed. Brighter than the ENTER hint
+   beside it because it is the one that is new information. */
+#storySkipHint {
+  display: none;
+  color: rgba(57, 230, 255, .62);
+}
+#storySkipHint.show { display: inline; }
 /* The voice trace. It runs while a line is typing and flatlines when it ends -
    the same instrument logic as the C.A.T. scope on the canvas. */
 .story-wave {
@@ -1599,9 +1778,14 @@ img.is-boss {
     linear-gradient(90deg, rgba(255,46,136,.24) 1px, transparent 1px);
   background-size: 58px 58px;
   mask-image: linear-gradient(180deg, transparent, #000 55%);
+  will-change: transform;
   animation: battle-grid 1.6s linear infinite;
 }
-@keyframes battle-grid { to { background-position: 0 58px, 58px 0; } }
+/* The same substitution as hub-grid below, on the VS plate's own grid. */
+@keyframes battle-grid {
+  from { transform: perspective(560px) rotateX(70deg) translate3d(0, 0, 0); }
+  to   { transform: perspective(560px) rotateX(70deg) translate3d(58px, 58px, 0); }
+}
 
 /* The battle-card art is a finished card: portrait, callsign and a stat block
    are all painted into the file. Cover-cropping it to a tall slot sliced the
@@ -1693,9 +1877,37 @@ img.is-boss {
     linear-gradient(90deg, rgba(139,92,246,.34) 1px, transparent 1px);
   background-size: 72px 46px;
   mask-image: linear-gradient(180deg, transparent, #000 42%);
+  will-change: transform;
   animation: hub-grid 2.6s linear infinite;
 }
-@keyframes hub-grid { to { background-position: 0 46px, 72px 0; } }
+/* THE HORIZON GRID, MOVED BY THE COMPOSITOR RATHER THAN REPAINTED.
+
+   This is the same fix the weather got, and it is on the four screens the
+   game calls its menus: the driver terminal, the Story hub, the Free Roam
+   board and the multiplayer lobby all stand on this grid, and all four of
+   them were animating `background-position` on a half-screen element that
+   also carries a perspective transform and a mask. That is a full repaint
+   AND a re-composite of that element on every frame, for the whole time the
+   screen is open, on the machines where the menus were reported as slow.
+
+   A TRANSFORM IS THE SAME PICTURE HERE. The two layers are a horizontal rule
+   repeating every 46px and a vertical rule repeating every 72px, and each is
+   INVARIANT along the other's axis: moving the horizontal lines sideways
+   changes nothing, and neither does moving the vertical lines down. So one
+   translation of (72px, 46px) is pixel-for-pixel what two separate
+   background-position moves of (0, 46px) and (72px, 0) were - and the
+   browser can do it on the GPU without touching a pixel of the element.
+
+   It is APPENDED to the existing transform rather than replacing it, so the
+   move happens in the rotated space, which is what makes the grid flow along
+   its own plane toward the viewer instead of sliding down the screen. The
+   element is oversized past every edge and masked to nothing at the top, so
+   the handful of screen pixels the box itself shifts by are either off-frame
+   or inside the fade. */
+@keyframes hub-grid {
+  from { transform: perspective(340px) rotateX(76deg) translate3d(0, 0, 0); }
+  to   { transform: perspective(340px) rotateX(76deg) translate3d(72px, 46px, 0); }
+}
 
 .story-hub-panel {
   position: relative;
@@ -1925,6 +2137,7 @@ img.is-boss {
     linear-gradient(90deg, rgba(139,92,246,.34) 1px, transparent 1px);
   background-size: 72px 46px;
   mask-image: linear-gradient(180deg, transparent, #000 42%);
+  will-change: transform;
   animation: hub-grid 2.6s linear infinite;
 }
 
@@ -2182,6 +2395,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
     linear-gradient(90deg, rgba(139,92,246,.34) 1px, transparent 1px);
   background-size: 72px 46px;
   mask-image: linear-gradient(180deg, transparent, #000 42%);
+  will-change: transform;
   animation: hub-grid 2.6s linear infinite;
 }
 
@@ -2519,6 +2733,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   display: grid;
   place-items: center;
   background: rgba(3,1,12,.84);
+  -webkit-backdrop-filter: blur(7px);
   backdrop-filter: blur(7px);
 }
 #mpDialogRoot[aria-hidden="true"] { display: none; }
@@ -2809,6 +3024,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   display: grid;
   place-items: center;
   background: rgba(3,1,12,.82);
+  -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
 #mpNameRoot[aria-hidden="true"] { display: none; }
@@ -2885,6 +3101,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   /* Darker and flatter than it was: this is a reference the player glances
      at, not something that should compete with the road for attention. */
   background: rgba(4,1,14,.52);
+  -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
 }
 #mpHudBanner { display: block; color: rgba(160,200,235,.62); font: 700 7.5px/1.3 var(--font); letter-spacing: .13em; }
@@ -2917,6 +3134,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   font-family: var(--font);
   color: var(--ink);
   background: rgba(3,1,12,.72);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 #mpResultsRoot[aria-hidden="true"] { display: none; }
@@ -3014,6 +3232,7 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
     linear-gradient(90deg, rgba(139,92,246,.34) 1px, transparent 1px);
   background-size: 72px 46px;
   mask-image: linear-gradient(180deg, transparent, #000 42%);
+  will-change: transform;
   animation: hub-grid 2.6s linear infinite;
 }
 
@@ -3474,6 +3693,7 @@ body.modeselect-open #hudCanvas { opacity: 0; }
   padding: 24px;
   pointer-events: none;
   background: radial-gradient(circle at 50% 46%, rgba(90,35,155,.30), transparent 46%), rgba(2,2,10,.6);
+  -webkit-backdrop-filter: blur(5px);
   backdrop-filter: blur(5px);
 }
 #storyContinuePrompt.show { pointer-events: auto; }
@@ -3536,6 +3756,7 @@ body.modeselect-open #hudCanvas { opacity: 0; }
   padding: 24px;
   pointer-events: none;
   background: radial-gradient(circle at 50% 44%, rgba(190,30,120,.28), transparent 48%), rgba(3,1,9,.72);
+  -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
 #storyChoice.show { pointer-events: auto; }
@@ -3671,6 +3892,23 @@ body.cine5-active #storyTutorial {
 #storyRaceMeta small { display: block; color: var(--cyan); font: 800 8px/1 var(--font); letter-spacing: .2em; text-shadow: 0 0 10px rgba(57,230,255,.55); }
 #storyRaceMeta b { display: block; margin-top: 7px; font: 900 clamp(13px, 1.2vw, 18px)/1.05 var(--font); letter-spacing: .01em; }
 #storyRaceMeta span { display: block; margin-top: 6px; color: var(--amber); font: 700 8.5px/1.4 var(--font); letter-spacing: .12em; }
+/* The objective, under a rule, because it is a different KIND of fact from
+   the three lines above it: those say where you are and who you are against,
+   and this says what winning means here. It is set in the interface's key
+   ink rather than in the amber the rival's name uses - the rival is context,
+   the objective is the instruction. */
+#storyRaceObjective {
+  display: block;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(57, 230, 255, .22);
+  color: var(--ink-key, rgba(238, 246, 255, .96));
+  font: 800 9px/1.45 var(--font);
+  letter-spacing: .13em;
+  text-decoration: none;
+  text-shadow: 0 0 12px rgba(57, 230, 255, .3);
+}
+#storyRaceObjective:empty { display: none; }
 #storyStandings {
   display: none;
   margin: 11px 0 0;
@@ -3721,6 +3959,9 @@ body.story-hub #hudCanvas { opacity: 0; }
   #storyNameplate { left: calc(var(--portrait) + 10px); padding: 7px 14px 6px; top: -14px; }
   #storyText { font-size: 14px; line-height: 1.5; }
   .story-dialogue-meta span { display: none; }
+  /* ...including the skip hint, whose id+class beats the rule above.
+     A narrow screen is a touch screen and there is no K on one. */
+  #storySkipHint.show { display: none; }
   #storyCompact { width: min(320px, 64vw); grid-template-columns: 54px 1fr; top: clamp(212px, 26vh, 300px); }
   #storyCompact img { width: 54px; height: 54px; }
   #storyBattle { grid-template-columns: 1fr 108px 1fr; }
@@ -3781,16 +4022,84 @@ body.story-hub #hudCanvas { opacity: 0; }
   z-index: 9000;
   display: grid;
   place-items: center;
+  /* THE SAME ROOM THE PRELOADER STANDS IN.
+
+     This screen follows the loader directly, and the two were lit
+     differently - the loader a violet horizon with a banded sun on it, this a
+     flat CRT wash - so the opening read as two unrelated pieces of software
+     in a row. Same base, same two washes, same vignette. See #preload in
+     index.html, which is where these numbers come from. */
   background:
-    radial-gradient(120% 90% at 50% 34%, rgba(38, 8, 74, .60), transparent 68%),
-    radial-gradient(90% 70% at 50% 112%, rgba(255, 46, 136, .14), transparent 62%),
-    #03000a;
+    radial-gradient(ellipse 120% 70% at 50% 108%, rgba(255, 46, 136, .30), transparent 60%),
+    radial-gradient(ellipse 90% 60% at 50% 34%, rgba(90, 40, 190, .28), transparent 70%),
+    radial-gradient(ellipse at 50% 50%, transparent 34%, rgba(2, 0, 9, .86) 100%),
+    #04010c;
   color: var(--ink-body);
   font-family: var(--font);
   opacity: 1;
   transition: opacity 480ms var(--ease-out);
 }
 #advisory.gone { opacity: 0; pointer-events: none; }
+
+/* THE HORIZON AND THE SUN, which are the loader's signature and now this
+   screen's too. Dimmer than the loader's (.30/.10 against .62/.20) because
+   there is a card of safety copy standing on them and the copy wins. Both are
+   compositor transforms, like everything else in the opening. */
+.adv-horizon {
+  position: absolute;
+  left: -30%; right: -30%; bottom: -6%;
+  height: 52%;
+  opacity: .30;
+  pointer-events: none;
+  transform: perspective(340px) rotateX(76deg);
+  background:
+    linear-gradient(rgba(57, 230, 255, .46) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(139, 92, 246, .34) 1px, transparent 1px);
+  background-size: 72px 46px;
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 42%);
+  mask-image: linear-gradient(180deg, transparent, #000 42%);
+  animation: advHorizon 2.6s linear infinite;
+  will-change: transform;
+}
+/* The base transform is on the element as well as in the keyframes, so the
+   plane is still laid down flat when the animation is off. */
+@keyframes advHorizon {
+  from { transform: perspective(340px) rotateX(76deg) translate3d(0, 0, 0); }
+  to   { transform: perspective(340px) rotateX(76deg) translate3d(72px, 46px, 0); }
+}
+/* A GLOW HERE, NOT THE LOADER'S BANDED DISC.
+
+   The loader's sun is a hard disc cut into six-pixel bands, and it can be,
+   because it stands in open frame behind one word. This card is 94vh tall,
+   so the only part of a disc that would ever be seen is whatever clears the
+   top edge - which came out as a striped arc floating above the notice,
+   reading as a rendering fault rather than as a sun. Same colours, same
+   breath, no hard edge: what shows past the card is warm light, which is all
+   it was ever there to be. */
+.adv-sun {
+  position: absolute;
+  left: 50%; top: 46%;
+  width: min(74vw, 700px);
+  aspect-ratio: 1;
+  /* HALF ITS OWN SIZE, which is max() of the two negatives and not min().
+     min() picks the MORE negative one, so on any window wider than 946px the
+     glow was pulled left and up by the difference - 360px at 1920 - and sat
+     over the top-left corner of the card instead of behind it. */
+  margin-left: max(-37vw, -350px);
+  margin-top: max(-37vw, -350px);
+  border-radius: 50%;
+  background: radial-gradient(closest-side,
+    rgba(255, 180, 92, .55), rgba(255, 95, 168, .30) 52%, transparent 76%);
+  opacity: .34;
+  filter: blur(10px);
+  pointer-events: none;
+  animation: advSun 3.6s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+@keyframes advSun {
+  from { transform: scale(.97); opacity: .26; }
+  to   { transform: scale(1.03); opacity: .40; }
+}
 
 /* The tube. A corner vignette and nothing else - the curvature is implied by
    the grille and the frame, which is cheaper and reads better than a filter. */
@@ -3849,17 +4158,29 @@ body.story-hub #hudCanvas { opacity: 0; }
   box-shadow: 0 0 0 1px rgba(255, 46, 136, .10), 0 0 90px rgba(0, 0, 0, .8) inset;
   animation: advIn 560ms var(--ease-out) both;
 }
-/* The brackets, drawn as two corner-only borders on pseudo-elements. */
-.adv-frame::before,
-.adv-frame::after {
+/* THE BRACKETS, ALL FOUR. They were two corner-only borders on the two
+   pseudo-elements, so the card had a top-left and a bottom-right and nothing
+   else - the one frame in the opening that was not a frame. Every other
+   panel in the game marks all four corners, so this does too: eight strokes
+   laid on one layer as background images, which leaves ::after free. */
+.adv-frame::before {
   content: "";
   position: absolute;
-  width: 26px; height: 26px;
+  inset: -1px;
   pointer-events: none;
-  border: 2px solid var(--cyan);
+  --bk: var(--cyan);
+  background:
+    linear-gradient(var(--bk) 0 0) top left / 26px 2px no-repeat,
+    linear-gradient(var(--bk) 0 0) top left / 2px 26px no-repeat,
+    linear-gradient(var(--bk) 0 0) top right / 26px 2px no-repeat,
+    linear-gradient(var(--bk) 0 0) top right / 2px 26px no-repeat,
+    linear-gradient(var(--bk) 0 0) bottom left / 26px 2px no-repeat,
+    linear-gradient(var(--bk) 0 0) bottom left / 2px 26px no-repeat,
+    linear-gradient(var(--bk) 0 0) bottom right / 26px 2px no-repeat,
+    linear-gradient(var(--bk) 0 0) bottom right / 2px 26px no-repeat;
+  filter: drop-shadow(0 0 6px rgba(57, 230, 255, .55));
 }
-.adv-frame::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
-.adv-frame::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+.adv-frame::after { content: none; }
 @keyframes advIn {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: none; }
@@ -3930,19 +4251,36 @@ body.story-hub #hudCanvas { opacity: 0; }
   text-shadow: 0 0 18px rgba(255, 180, 0, .45);
 }
 
+/* SET AS A COLUMN, NOT AS A POSTER.
+
+   The card is centred and everything on it was inheriting that, so the
+   warning itself was centred prose: three paragraphs of ragged lines with
+   "throughout." and "playing." each stranded alone on a line of their own.
+   Centred text is for a headline that fits on one line. This is a paragraph
+   somebody has to read to the end, so it is ranged left on a measure, which
+   is the whole difference between a safety notice and a splash screen. */
 .adv-body {
   margin: clamp(8px, 1.8vh, 20px) auto 0;
-  max-width: 66ch;
+  max-width: 62ch;
   font-size: clamp(11px, 1.3vw, 13.5px);
-  line-height: 1.56;
+  line-height: 1.62;
   letter-spacing: .012em;
+  text-align: left;
+  text-wrap: pretty;
 }
-.adv-body p { margin: 0 0 .55em; }
+.adv-body p { margin: 0 0 .72em; }
 .adv-body b { color: var(--ink-key); font-weight: 700; }
+/* ONE CALLOUT TREATMENT, TWO COLOURS.
+
+   The STOP box was a solid pink rule on a hairline border and the BETA box was
+   a dashed amber rectangle, so two notes of equal standing sat under the same
+   paragraph looking like they came from different programs. They are the same
+   object now - hairline border, three-pixel accent down the leading edge, a
+   wash of the accent behind it - and only the hue says which is which. */
 .adv-stop {
-  margin-top: .8em;
-  padding: .65em .9em;
-  border: 1px solid rgba(255, 46, 136, .34);
+  margin-top: .9em;
+  padding: .7em 1em;
+  border: 1px solid rgba(255, 46, 136, .30);
   border-left: 3px solid var(--pink);
   background: rgba(255, 46, 136, .07);
   color: var(--ink-key);
@@ -3954,9 +4292,17 @@ body.story-hub #hudCanvas { opacity: 0; }
   align-items: center;
   gap: 14px;
   margin: clamp(8px, 1.6vh, 16px) auto 0;
-  max-width: 66ch;
-  padding: .6em .9em;
-  border: 1px dashed rgba(255, 180, 0, .38);
+  /* ON THE BODY'S MEASURE. This was 66ch against the body's 62ch, and the
+     two were counted in different sizes of type - so the note's left edge
+     sat ninety pixels outboard of the paragraphs above it, the one ragged
+     edge on a card that is otherwise ruled. Same size, same count, same
+     column. */
+  font-size: clamp(11px, 1.3vw, 13.5px);
+  max-width: 62ch;
+  box-sizing: border-box;
+  padding: .7em 1em;
+  border: 1px solid rgba(255, 180, 0, .30);
+  border-left: 3px solid var(--amber);
   background: rgba(255, 180, 0, .05);
   text-align: left;
 }
@@ -4321,6 +4667,13 @@ section[aria-hidden="false"] .freeroam-head small {
    away from the pointer already heading for it. */
 .adv-wait { min-height: 1.6em; }
 .adv-body p.adv-wait { min-height: 3.2em; }
+/* ...and a CALLOUT that has not been typed yet keeps its box but not its
+   paint. The STOP note's border, accent and wash were up for the whole of
+   the two paragraphs before it: an empty magenta frame in the middle of the
+   card, which read as a box that had failed to load. It lights as its first
+   character lands. */
+.adv-stop { transition: border-color 220ms var(--ease-out), background-color 220ms var(--ease-out); }
+.adv-stop.adv-wait { border-color: transparent; background-color: transparent; }
 
 /* CONTINUE, which is a button rather than a prompt now. It stops breathing
    once the copy has finished arriving: while the notice is still being typed
@@ -4347,6 +4700,15 @@ section[aria-hidden="false"] .freeroam-head small {
   text-shadow: none;
 }
 .adv-go:disabled .adv-go-sub { color: rgba(150, 180, 222, .22); }
+/* A control that is off because it is not its turn yet, rather than one that
+   is off because something is wrong. The dim cyan keeps it on the screen's
+   own palette - the previous grey was the only neutral element in the
+   opening and read as a dead button. */
+.adv-go:disabled {
+  border-color: rgba(57, 230, 255, .14);
+  background: linear-gradient(180deg, rgba(57, 230, 255, .05), transparent);
+}
+.adv-go:disabled .adv-go-key { color: rgba(120, 178, 214, .40); text-shadow: none; }
 /* ...and the moment it arms, it says so once and then settles. */
 .adv-go.is-armed { animation: advArm 420ms var(--ease-out) both, advBreathe 2.6s ease-in-out 420ms infinite; }
 @keyframes advArm {
@@ -4355,6 +4717,9 @@ section[aria-hidden="false"] .freeroam-head small {
 }
 @media (prefers-reduced-motion: reduce) {
   .adv-go.is-armed { animation: none; }
+  /* The plane and the sun stay - they are the room - but they stop moving. */
+  .adv-horizon, .adv-sun { animation: none; }
+  .adv-sun { opacity: .32; }
 }
 
 /* THE NOTICE SCROLLS WITHOUT SAYING SO.
@@ -4652,7 +5017,17 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
   z-index: 8900;
   display: grid;
   place-items: center;
-  background: #000;
+  overflow: hidden;
+  /* THE ROOM EVERY OTHER SCREEN OF THE OPENING STANDS IN: the preloader's
+     base, its violet wash high in the middle, magenta off the horizon and a
+     vignette (see #preload::before in index.html, and #advisory, which says
+     the same). This was flat black - the one screen in the sequence with no
+     light in it, between two that are lit alike. */
+  background:
+    radial-gradient(ellipse 120% 70% at 50% 108%, rgba(255, 46, 136, .30), transparent 60%),
+    radial-gradient(ellipse 90% 60% at 50% 34%, rgba(90, 40, 190, .28), transparent 70%),
+    radial-gradient(ellipse at 50% 50%, transparent 34%, rgba(2, 0, 9, .86) 100%),
+    #04010c;
   /* The wipe. `clip-path` rather than opacity so the world underneath is
      revealed edge-first at full brightness - a fade shows it through a grey
      film for half a second, which is the one thing that makes a good renderer
@@ -4662,18 +5037,99 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
 }
 .intro-veil.intro-lift { clip-path: inset(0 0 0 100%); }
 
-/* Two hairlines that ride the wipe's edge, which is what stops the black from
-   simply being absent and makes it read as a shutter. */
+/* THE HORIZON AND THE SUN - the preloader's, exactly, so the three screens
+   of the opening are one place. Both are compositor transforms. */
+.intro-sky { position: absolute; inset: 0; pointer-events: none; }
+.intro-grid {
+  position: absolute;
+  left: -30%; right: -30%; bottom: -6%;
+  height: 52%;
+  opacity: .5;
+  transform: perspective(340px) rotateX(76deg);
+  background:
+    linear-gradient(rgba(57, 230, 255, .46) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(139, 92, 246, .34) 1px, transparent 1px);
+  background-size: 72px 46px;
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 42%);
+  mask-image: linear-gradient(180deg, transparent, #000 42%);
+  animation: introGrid 2.6s linear infinite;
+  will-change: transform;
+}
+@keyframes introGrid {
+  from { transform: perspective(340px) rotateX(76deg) translate3d(0, 0, 0); }
+  to   { transform: perspective(340px) rotateX(76deg) translate3d(72px, 46px, 0); }
+}
+/* Behind the NAME, which on this screen sits above the middle: the ledger
+   under it is most of the height. Centred by half its own size, max() of
+   the negatives - see the same note on #preload .pl-sun. */
+.intro-sun {
+  position: absolute;
+  left: 50%; top: 34%;
+  width: min(40vw, 360px);
+  aspect-ratio: 1;
+  margin-left: max(-20vw, -180px);
+  margin-top: max(-20vw, -180px);
+  border-radius: 50%;
+  background: linear-gradient(180deg, #ffb45c 0%, #ff5fa8 46%, #8a3bd6 100%);
+  opacity: .16;
+  filter: blur(2px);
+  -webkit-mask-image: repeating-linear-gradient(180deg, #000 0 6px, transparent 6px 11px);
+  mask-image: repeating-linear-gradient(180deg, #000 0 6px, transparent 6px 11px);
+  animation: introSun 3.6s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+@keyframes introSun { from { transform: scale(.97); opacity: .12; } to { transform: scale(1.03); opacity: .2; } }
+
+/* The tube's scanlines. There used to be a two-pixel cyan hairline down the
+   right-hand edge in here too, "riding the wipe's edge" - except the wipe
+   uncovers from the LEFT, so the line stood still at the right of the frame
+   for the whole boot, a lone stripe that read as a rendering fault. The edge
+   that does ride the wipe is .intro-edge, below. */
 .intro-bars {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background:
-    linear-gradient(90deg, transparent calc(100% - 2px), var(--cyan) calc(100% - 2px)),
-    repeating-linear-gradient(0deg, rgba(255, 255, 255, .028) 0 1px, transparent 1px 3px);
-  opacity: .9;
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, .24) 0 1px, transparent 1px 3px);
+  opacity: .5;
 }
 
+/* The frame the name is read inside - the preloader's corner ticks. */
+.intro-frame {
+  position: absolute;
+  inset: clamp(26px, 5.6vh, 64px) clamp(18px, 2.4vh, 30px);
+  pointer-events: none;
+}
+.intro-frame i {
+  position: absolute;
+  width: 26px; height: 26px;
+  border: 1px solid rgba(139, 92, 246, .55);
+}
+.intro-frame i:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+.intro-frame i:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; }
+.intro-frame i:nth-child(3) { bottom: 0; left: 0; border-right: 0; border-top: 0; }
+.intro-frame i:nth-child(4) { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+
+/* THE SHUTTER'S EDGE. A lit line that travels across with the wipe, so what
+   uncovers the world is a thing moving rather than a rectangle shrinking.
+   Off the veil (which would clip it) and invisible until the lift - and
+   moved by the same loop that moves the wipe, see wipe() in js/intro.js,
+   so it cannot drift off the edge it marks. */
+.intro-edge {
+  position: fixed;
+  top: 0; bottom: 0; left: 0;
+  width: 2px;
+  z-index: 8901;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, var(--cyan, #39e6ff) 18%, #fff 50%, var(--cyan, #39e6ff) 82%, transparent);
+  box-shadow: 0 0 18px 2px rgba(57, 230, 255, .7), 0 0 60px 6px rgba(255, 46, 136, .35);
+  opacity: 0;
+  will-change: transform;
+}
+
+/* The whole block is centred and so is the name over it - the name was
+   ranged left on the ledger's edge, which on a centred screen put it a
+   third of the way across, looking as though something had failed to
+   centre it. The ledger itself stays ranged: it is a table. */
 .intro-term {
   position: relative;
   width: min(680px, 86vw);
@@ -4681,34 +5137,49 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
 }
 
 /* The wordmark, at rest. The animated one is the HUD's, which arrives with
-   the shot; this is the still that was already on screen before it. */
+   the shot; this is the still that was already on screen before it.
+   IN THE HOUSE CHROME - the same ramp, the same airbrush cuts and the same
+   halo as .synx-chrome and the title screen's name, where it had been plain
+   white with a chroma split: the fourth version of the one word. */
 .intro-mark {
-  font-size: clamp(38px, 9vw, 104px);
+  display: block;
+  width: max-content;
+  margin: 0 auto;
+  font-size: clamp(44px, 9.5vw, 118px);
   font-weight: 900;
-  letter-spacing: .16em;
+  letter-spacing: .06em;
   line-height: 1;
-  color: #fff;
-  text-shadow:
-    -2px 0 0 rgba(255, 46, 136, .9),
-     2px 0 0 rgba(57, 230, 255, .9),
-     0 0 42px rgba(57, 230, 255, .35),
-     0 0 120px rgba(139, 92, 246, .28);
+  text-align: center;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 .112em, rgba(0, 0, 0, .46) .112em .136em),
+    linear-gradient(180deg, #ffffff 0%, #c8b8ff 30%, #5b3fb8 47%, #2a1650 50%, #ffd977 53%, #ff5fb0 72%, #7a1f6b 100%);
+  background-size: 100% 1.06em;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  -webkit-text-stroke: .5px rgba(255, 255, 255, .55);
+  filter: drop-shadow(0 0 22px rgba(255, 46, 136, .40)) drop-shadow(0 0 60px rgba(120, 70, 255, .34)) drop-shadow(0 2px 0 rgba(0, 0, 0, .8));
   animation: introMark 620ms cubic-bezier(.2, .8, .3, 1) both;
 }
 @keyframes introMark {
-  from { opacity: 0; letter-spacing: .34em; }
-  to   { opacity: 1; letter-spacing: .16em; }
+  from { opacity: 0; transform: translate3d(0, 14px, 0) scale(1.07); }
+  to   { opacity: 1; transform: none; }
 }
 
 /* The line under the wordmark. The same words the title screen carries a
    moment later, so the two read as one arrival rather than as a splash
-   followed by a menu. */
+   followed by a menu. Set as the preloader sets it, and centred under the
+   name it belongs to. */
 .intro-tag {
-  margin: .85em 0 0;
-  color: var(--ink-mute);
-  font-size: clamp(9px, 1.15vw, 12px);
-  font-weight: 700;
-  letter-spacing: .46em;
+  margin: .95em 0 0;
+  color: rgba(186, 214, 242, .72);
+  font-size: clamp(9px, 1.05vw, 14px);
+  font-weight: 600;
+  letter-spacing: .56em;
+  text-indent: .56em;
+  text-align: center;
+  text-shadow: 0 0 18px rgba(57, 230, 255, .45);
   animation: introTag 700ms var(--ease-out) 180ms both;
 }
 @keyframes introTag {
@@ -4782,6 +5253,8 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
 .intro-ready {
   display: block;
   margin-top: 1.1em;
+  text-align: center;
+  text-indent: .42em;
   color: var(--cyan, #39e6ff);
   font-size: clamp(11px, 1.5vw, 15px);
   font-weight: 900;
@@ -4811,6 +5284,12 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
   left: 0;
   top: 0;
   pointer-events: none;
+  /* The mark is chrome now - transparent glyphs over a clipped ramp - and
+     text-fill-color is inherited, so without these the two slices would be
+     transparent too and the glitch would be invisible. */
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  -webkit-text-stroke: 0;
 }
 .intro-mark { position: relative; }
 .intro-mark::before {
@@ -4854,6 +5333,7 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .intro-veil, .intro-mark, .intro-skip, .intro-ready, .intro-tag,
   .intro-mark::before, .intro-mark::after, .intro-rail > i, .intro-ok, .intro-row,
+  .intro-grid, .intro-sun, .intro-edge,
   .ign-veil, .ign-beat::before { animation: none !important; transition: none !important; }
   .intro-mark::before, .intro-mark::after { display: none; }
 }
@@ -5051,6 +5531,7 @@ section[aria-hidden="false"] > .freeroam-panel::after {
     linear-gradient(180deg, rgba(10, 4, 28, .84), rgba(6, 2, 18, .93));
   border: 1px solid rgba(120, 160, 220, .22);
   border-radius: 3px;
+  -webkit-backdrop-filter: blur(7px);
   backdrop-filter: blur(7px);
   box-shadow: 0 22px 60px rgba(0, 0, 0, .55);
   animation: benchIn 320ms var(--ease-out, ease) both;
@@ -5364,4 +5845,198 @@ section[aria-hidden="false"] > .freeroam-panel::after {
 @media (prefers-reduced-motion: reduce) {
   .bench, .bench-strip, .bench-card { animation: none !important; }
   .bench-bar i { transition: none; }
+}
+
+
+/* ==========================================================================
+   LEAN DECORATION
+   ==========================================================================
+
+   WHAT THIS IS FOR
+
+   Every other performance control in this game is about the 3D. This one is
+   about the INTERFACE, which on a low-end machine is a completely separate
+   and largely invisible cost: the panels in this stylesheet carry seven
+   full-frame `backdrop-filter` blurs, several full-screen animated sheets and
+   a great many stacked shadows, and none of that goes through the renderer,
+   the preset or the render scale. It is the browser's compositor, and on
+   integrated graphics a full-frame backdrop blur is comfortably several
+   milliseconds a frame on its own - which is why "the menus lag even on LOW"
+   is a sentence that made sense.
+
+   So `<body data-gfx="lean">` is the interface's own low setting. It is set
+   by the game from the quality preset and by the adaptive scaler when it has
+   had to give up pixels (see syncGfxClass in js/game.js), and it does three
+   things:
+
+     - drops every backdrop-filter, replacing it with a slightly heavier flat
+       wash so the panels still separate from what is behind them;
+     - stops the decorative sheets that animate for as long as a screen is
+       open, which on a weak machine buys more than they are worth;
+     - trims the largest blur radii, which are the ones that cost.
+
+   WHAT IT DELIBERATELY DOES NOT TOUCH: type, colour, layout, spacing, the cut
+   corners, the borders or any transition shorter than a third of a second.
+   The interface has to look like the same interface. This is the difference
+   between a panel that is blurred behind and one that is merely dark behind,
+   which is a thing you have to be told to notice.
+
+   A machine that is keeping up never sees any of it. */
+
+body[data-gfx="lean"] #mpDialogRoot,
+body[data-gfx="lean"] #mpNameRoot,
+body[data-gfx="lean"] #mpResultsRoot,
+body[data-gfx="lean"] #storyContinuePrompt,
+body[data-gfx="lean"] #storyChoice,
+body[data-gfx="lean"] .mp-hud-panel,
+body[data-gfx="lean"] .bench-strip {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* ...and a little more opacity in their place, so the panel still reads as
+   sitting in front of something rather than floating on it. */
+body[data-gfx="lean"] #mpDialogRoot { background: rgba(3, 1, 12, .93); }
+body[data-gfx="lean"] #mpNameRoot { background: rgba(3, 1, 12, .93); }
+body[data-gfx="lean"] #mpResultsRoot { background: rgba(3, 1, 12, .90); }
+body[data-gfx="lean"] .mp-hud-panel { background: rgba(4, 1, 14, .74); }
+body[data-gfx="lean"] #storyContinuePrompt {
+  background: radial-gradient(circle at 50% 46%, rgba(90, 35, 155, .30), transparent 46%), rgba(2, 2, 10, .86);
+}
+body[data-gfx="lean"] #storyChoice {
+  background: radial-gradient(circle at 50% 44%, rgba(190, 30, 120, .28), transparent 48%), rgba(3, 1, 9, .90);
+}
+
+/* The sheets that run for as long as a screen is up. Each is a full-frame
+   composite every frame for something the eye reads as texture. */
+body[data-gfx="lean"] #storyHub::before,
+body[data-gfx="lean"] #freeRoam::before,
+body[data-gfx="lean"] #multiplayer::before,
+body[data-gfx="lean"] #modeSelect::before,
+body[data-gfx="lean"] .battle-grid,
+body[data-gfx="lean"] .rain-sheet > i,
+body[data-gfx="lean"] .mp-bar span,
+body[data-gfx="lean"] #storyPortrait.corrupt {
+  animation: none;
+}
+/* The weather stays - a chapter that is ABOUT rain cannot simply stop raining
+   - but only the near sheet, and without the blend it costs a third of what
+   two sheets did. */
+body[data-gfx="lean"] .rain-far { display: none; }
+body[data-gfx="lean"] .rain-sheet { mix-blend-mode: normal; opacity: .30; }
+body[data-gfx="lean"] .rain-sheet > i { animation: rain-fall var(--spd) linear infinite; }
+body[data-gfx="lean"] .rain-far > i { animation: none; }
+
+/* The voice trace under a line of dialogue: a masked gradient re-rasterised
+   at 1.1 s per cycle, behind every conversation in the campaign. */
+body[data-gfx="lean"] #storyDialogue.typing .story-wave { animation: none; opacity: .3; }
+
+
+/* ==========================================================================
+   THE PRESS
+   ==========================================================================
+
+   Every button in this game is a cut-cornered panel with a lit edge, and
+   until now not one of them did anything when it was pressed. Thirty-seven
+   of them: the chapter tiles, the hub actions, the mode cards, the two doors
+   on a decision, CONTINUE, the multiplayer dialogs, every BACK. They lit on
+   hover, they took the click, and the moment of the press itself - the one
+   frame where the player finds out the machine noticed - was nothing at all.
+
+   That is the smallest and most-repeated piece of feel in the whole
+   interface. A control that gives way under the finger reads as a control;
+   one that does not reads as a picture of one, and no amount of work on the
+   screen it sits in fixes that.
+
+   WHAT IT IS. A press is three things happening together, and each of them
+   says something slightly different:
+
+     it GIVES WAY      scale under 1, so the surface moves away from the
+                       finger. Disney's squash, at the size a rigid panel is
+                       allowed to have it.
+     it LIGHTS         the edge goes to full and the glow opens, because the
+                       thing being pressed should be the brightest thing on
+                       the screen for as long as it is being pressed.
+     it LETS GO SLOWER THAN IT TOOK
+                       60ms down, 180ms back. Anticipation and follow-through
+                       in the only form a button can have them - and it is
+                       what stops a double click reading as a flicker.
+
+   All three are `transform`, `opacity` and `filter` only, so a press is
+   compositor work and costs nothing on the machines this has been tuned for.
+
+   AND THE FOCUS RING IS PART OF IT. This game is driven from a keyboard and
+   a controller at least as often as from a mouse, and half its screens have
+   no pointer on them at all. A press treatment with no matching focus
+   treatment is a press treatment that most of its players never see. */
+
+.story-action, .story-chapter, .mode-card,
+.story-continue-actions button, .mp-dialog-actions button,
+.mp-results-actions button, .ui-back, #mpNameOk,
+#storyChoiceEdge, #storyChoiceOpen, .freeroam-route, .freeroam-action,
+.mp-choice, .mp-action {
+  transition:
+    transform 180ms cubic-bezier(.2, .8, .3, 1),
+    filter 180ms ease,
+    opacity 180ms ease;
+  will-change: transform;
+}
+
+/* HOVER AND FOCUS ARE THE SAME STATE, because on this game's screens they
+   are the same intent: "this is the one". The keyboard says it with focus,
+   the mouse says it with the pointer, and a controller says it by moving the
+   focus - see hubMove in js/story.js. */
+.story-action:hover, .story-chapter:hover:not(.locked), .mode-card:hover:not(.locked),
+.story-continue-actions button:hover, .mp-dialog-actions button:hover,
+.mp-results-actions button:hover, .ui-back:hover, #mpNameOk:hover,
+#storyChoiceEdge:hover, #storyChoiceOpen:hover,
+.story-action:focus-visible, .story-chapter:focus-visible, .mode-card:focus-visible,
+.story-continue-actions button:focus-visible, .mp-dialog-actions button:focus-visible,
+.mp-results-actions button:focus-visible, .ui-back:focus-visible, #mpNameOk:focus-visible,
+#storyChoiceEdge:focus-visible, #storyChoiceOpen:focus-visible {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+
+/* ...AND THE PRESS. Faster in than out, and it overrides the lift above -
+   the surface has to go DOWN under the finger even from a hovered state, or
+   the press reads as the button jumping away from the pointer. */
+.story-action:active, .story-chapter:active:not(.locked), .mode-card:active:not(.locked),
+.story-continue-actions button:active, .mp-dialog-actions button:active,
+.mp-results-actions button:active, .ui-back:active, #mpNameOk:active,
+#storyChoiceEdge:active, #storyChoiceOpen:active {
+  transform: translateY(1px) scale(.982);
+  filter: brightness(1.14);
+  transition-duration: 60ms;
+}
+
+/* A locked tile refuses, and refusing is a response too - it is the one
+   place in this interface where nothing happening would be a bug rather
+   than a style. js/modeselect.js already shakes the card; this makes the
+   surface itself feel solid rather than soft. */
+.story-chapter.locked:active, .mode-card.locked:active {
+  transform: none;
+  filter: brightness(1.02) saturate(.9);
+}
+
+/* THE FOCUS RING. Not the browser's - it is a grey rounded rectangle on a
+   cut-cornered neon panel and it looks like a bug - but a real one, because
+   a keyboard player who cannot see where they are is a keyboard player who
+   cannot play. It rides on the panel's own edge variable, so it is the right
+   colour on every screen without any screen having to say so. */
+.story-action:focus-visible, .story-chapter:focus-visible, .mode-card:focus-visible,
+.story-continue-actions button:focus-visible, .mp-dialog-actions button:focus-visible,
+.mp-results-actions button:focus-visible, .ui-back:focus-visible, #mpNameOk:focus-visible,
+#storyChoiceEdge:focus-visible, #storyChoiceOpen:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--edge, var(--cyan)), 0 0 22px -4px var(--edge, var(--cyan));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .story-action, .story-chapter, .mode-card,
+  .story-continue-actions button, .mp-dialog-actions button,
+  .mp-results-actions button, .ui-back, #mpNameOk,
+  #storyChoiceEdge, #storyChoiceOpen {
+    transition: filter 120ms ease;
+    transform: none !important;
+  }
 }

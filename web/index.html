@@ -7,9 +7,389 @@
 <meta name="description" content="SYNX - a neon racer on a Rust simulation core, with volumetric lighting, screen-space reflections and a full four-wheel physics model.">
 <meta name="theme-color" content="#12002b">
 <link rel="icon" type="image/png" href="favicon.png">
+<!-- THE TYPEFACE, ASKED FOR BEFORE THE STYLESHEET MENTIONS IT.
+
+     Both faces are declared `font-display: block`, which means any text set in
+     them is INVISIBLE until the file arrives - and the first thing this page
+     shows is a wordmark set in the heavy one. Without these two lines the font
+     is not even requested until the 210 KB stylesheet has been parsed and the
+     preloader's own rule has been matched, so the opening frame of the game
+     was a blank space where its name should be.
+
+     They are 17 KB each and they are served out of the executable, so this
+     costs nothing and removes the one thing that could make the first paint
+     look broken. -->
+<link rel="preload" href="fonts/Orbitron-900.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="fonts/Orbitron-600.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="css/style.css?v=rust-1">
+
+<!-- ================================================== THE FIRST PAINT ====
+     The preloader's own style, inline, and the only CSS in this project that
+     is not in css/style.css.
+
+     IT IS HERE BECAUSE OF WHEN IT IS NEEDED. Everything else on this page is
+     styled by a stylesheet the browser has to fetch and parse before it will
+     paint anything at all; that is fine for a screen nobody sees for four
+     seconds and wrong for the one screen whose entire job is to be on the
+     glass before the player has finished letting go of the mouse. Inline, it
+     is styled by the time the markup below it has been parsed, which is as
+     early as a first paint can possibly happen.
+
+     It is also the one screen that has to survive css/style.css failing to
+     arrive, because if it does then what the player is looking at is a black
+     window and no explanation. So nothing in here reads a custom property or
+     a shared class: the colours are literals and the rules stand alone.
+
+     EVERY MOVING THING IS `transform` OR `opacity` AND NOTHING ELSE.
+     That is not a style preference, it is the whole design. This screen
+     covers a load that blocks the main thread for hundreds of milliseconds at
+     a time - forty-two megabytes of archive, a WebAssembly core being
+     compiled, nineteen shader programs being linked, a hundred and
+     seventy-five kilometres of course being built - and anything driven by
+     requestAnimationFrame, by a timer, or by script of any kind runs on
+     exactly the thread that is blocked. A spinner shown over a stall is a
+     spinner that stops during it, which is worse than no spinner at all
+     because now the player has been shown something visibly broken.
+     Transform and opacity are advanced by the COMPOSITOR, off the main
+     thread, so this keeps moving at sixty through a stall in which no
+     JavaScript runs whatsoever. Same rule, same reason, as js/staging.js.
+
+     Script's only job here is the two things that must be true rather than
+     merely reassuring: the percentage and the caption. Those stop when the
+     thread stops, which is honest - and the motion around them says the
+     machine has not died. -->
+<style>
+#preload{position:fixed;inset:0;z-index:9700;background:#04010c;overflow:hidden;
+  font-family:"Orbitron","Segoe UI",system-ui,sans-serif;
+  transition:opacity 520ms cubic-bezier(.4,0,.2,1),transform 520ms cubic-bezier(.4,0,.2,1);
+  contain:layout paint style}
+#preload.pl-out{opacity:0;transform:scale(1.045);pointer-events:none}
+#preload[hidden]{display:none}
+
+/* The room the wordmark stands in: a violet wash off the horizon and a hard
+   vignette, so the centre of the frame is the only lit part of it. */
+#preload::before{content:"";position:absolute;inset:0;
+  background:
+    radial-gradient(ellipse 120% 70% at 50% 108%,rgba(255,46,136,.30),transparent 60%),
+    radial-gradient(ellipse 90% 60% at 50% 34%,rgba(90,40,190,.28),transparent 70%),
+    radial-gradient(ellipse at 50% 50%,transparent 34%,rgba(2,0,9,.86) 100%)}
+
+/* THE HORIZON. The genre's signature, and the one piece of motion that runs
+   for the whole load. It is a plane in perspective moving along its own
+   surface - see the same substitution in the hub grid - so it is one
+   compositor transform and not a single repaint. */
+#preload .pl-grid{position:absolute;left:-30%;right:-30%;bottom:-6%;height:52%;
+  opacity:.62;pointer-events:none;
+  transform:perspective(340px) rotateX(76deg);
+  background:
+    linear-gradient(rgba(57,230,255,.46) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(139,92,246,.34) 1px,transparent 1px);
+  background-size:72px 46px;
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 42%);
+  mask-image:linear-gradient(180deg,transparent,#000 42%);
+  animation:plGrid 2.6s linear infinite;will-change:transform}
+/* The same substitution the hub grid uses: each layer is invariant along the
+   other's axis, so one translate in the rotated plane is exactly what two
+   background-position moves were - and it is a compositor transform instead
+   of a full repaint. The base transform is on the element as well as in the
+   keyframes, so the plane is still laid down under reduced motion. */
+@keyframes plGrid{
+  from{transform:perspective(340px) rotateX(76deg) translate3d(0,0,0)}
+  to{transform:perspective(340px) rotateX(76deg) translate3d(72px,46px,0)}}
+
+/* The sun behind the name. It breathes, and that is all it does.
+   Centred by margins of HALF ITS SIZE - max() of the two negatives, not
+   min(): min() takes the more negative one, which on any window wider than
+   913px dragged the sun 230px left of the name it is supposed to rise behind. */
+#preload .pl-sun{position:absolute;left:50%;top:46%;width:min(46vw,420px);aspect-ratio:1;
+  margin-left:max(-23vw,-210px);margin-top:max(-23vw,-210px);border-radius:50%;
+  background:linear-gradient(180deg,#ffb45c 0%,#ff5fa8 46%,#8a3bd6 100%);
+  opacity:.20;filter:blur(2px);pointer-events:none;
+  -webkit-mask-image:repeating-linear-gradient(180deg,#000 0 6px,transparent 6px 11px);
+  mask-image:repeating-linear-gradient(180deg,#000 0 6px,transparent 6px 11px);
+  animation:plSun 3.6s ease-in-out infinite alternate;will-change:transform,opacity}
+@keyframes plSun{from{transform:scale(.97);opacity:.16}to{transform:scale(1.03);opacity:.26}}
+
+#preload .pl-mid{position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:0;padding:0 24px}
+
+/* THE NAME, in THE chrome - the one the title screen, every story card and
+   every panel headline are set in (hud.chrome() and .synx-chrome): white into
+   lavender down to a hard horizon at the middle, gold off the break into
+   magenta, with the airbrush's cut lines through it. This used to be a
+   cyan-to-magenta ramp of its own, and the opening therefore showed the name
+   four different ways in its first twenty seconds - here, on the cold open,
+   on the boot screen and on the title. One name, one finish. The literals are
+   the house ramp's, written out because nothing here may read a variable. */
+#preload .pl-mark{margin:0;font-weight:900;line-height:.92;
+  font-size:clamp(56px,13vw,168px);letter-spacing:.06em;
+  background:
+    repeating-linear-gradient(0deg,transparent 0 .112em,rgba(0,0,0,.46) .112em .136em),
+    linear-gradient(180deg,#ffffff 0%,#c8b8ff 30%,#5b3fb8 47%,#2a1650 50%,#ffd977 53%,#ff5fb0 72%,#7a1f6b 100%);
+  background-size:100% 1.06em;
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  -webkit-text-fill-color:transparent;
+  -webkit-text-stroke:.5px rgba(255,255,255,.55);
+  filter:drop-shadow(0 0 22px rgba(255,46,136,.40)) drop-shadow(0 0 60px rgba(120,70,255,.34)) drop-shadow(0 2px 0 rgba(0,0,0,.8));
+  position:relative}
+/* The specular sweep across it. A single translated bar, clipped to the same
+   glyphs, once every four and a half seconds - a highlight catching a badge
+   rather than an animation looping on it. */
+#preload .pl-mark::after{content:attr(data-text);position:absolute;inset:0;
+  background:linear-gradient(105deg,transparent 38%,rgba(255,255,255,.92) 50%,transparent 62%);
+  background-size:260% 100%;
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  -webkit-text-fill-color:transparent;
+  animation:plSheen 4.5s cubic-bezier(.5,0,.4,1) infinite;will-change:background-position}
+@keyframes plSheen{0%,62%{background-position:180% 0}100%{background-position:-80% 0}}
+
+#preload .pl-sub{margin:14px 0 0;font-weight:600;font-size:clamp(9px,1.05vw,14px);
+  letter-spacing:.56em;text-indent:.56em;color:rgba(186,214,242,.72);
+  text-shadow:0 0 18px rgba(57,230,255,.45)}
+
+/* The rail. `--p` is the only thing script writes, and it writes it to a
+   transform - so even the progress is composited. */
+#preload .pl-rail{position:relative;margin-top:clamp(28px,5vh,56px);
+  width:min(560px,74vw);height:2px;background:rgba(122,158,210,.16);overflow:hidden}
+#preload .pl-fill{position:absolute;inset:0;transform-origin:0 50%;
+  transform:scaleX(var(--p,0));
+  background:linear-gradient(90deg,#39e6ff,#b46cff 58%,#ff2e88);
+  box-shadow:0 0 16px rgba(57,230,255,.7);
+  transition:transform 220ms cubic-bezier(.2,.8,.3,1);will-change:transform}
+/* ...and the one thing that keeps moving when script does not. It travels the
+   rail whatever the number underneath it is doing. */
+#preload .pl-scan{position:absolute;top:0;bottom:0;left:0;width:34%;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.75),transparent);
+  animation:plScan 1.15s linear infinite;will-change:transform}
+@keyframes plScan{from{transform:translateX(-120%)}to{transform:translateX(400%)}}
+
+#preload .pl-read{display:flex;justify-content:space-between;align-items:baseline;
+  width:min(560px,74vw);margin-top:12px;font-weight:600;font-size:10px;
+  letter-spacing:.24em;color:rgba(150,184,220,.66)}
+#preload .pl-pct{font-weight:900;font-size:13px;letter-spacing:.12em;color:#39e6ff;
+  text-shadow:0 0 14px rgba(57,230,255,.6);font-variant-numeric:tabular-nums}
+/* The second line, when a phase has something concrete to say - the megabytes
+   that have actually arrived, the surface being uploaded. Directly under the
+   readout rather than pinned to the bottom of the frame: it is a footnote to
+   the percentage, and forty per cent of the screen away from it it reads as a
+   separate announcement. */
+#preload .pl-note{width:min(560px,74vw);margin-top:7px;min-height:1em;
+  text-align:left;font-weight:600;font-size:9px;letter-spacing:.24em;
+  color:rgba(130,160,196,.46)}
+
+/* Corner ticks and scanlines: the panel language the rest of the game is
+   built from, so the first screen belongs to the same object as the last. */
+/* Inset past the bars, not under them: the ticks mark the frame the title
+   is read inside, and half of them were hidden behind the letterbox. */
+#preload .pl-frame{position:absolute;inset:clamp(26px,5.6vh,64px) clamp(18px,2.4vh,30px);pointer-events:none}
+#preload .pl-frame i{position:absolute;width:26px;height:26px;
+  border:1px solid rgba(139,92,246,.55)}
+#preload .pl-frame i:nth-child(1){top:0;left:0;border-right:0;border-bottom:0}
+#preload .pl-frame i:nth-child(2){top:0;right:0;border-left:0;border-bottom:0}
+#preload .pl-frame i:nth-child(3){bottom:0;left:0;border-right:0;border-top:0}
+#preload .pl-frame i:nth-child(4){bottom:0;right:0;border-left:0;border-top:0}
+#preload .pl-crt{position:absolute;inset:0;pointer-events:none;opacity:.5;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.24) 0 1px,transparent 1px 3px)}
+
+/* ================= THE OPEN, AND WHY IT IS STAGED ======================
+ *
+ * Everything above describes what this screen IS. This is the order it
+ * arrives in, and that order is the whole difference between a title card
+ * and a web page that has finished loading.
+ *
+ * The screen used to be complete on its first frame: name, horizon, sun,
+ * rail and readout all simply present. Nothing was wrong with any of it and
+ * the whole thing read as cheap, because arriving all at once is the one
+ * thing no title sequence does. A sequence leads with the single most
+ * important element, lets everything else follow a beat behind it, and gives
+ * each piece a curve with some weight in it.
+ *
+ * So: the room first, then the name, then what the name is, then the
+ * machinery underneath. Eleven hundred milliseconds end to end - long enough
+ * to read as deliberate, short enough that nobody waiting to play resents it.
+ *
+ * EVERY ONE OF THESE IS `transform` OR `opacity` AND NOTHING ELSE, which is
+ * the same constraint the rest of this file is under and the reason it can
+ * be promised: the compositor runs all of it off-thread, so the open plays
+ * at sixty through an archive inflate that is not yielding. The one thing a
+ * staged open must never do is stutter on the stage.
+ *
+ * --e-out is an exponential ease: almost all of the distance is covered
+ * immediately and the last few pixels take their time. That is what gives a
+ * moving object apparent mass, and it is why the name looks like it lands
+ * rather than like it appears. */
+#preload{--e-out:cubic-bezier(.16,1,.3,1);--e-soft:cubic-bezier(.4,0,.2,1)}
+
+/* THE ROOM, first, as one object. The horizon and the sun keep their own
+   loops; staging them together is what the wrapper is for - two entrances
+   competing for the same transform would simply overwrite each other. */
+#preload .pl-sky{position:absolute;inset:0;pointer-events:none;
+  animation:plSky 1150ms var(--e-out) 40ms both}
+@keyframes plSky{
+  from{opacity:0;transform:translate3d(0,26px,0) scale(1.04)}
+  to{opacity:1;transform:none}}
+
+/* THE NAME, and it is the only thing on this screen that gets a wind-up.
+   It comes in slightly over-size and settles back through 1.0, which is the
+   overshoot that reads as weight arriving rather than a graphic fading up. */
+#preload .pl-mark{animation:plMark 900ms var(--e-out) 260ms both}
+@keyframes plMark{
+  from{opacity:0;transform:translate3d(0,16px,0) scale(1.085)}
+  to{opacity:1;transform:none}}
+
+/* WHAT THE NAME IS, wiped on rather than faded on, so it reads as being
+   printed. An inset clip is a compositor property; animating the tracking
+   would have been a layout pass per frame on the one screen that cannot
+   afford one. */
+#preload .pl-sub{animation:plSub 760ms var(--e-soft) 620ms both}
+@keyframes plSub{
+  from{opacity:0;-webkit-clip-path:inset(0 100% 0 0);clip-path:inset(0 100% 0 0)}
+  to{opacity:1;-webkit-clip-path:inset(0 0 0 0);clip-path:inset(0 0 0 0)}}
+
+/* THE MACHINERY. The rail draws from its centre, then the numbers under it
+   arrive - last, because they are the least important thing here and the eye
+   should reach them having already read the name. */
+#preload .pl-rail{animation:plRail 720ms var(--e-out) 780ms both}
+@keyframes plRail{
+  from{opacity:0;transform:scaleX(.12)}
+  to{opacity:1;transform:none}}
+#preload .pl-read{animation:plUp 560ms var(--e-soft) 940ms both}
+#preload .pl-note{animation:plUp 560ms var(--e-soft) 1030ms both}
+@keyframes plUp{
+  from{opacity:0;transform:translate3d(0,7px,0)}
+  to{opacity:1;transform:none}}
+
+/* The brackets close in on the frame, one corner after another. A 70 ms
+   stagger is under the threshold at which four things read as four events;
+   it reads as one gesture with a direction to it. */
+#preload .pl-frame i{animation:plTick 520ms var(--e-out) both}
+#preload .pl-frame i:nth-child(1){animation-delay:880ms}
+#preload .pl-frame i:nth-child(2){animation-delay:950ms}
+#preload .pl-frame i:nth-child(3){animation-delay:1020ms}
+#preload .pl-frame i:nth-child(4){animation-delay:1090ms}
+@keyframes plTick{
+  from{opacity:0;transform:scale(.55)}
+  to{opacity:1;transform:none}}
+
+/* The specular sweep across the name waits until the name has stopped
+   moving. Two things happening to the same glyphs at once is two things
+   nobody sees. */
+#preload .pl-mark::after{animation-delay:1250ms}
+
+/* ----------------------------------------------------------- the film ----
+ *
+ * Three layers that belong to the camera rather than to the game, which is
+ * the oldest way there is of making a picture look photographed instead of
+ * rendered. All three are static images being moved by the compositor.
+ */
+
+/* BARS. Not a letterbox to hide anything - the composition is already
+   centred - but the frame a title card is read inside. They close in from
+   the edges, which is also the first motion on the screen. */
+#preload .pl-bars{position:absolute;inset:0;pointer-events:none;
+  animation:plFade 520ms var(--e-soft) both}
+#preload .pl-bars::before,#preload .pl-bars::after{content:"";position:absolute;
+  left:0;right:0;height:clamp(14px,3.2vh,40px);background:#03000a;
+  animation:plBar 900ms var(--e-out) both}
+#preload .pl-bars::before{top:0;transform-origin:50% 0}
+#preload .pl-bars::after{bottom:0;transform-origin:50% 100%}
+@keyframes plBar{from{transform:scaleY(.25)}to{transform:scaleY(1)}}
+@keyframes plFade{from{opacity:0}to{opacity:1}}
+
+/* A LIGHT LEAK. One warm diagonal pass over the whole frame as the name
+   lands, and then again every eleven seconds - rare enough to be a property
+   of the lens rather than a loop. */
+#preload .pl-leak{position:absolute;top:-30%;bottom:-30%;left:-40%;width:52%;
+  pointer-events:none;opacity:0;
+  background:linear-gradient(74deg,transparent,rgba(255,196,120,.16) 38%,
+    rgba(255,110,180,.20) 56%,transparent);
+  filter:blur(24px);
+  animation:plLeak 11s var(--e-soft) 900ms infinite;will-change:transform,opacity}
+@keyframes plLeak{
+  0%{opacity:0;transform:translate3d(0,0,0)}
+  6%{opacity:.85}
+  22%{opacity:0;transform:translate3d(240%,0,0)}
+  100%{opacity:0;transform:translate3d(240%,0,0)}}
+
+/* GRAIN. A tile of fractal noise, nudged between six positions six times a
+   second, which is what film grain actually is: a texture that does not
+   track the picture. Low enough to be felt rather than seen. */
+#preload .pl-grain{position:absolute;inset:-120px;pointer-events:none;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation:plGrain 700ms steps(1,end) infinite;will-change:transform}
+@keyframes plGrain{
+  0%{transform:translate3d(0,0,0)}
+  16%{transform:translate3d(-14px,9px,0)}
+  33%{transform:translate3d(11px,-12px,0)}
+  50%{transform:translate3d(-7px,-6px,0)}
+  66%{transform:translate3d(13px,8px,0)}
+  83%{transform:translate3d(-11px,-10px,0)}}
+
+/* Somebody who has asked for less motion gets the same screen, still.
+   The STAGING goes too, not just the loops: an entrance is motion, and a
+   screen that assembles itself is exactly what this setting is asking not to
+   be shown. Everything lands in its final state on the first frame, which is
+   the screen this file used to draw anyway. */
+@media (prefers-reduced-motion:reduce){
+  #preload .pl-grid,#preload .pl-sun,#preload .pl-mark::after,#preload .pl-scan,
+  #preload .pl-leak,#preload .pl-grain{
+    animation:none}
+  #preload .pl-scan,#preload .pl-leak{opacity:0}
+  #preload .pl-sky,#preload .pl-mark,#preload .pl-sub,#preload .pl-rail,
+  #preload .pl-read,#preload .pl-note,#preload .pl-frame i,#preload .pl-bars,
+  #preload .pl-bars::before,#preload .pl-bars::after{
+    animation:none;opacity:1;transform:none;-webkit-clip-path:none;clip-path:none}
+  #preload{transition:opacity 200ms linear}
+}
+</style>
 </head>
 <body>
+<!-- =========================================================== PRELOADER ==
+     THE FIRST THING ON THE GLASS, and the first thing in the document so
+     that it is also the first thing the parser can paint.
+
+     WHAT IT REPLACED, AND WHY.
+
+     The cold open - the tachometer in js/ignition.js - used to be the loading
+     screen. It is a canvas driven by requestAnimationFrame, drawing a ground
+     gradient, a floor, an instrument, a progress ring, a wordmark and a
+     vignette, with a dozen blurred passes among them; and it was doing all of
+     that on the same single thread that was inflating a forty-two megabyte
+     archive, compiling a WebAssembly core, linking nineteen shader programs
+     and building a hundred and seventy-five kilometres of course. So the
+     needle stuck. Not occasionally: at the very start, every launch, because
+     that is when the heaviest passes are. The one screen whose job was to say
+     "the machine is working" was the screen that looked like it had hung.
+
+     No amount of work on that canvas could have fixed it, because the canvas
+     was never what was slow.
+
+     So the load is covered by THIS instead - markup, styled inline, animated
+     entirely on transform and opacity, which the compositor advances off the
+     main thread. It cannot stutter, because there is nothing about it for a
+     blocked thread to stutter. And the tachometer becomes what it always
+     should have been: a cold open, played once the game is loaded AND the
+     frames have proved smooth, on an idle machine, at full rate, with an
+     engine note that lands where the needle actually is.
+
+     See js/preload.js for the handover, and the long note at the top of
+     js/ignition.js for what the cold open is now for. -->
+<div id="preload" aria-hidden="true">
+  <i class="pl-sky" aria-hidden="true"><i class="pl-grid"></i><i class="pl-sun"></i></i>
+  <div class="pl-mid">
+    <h1 class="pl-mark" data-text="SYNX">SYNX</h1>
+    <p class="pl-sub">SYNTHWAVE eXTREME RACING</p>
+    <div class="pl-rail"><i class="pl-fill" id="plFill"></i><i class="pl-scan"></i></div>
+    <div class="pl-read"><span id="plLabel">STARTING UP</span><span class="pl-pct" id="plPct">0%</span></div>
+    <div class="pl-note" id="plNote"></div>
+  </div>
+  <div class="pl-frame" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <div class="pl-crt" aria-hidden="true"></div>
+  <i class="pl-leak" aria-hidden="true"></i>
+  <i class="pl-grain" aria-hidden="true"></i>
+  <i class="pl-bars" aria-hidden="true"></i>
+</div>
+
 <!-- ============================================================ ADVISORY ==
      The photosensitivity and beta notice, shown once per launch before the
      title screen. It is the first thing in <body> on purpose: it has to be
@@ -20,6 +400,8 @@
      pack - it renders correctly on a machine whose driver is about to fail
      the game, which is the machine most likely to need to read it. -->
 <div id="advisory" role="dialog" aria-modal="true" aria-labelledby="advTitle">
+  <i class="adv-horizon" aria-hidden="true"></i>
+  <i class="adv-sun" aria-hidden="true"></i>
   <div class="adv-crt" aria-hidden="true"></div>
   <div class="adv-grid" aria-hidden="true"></div>
   <div class="adv-scan" aria-hidden="true"></div>
@@ -104,9 +486,41 @@
   </div>
 
   <div id="storyRoot" aria-live="polite" aria-hidden="true">
+    <!-- WEATHER. Two sheets of rain at different depths, shown only while
+         #storyRoot carries .rain - which today is Chapter 3 and nothing else.
+
+         It used to be two pseudo-elements animating `background-position`,
+         which is a full-screen REPAINT on every frame: two repeating
+         gradients, two masks intersected on top of them and a blur, all
+         re-rasterised sixty times a second for the whole chapter. It was the
+         single most expensive thing on screen in the game and none of it was
+         the game.
+
+         These are real elements because the effect needs two layers that move
+         independently: the sheet holds the horizon fade and does not move, and
+         the <i> inside it carries the streaks and is TRANSLATED. A transform
+         is compositor work on a texture that never changes, so the whole
+         thing costs one blend instead of one repaint - and because the <i> is
+         translated by exactly one period of its own streak pattern, it loops
+         without a seam. See #storyRain in css/style.css. -->
+    <div id="storyRain" aria-hidden="true">
+      <div class="rain-sheet rain-far"><i></i></div>
+      <div class="rain-sheet rain-near"><i></i></div>
+    </div>
+
     <div id="storyLetterbox" aria-hidden="true">
       <i class="story-bar story-bar-top"></i>
       <i class="story-bar story-bar-bottom"></i>
+      <!-- THE WAY OUT OF A SCENE.
+           A chapter opens with a cold open, a title card, eight lines of
+           conversation, two battle cards and a grid walk - the better part of
+           a minute - and until now none of it could be left. A player who
+           picked the wrong tile on the hub, or who wanted to change a binding
+           before the lights, had to sit through all of it and then lose the
+           race to get back. This says what ESC does, in the one band of the
+           frame every cinematic already keeps clear. It is shown only while
+           leaving is actually possible - see StoryManager.syncExitHint. -->
+      <b id="storyExitHint" aria-hidden="true"></b>
     </div>
     <div id="storyFade"></div>
 
@@ -127,6 +541,13 @@
           <p id="storyText"></p>
           <div class="story-dialogue-meta">
             <span>ENTER / SPACE</span>
+            <!-- K SKIPS A SCENE THAT HAS ALREADY BEEN READ, and has done since
+                 the dialogue controller was written - but it was never said
+                 anywhere, on any screen, so nobody could know. It appears only
+                 on a scene that has actually been seen before, because a skip
+                 offered on a first viewing is a skip that will be taken. See
+                 DialogueController.skip. -->
+            <span id="storySkipHint" aria-hidden="true">K  SKIP SCENE</span>
             <i class="story-wave" aria-hidden="true"></i>
             <i id="storyContinue" aria-hidden="true"></i>
           </div>
@@ -232,6 +653,16 @@
       <small id="storyRaceChapter"></small>
       <b id="storyRaceTrack"></b>
       <span id="storyRaceRival"></span>
+      <!-- WHAT THIS CHAPTER IS ASKING FOR, on the panel that is up for the
+           whole of it. The card carried the chapter number, the road and the
+           name of the man in the other car, and nothing that answered "what
+           am I doing here" - so four of the seven chapters read as a race
+           with a conversation stapled to it rather than as a mission.
+
+           Every line is the chapter's EXISTING win condition said out loud;
+           see `objective` in js/story.js for why not one of them is allowed
+           to be a rule the game does not already enforce. -->
+      <u id="storyRaceObjective"></u>
       <ol id="storyStandings" aria-label="Live race standings"></ol>
     </div>
   </div>
@@ -460,8 +891,20 @@
     <span id="pred7Live" class="sr-only" aria-live="assertive"></span>
   </div>
 
+  <!-- THE CARD THAT SAYS WHY THERE IS NO GAME.
+
+       Two different things land here. A failure to START, which is nearly
+       always the 3D context and is reported by js/main.js; and a context that
+       was working and has GONE - a graphics driver reset, a laptop waking up,
+       a driver updated underneath a running game. The second is recoverable
+       and the first is not, which is why there is a button on it and why the
+       button is hidden until something can actually be done. -->
   <div id="fatal" class="hidden">
-    <div class="panel"><h3>Unable to start</h3><p id="fatalMsg"></p></div>
+    <div class="panel">
+      <h3 id="fatalTitle">Unable to start</h3>
+      <p id="fatalMsg"></p>
+      <button id="fatalAgain" type="button" hidden>RESTART THE RENDERER</button>
+    </div>
   </div>
 </div>
 
@@ -471,39 +914,59 @@
      one, which is everything from js/game.js down. -->
 <!-- The settings schema comes first: the options screen and the launcher are
      two renderers for the same list of rows, and both read it. -->
-<script src="js/settings.js?v=rust-1"></script>
+<!-- ============================================= WHY THESE ARE DEFERRED ==
+     A plain <script> blocks the parser where it stands, and there are
+     twenty-nine of them carrying about two megabytes of JavaScript. Until
+     every one of them had been fetched, parsed and executed, the browser had
+     no complete document to paint - so the first thing a player saw after
+     launching the game was a black window for as long as that took, and only
+     then the opening screen.
+
+     `defer` moves execution to after the document is parsed while keeping the
+     order they are written in, which is the one thing this project needs from
+     it: js/settings.js still runs before js/game.js, and js/wasm.js still runs
+     before anything that constructs a Track. The preloader above is parsed,
+     styled and painted first, and the load starts a few milliseconds later
+     against a screen the player is already looking at.
+
+     Nothing here reads document.readyState expecting 'loading', and js/main.js
+     starts from DOMContentLoaded, which still fires after deferred scripts. -->
+<!-- The preloader's readout. First, because it is what covers everything the
+     rest of this list is about to do. -->
+<script defer src="js/preload.js?v=rust-1"></script>
+<script defer src="js/settings.js?v=rust-1"></script>
 <!-- The controller. Loaded before the game, which holds the only instance. -->
-<script src="js/ui.js?v=rust-1"></script>
+<script defer src="js/ui.js?v=rust-1"></script>
 <!-- The one number the whole boot reports into, and the yield that lets the
      cold open keep drawing through it. Before anything that loads. -->
-<script src="js/boot.js?v=rust-1"></script>
-<script src="js/ignition.js?v=rust-1"></script>
-<script src="js/staging.js?v=rust-1"></script>
-<script src="js/intro.js?v=rust-1"></script>
-<script src="js/bench.js?v=rust-1"></script>
-<script src="js/gamepad.js?v=rust-1"></script>
-<script src="js/pak.js?v=rust-1"></script>
-<script src="js/gl.js?v=rust-1"></script>
-<script src="js/wasm.js?v=rust-1"></script>
-<script src="data/game_data.js?v=rust-1"></script>
-<script src="js/scene.js?v=rust-1"></script>
-<script src="js/autosave.js?v=rust-1"></script>
-<script src="js/damage.js?v=rust-1"></script>
-<script src="js/glass.js?v=rust-1"></script>
-<script src="js/fx.js?v=rust-1"></script>
-<script src="js/audio.js?v=rust-1"></script>
-<script src="js/hud.js?v=rust-1"></script>
-<script src="js/game.js?v=rust-1"></script>
-<script src="js/story.js?v=rust-1"></script>
-<script src="js/chapters.js?v=rust-1"></script>
-<script src="js/freeroam.js?v=rust-1"></script>
-<script src="js/modeselect.js?v=rust-1"></script>
-<script src="js/net.js?v=rust-1"></script>
-<script src="js/multiplayer.js?v=rust-1"></script>
+<script defer src="js/boot.js?v=rust-1"></script>
+<script defer src="js/ignition.js?v=rust-1"></script>
+<script defer src="js/staging.js?v=rust-1"></script>
+<script defer src="js/intro.js?v=rust-1"></script>
+<script defer src="js/bench.js?v=rust-1"></script>
+<script defer src="js/gamepad.js?v=rust-1"></script>
+<script defer src="js/pak.js?v=rust-1"></script>
+<script defer src="js/gl.js?v=rust-1"></script>
+<script defer src="js/wasm.js?v=rust-1"></script>
+<script defer src="data/game_data.js?v=rust-1"></script>
+<script defer src="js/scene.js?v=rust-1"></script>
+<script defer src="js/autosave.js?v=rust-1"></script>
+<script defer src="js/damage.js?v=rust-1"></script>
+<script defer src="js/glass.js?v=rust-1"></script>
+<script defer src="js/fx.js?v=rust-1"></script>
+<script defer src="js/audio.js?v=rust-1"></script>
+<script defer src="js/hud.js?v=rust-1"></script>
+<script defer src="js/game.js?v=rust-1"></script>
+<script defer src="js/story.js?v=rust-1"></script>
+<script defer src="js/chapters.js?v=rust-1"></script>
+<script defer src="js/freeroam.js?v=rust-1"></script>
+<script defer src="js/modeselect.js?v=rust-1"></script>
+<script defer src="js/net.js?v=rust-1"></script>
+<script defer src="js/multiplayer.js?v=rust-1"></script>
 <!-- The replay buffer. Loaded after the game, before the bootstrap that
      starts it: it needs NR.Rec from js/wasm.js and the Game from js/game.js. -->
-<script src="js/record.js?v=rust-1"></script>
-<script src="js/host.js?v=rust-1"></script>
-<script src="js/main.js?v=rust-1"></script>
+<script defer src="js/record.js?v=rust-1"></script>
+<script defer src="js/host.js?v=rust-1"></script>
+<script defer src="js/main.js?v=rust-1"></script>
 </body>
 </html>

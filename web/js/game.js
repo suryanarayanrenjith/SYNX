@@ -575,6 +575,94 @@
      index, so re-cutting the reel moves the benchmark with it instead of
      silently changing what is being measured. */
   global.NR.ATTRACT_SPEED = ATTRACT_SPEED;
+  /* Where the attract car's front axle is, ahead of its origin - the point a
+     car in a slide pivots about. Measured off the shipped wheels. */
+  const ATTRACT_AXLE_FRONT = 1.83;
+  // ...and the core's WHEELBASE, which is what the bend's own lock is read off
+  const ATTRACT_WHEELBASE = 3.716;
+  /* Half the body's length, the span it is sat on a ramp over. The core's
+     HALF_LENGTH, and it has to be: see attractSeat. */
+  const ATTRACT_HALF = 2.45;
+
+  /* THE RAMP UNDER THE MENU CAR, and the JS twin of `Ramp::height_at` in
+     crates/synx-core/src/vehicle.rs: the running surface at one arc length,
+     or null past the lip of a launch ramp, where there is nothing under that
+     point at all. `r` is a COURSE_RAMPS entry. */
+  function attractRampHeight(r, s) {
+    const crest = r.crest || 0, drop = r.drop || 0;
+    const s0 = r.s - crest - r.len, s1 = s0 + r.len;
+    const lip = r.lip === undefined ? r.h : r.lip;
+    if (s <= s0) return 0;
+    if (s <= s1) {
+      const u = M.clamp((s - s0) / Math.max(1, r.len), 0, 1);
+      return drop ? r.h * u * u * (3 - 2 * u) : r.h * u * u;
+    }
+    if (s <= r.s) {
+      const v = M.clamp((s - s1) / Math.max(1, crest), 0, 1);
+      return r.h + (lip - r.h) * v;
+    }
+    if (!drop) return null;
+    const v = M.clamp((s - r.s) / Math.max(1, drop), 0, 1);
+    return lip * (1 - v * v * (3 - 2 * v));
+  }
+
+  /* ...and the body SAT on it, the JS twin of `settle_on_ramp`: the pitch is
+     the chord between the outermost supported stations and the height is
+     whatever keeps every station under the body. The menu used to balance
+     the car on the one point under its origin, which is the defect the core
+     fixed for the game and this side never got. Nose-UP positive, like the
+     core's. `out` is filled and returned. */
+  const ATTRACT_SEAT_N = 5;
+  function attractSeat(r, s, out) {
+    let ax = 0, ah = 0, bx = 0, bh = 0, any = false;
+    for (let i = 0; i < ATTRACT_SEAT_N; i++) {
+      const x = (i / (ATTRACT_SEAT_N - 1) * 2 - 1) * ATTRACT_HALF;
+      const h = attractRampHeight(r, s + x);
+      if (h === null) continue;
+      if (!any) { ax = x; ah = h; any = true; }
+      bx = x; bh = h;
+    }
+    if (!any) { out.height = 0; out.pitch = 0; return out; }
+    const run = bx - ax;
+    const tan = Math.abs(run) > 1e-6 ? (bh - ah) / run : 0;
+    let y = -Infinity;
+    for (let i = 0; i < ATTRACT_SEAT_N; i++) {
+      const x = (i / (ATTRACT_SEAT_N - 1) * 2 - 1) * ATTRACT_HALF;
+      const h = attractRampHeight(r, s + x);
+      if (h !== null) y = Math.max(y, h - x * tan);
+    }
+    out.height = Math.max(0, y);
+    out.pitch = Math.atan(tan);
+    return out;
+  }
+
+  /* THE FLOOR UNDER THE ATTRACT CAMERA, over whatever ramp is there.
+     The launch mark stands twenty units ahead of the car and half a unit
+     above it - which, while the car is climbing, is a point INSIDE the
+     incline: on both jumps in the reel the lens spent most of a second in
+     the structure, filming its underside. The structure is floor, then.
+
+     And for a few car lengths past a launch lip the floor carries on up the
+     line the ramp leaves at. A lens held at lip height just past the edge
+     looks straight into the wedge's back wall with the car hidden behind it;
+     one on the ramp's own tangent looks back down the incline over the lip,
+     at the car coming up it - and the car then leaves along that same line,
+     toward the lens. */
+  const ATTRACT_LIP_SHELF = 16;
+  function attractCamFloor(s) {
+    for (const r of COURSE_RAMPS) {
+      const drop = r.drop || 0, crest = r.crest || 0;
+      const s0 = r.s - crest - r.len;
+      if (s < s0) continue;
+      if (s <= r.s + drop) return attractRampHeight(r, s) || 0;
+      if (!drop && s <= r.s + ATTRACT_LIP_SHELF) {
+        const lip = r.lip === undefined ? r.h : r.lip;
+        const rise = crest > 0 ? (lip - r.h) / crest : 2 * r.h / r.len;
+        return lip + (s - r.s) * rise;
+      }
+    }
+    return 0;
+  }
 
   /* THE SHOTS THE REEL IS CUT IN.
    *
@@ -989,6 +1077,12 @@
   if (!SCHEMA) throw new Error('js/settings.js must load before js/game.js');
   const QUALITY = SCHEMA.QUALITY;
   const RENDER_SCALES = SCHEMA.RENDER_SCALES;
+  /* THE ADAPTIVE LADDER. Eleven steps between full and 45%, close enough
+     together that a single move is not something the eye catches, and
+     quantised so the render targets are only reallocated when the step
+     actually changes rather than on every frame the measurement moves. See
+     Game.adaptResolution. */
+  const DYN_STEPS = [1.0, 0.94, 0.88, 0.82, 0.76, 0.70, 0.645, 0.59, 0.54, 0.495, 0.45];
   /* Everything the CONTROLS screen shows that is a setting rather than a key
      binding: the gamepad rows on tab 1 and the mouse rows on tab 2. The
      keyboard's own rows are bindings and are built from ACTIONS below. */
@@ -1186,10 +1280,39 @@
       depthW = m; seen.sent++;
       raw.depthMask(m);
     };
-    gl.depthFunc = (f) => {
+    /* REVERSED DEPTH, WHERE IT IS IN FORCE. Every caller in this renderer
+       asks for LEQUAL meaning "nearer or level", and under reversed depth
+       (see depthMode in the Game) nearer is LARGER - so the comparison is
+       turned round here, once, rather than at every call site, and the cache
+       holds the value the driver actually has so --probe glstate still agrees
+       with it. A polygon offset flips for the same reason: pushing a surface
+       away from the eye is a smaller depth now, not a larger one. */
+    let revZ = false, askedDepthF;
+    const REV_FUNC = new Map([[gl.LESS, gl.GREATER], [gl.LEQUAL, gl.GEQUAL],
+      [gl.GREATER, gl.LESS], [gl.GEQUAL, gl.LEQUAL]]);
+    gl.depthFunc = (asked) => {
+      askedDepthF = asked;
+      const f = revZ ? (REV_FUNC.get(asked) || asked) : asked;
       if (f === depthF) { seen.saved++; return; }
       depthF = f; seen.sent++;
       raw.depthFunc(f);
+    };
+    const rawPolygonOffset = gl.polygonOffset.bind(gl);
+    let askedFactor, askedUnits;
+    gl.polygonOffset = (factor, units) => {
+      askedFactor = factor; askedUnits = units;
+      if (revZ) rawPolygonOffset(-factor, -units); else rawPolygonOffset(factor, units);
+    };
+    /* ...and whatever was set before the mode changed is put through again,
+       because the callers cache what they last asked for (see shellDepth in
+       js/scene.js) and would otherwise leave an offset standing with the
+       other convention's sign on it. */
+    gl.__reversedDepth = (on) => {
+      on = !!on;
+      if (on === revZ) return;
+      revZ = on;
+      if (askedDepthF !== undefined) gl.depthFunc(askedDepthF);
+      if (askedFactor !== undefined) gl.polygonOffset(askedFactor, askedUnits);
     };
     gl.cullFace = (f) => {
       if (f === cull) { seen.saved++; return; }
@@ -1491,9 +1614,15 @@
     return o;
   }
 
-  function loadSettings() {
+  function loadSettings(liveGl) {
     const o = defaultSettings();
     const got = global.NR.Save.getJSON(SETTINGS_KEY, null);
+    /* FIRST LAUNCH, and only then. See NR.Settings.seed: this is the one
+       moment the game is allowed an opinion about the machine, because it is
+       the one moment the player has not expressed one. A saved blob - even
+       one the launcher wrote by being opened once - means the answer is
+       already the player's and nothing here may touch it. */
+    if (!got && SCHEMA.seed) SCHEMA.seed(o, liveGl);
     if (got) {
       for (const r of STORED_ROWS) {
         const v = got[r.key];
@@ -1533,6 +1662,7 @@
   }
 
   const TYPE_CPS = 30;           // menu typewriter speed
+  const MENU_ROW_IN = 0.34;      // seconds for one title row to arrive
 
   /* ----------------------------------------------------------------------
    * Post chain.
@@ -1569,6 +1699,35 @@
     return vnoise(p) * 0.55 + vnoise(p * 2.03) * 0.28 + vnoise(p * 4.11) * 0.17;
   }`;
 
+  /* ------------------------------------------------ READING THE DEPTH ----
+   *
+   * Every pass that reads the scene's depth buffer back asks it the same
+   * three things - where in NDC a stored depth is, how far away it is, and
+   * whether anything was drawn there at all - and the answers depend on
+   * which convention the world was drawn with. Standard depth runs 0 at the
+   * near plane to 1 at the far one over a [-1,1] clip range; REVERSED depth
+   * (see depthMode) runs 1 to 0 over [0,1], with the sky left at the clear
+   * value of exactly zero. One block, compiled into each of those passes with
+   * SYNX_REVZ defined or not, so none of them can disagree about which it is.
+   */
+  const DEPTH_GLSL = `
+  #ifdef SYNX_REVZ
+  float depthNdc(float d) { return d; }
+  bool depthIsSky(float d) { return d <= 0.0; }
+  float depthLinear(float d, float n, float f) { return (n * f) / (n + d * (f - n)); }
+  // a stored depth pulled in off the far plane, for a ray to the sky
+  float depthNotFar(float d) { return max(d, 1e-7); }
+  #else
+  float depthNdc(float d) { return d * 2.0 - 1.0; }
+  bool depthIsSky(float d) { return d >= 0.99999; }
+  float depthLinear(float d, float n, float f) {
+    float z = d * 2.0 - 1.0;
+    return (2.0 * n * f) / (f + n - z * (f - n));
+  }
+  float depthNotFar(float d) { return min(d, 0.99999); }
+  #endif
+  `;
+
   // --- screen-space reflections -------------------------------------------
   // Marched in world space and tested against the depth buffer, which keeps the
   // step length uniform along the ray instead of bunching up near the camera
@@ -1587,15 +1746,13 @@
   uniform float uNear;
   uniform float uFar;
   uniform float uTime;
+  ` + DEPTH_GLSL + `
 
   vec3 worldFromDepth(vec2 uv, float d) {
-    vec4 c = uInvVP * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+    vec4 c = uInvVP * vec4(uv * 2.0 - 1.0, depthNdc(d), 1.0);
     return c.xyz / c.w;
   }
-  float linear(float d) {
-    float z = d * 2.0 - 1.0;
-    return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
-  }
+  float linear(float d) { return depthLinear(d, uNear, uFar); }
   /* Interleaved gradient noise, not white noise.
 
      The march has to start at a jittered offset or 26 steps band visibly, but
@@ -1612,7 +1769,7 @@
     float refl = nr.a;
     if (refl < 0.02) { outColor = vec4(0.0); return; }
     float d = texture(uDepth, vUv).r;
-    if (d >= 0.99999) { outColor = vec4(0.0); return; }
+    if (depthIsSky(d)) { outColor = vec4(0.0); return; }
 
     vec3 P = worldFromDepth(vUv, d);
     /* THE ZERO-LENGTH NORMAL, AND WHY IT IS THE WHOLE OF THE BLACK-BOX BUG.
@@ -1804,9 +1961,10 @@
   uniform float uSlices;
 
   const float PI = 3.14159265;
+  ` + DEPTH_GLSL + `
 
   vec3 worldFromDepth(vec2 uv, float d) {
-    vec4 c = uInvVP * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+    vec4 c = uInvVP * vec4(uv * 2.0 - 1.0, depthNdc(d), 1.0);
     return c.xyz / c.w;
   }
   /* Interleaved gradient noise. It decorrelates the per-pixel rotation in a
@@ -1819,7 +1977,7 @@
 
   void main() {
     float d = texture(uDepth, vUv).r;
-    if (d >= 0.99999) { outColor = vec4(1.0); return; }
+    if (depthIsSky(d)) { outColor = vec4(1.0); return; }
     vec4 nr = texture(uNormal, vUv);
     vec3 N = nr.rgb * 2.0 - 1.0;
     if (dot(N, N) < 0.1) { outColor = vec4(1.0); return; }
@@ -1906,7 +2064,7 @@
           vec2 uv = vUv + dirUv * (t * t * pxRadius) * s;
           if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
           float sd = texture(uDepth, uv).r;
-          if (sd >= 0.99999) continue;
+          if (depthIsSky(sd)) continue;
           vec3 sp = worldFromDepth(uv, sd);
           vec3 delta = sp - P;
           float len = length(delta);
@@ -1976,10 +2134,10 @@
   uniform float uHeadDip;
   uniform float uHeadToe;
   uniform float uHeadFall;
-  ` + NOISE_GLSL + `
+  ` + NOISE_GLSL + DEPTH_GLSL + `
 
   vec3 worldFromDepth(vec2 uv, float d) {
-    vec4 c = uInvVP * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+    vec4 c = uInvVP * vec4(uv * 2.0 - 1.0, depthNdc(d), 1.0);
     return c.xyz / c.w;
   }
   // Henyey-Greenstein: forward scattering, so looking toward the sun glows
@@ -2024,7 +2182,7 @@
 
   void main() {
     float d = texture(uDepth, vUv).r;
-    vec3 far = worldFromDepth(vUv, min(d, 0.99999));
+    vec3 far = worldFromDepth(vUv, depthNotFar(d));
     vec3 ray = far - uCamPos;
     float dist = length(ray);
     vec3 dir = ray / max(1e-4, dist);
@@ -2077,23 +2235,55 @@
   in vec2 vUv; out vec4 outColor;
   uniform sampler2D uScene;
   uniform sampler2D uDepth;
+  ` + DEPTH_GLSL + `
   void main() {
     float d = texture(uDepth, vUv).r;
     vec3 c = texture(uScene, vUv).rgb;
     // only unoccluded sky contributes; the geometry is what casts the shafts
+    #ifdef SYNX_REVZ
+    float sky = depthIsSky(d) ? 1.0 : 0.0;
+    #else
     float sky = step(0.9999, d);
+    #endif
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
     outColor = vec4(c * sky * smoothstep(0.7, 3.0, l), 1.0);
   }`;
 
+  /* THE SHAFTS, AND WHAT THEY COST.
+   *
+   * Forty taps a pixel over a half-resolution buffer. At 1080p that is a
+   * shade under twenty-one million texture fetches every frame, for an
+   * effect that is only ever visible with the sun actually in shot - and it
+   * used to run unconditionally, including on LOW, where GOD RAYS are off
+   * and the result is multiplied by zero on the way into the composite.
+   *
+   * Two things changed. The pass is now SKIPPED when nothing will read it
+   * (see the god-ray block in `draw`), and the tap count is a compile-time
+   * constant so the cheap preset can have a cheaper kernel rather than the
+   * same kernel with the answer thrown away. Sixteen taps with the decay
+   * re-tuned to cover the same length of shaft is visually very close -
+   * the banding it introduces is below the noise the dither already puts
+   * there - and it is forty per cent of the fetches. */
   const GODRAY_FRAG = `#version 300 es
   precision highp float;
+  #ifndef GOD_TAPS
+  #define GOD_TAPS 40
+  #endif
+  #ifndef GOD_DECAY
+  /* Per-tap falloff. It is paired with the tap count on purpose: the shaft
+     is the same LENGTH either way (the step is 1/N of the distance to the
+     sun), so a kernel with fewer taps has to decay harder per tap or the
+     shafts come out brighter as well as coarser. 0.955^(40/16) is the
+     sixteen-tap equivalent of the forty-tap decay, which is what keeps the
+     two presets looking like the same effect. */
+  #define GOD_DECAY 0.955
+  #endif
   in vec2 vUv; out vec4 outColor;
   uniform sampler2D uTex;
   uniform vec2 uSunUv;
   uniform float uOnScreen;
   void main() {
-    const int N = 40;
+    const int N = GOD_TAPS;
     vec2 delta = (vUv - uSunUv) * (1.0 / float(N)) * 0.85;
     vec2 uv = vUv;
     vec3 acc = vec3(0.0);
@@ -2101,7 +2291,7 @@
     for (int i = 0; i < N; i++) {
       uv -= delta;
       acc += texture(uTex, uv).rgb * w;
-      w *= 0.955;                      // decay along the shaft
+      w *= float(GOD_DECAY);           // decay along the shaft
     }
     outColor = vec4(acc * (1.0 / float(N)) * 1.1 * uOnScreen, 1.0);
   }`;
@@ -2311,10 +2501,8 @@
     p += dot(p, p + 23.45);
     return fract(p.x * p.y);
   }
-  float linear(float d) {
-    float z = d * 2.0 - 1.0;
-    return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
-  }
+  ` + DEPTH_GLSL + `
+  float linear(float d) { return depthLinear(d, uNear, uFar); }
 
   /* ------------------------------------------------------------ AgX -----
    *
@@ -2643,6 +2831,7 @@
   uniform mat4 uPrevVP;
   uniform vec2 uRes;
   uniform float uBlend;
+  ` + DEPTH_GLSL + `
 
   /* YCoCg. The neighbourhood test decides what the history is allowed to be,
      and doing it in RGB tests three correlated channels: a pixel that is
@@ -2715,7 +2904,7 @@
     float d = texture(uDepth, vUv).r;
 
     // where this pixel was last frame
-    vec4 wp = uInvVP * vec4(vUv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+    vec4 wp = uInvVP * vec4(vUv * 2.0 - 1.0, depthNdc(d), 1.0);
     vec3 world = wp.xyz / wp.w;
     vec4 pc = uPrevVP * vec4(world, 1.0);
     vec2 prevUv = pc.xy / pc.w * 0.5 + 0.5;
@@ -3389,6 +3578,7 @@
       });
       if (!this.gl) throw new Error('WebGL2 is not available in this browser.');
       memoiseVao(this.gl);
+      this.watchContext();
 
       this.gameData = opts.gameData || {};
       this.hud = new global.NR.Hud(opts.hudCanvas, this.gameData);
@@ -3399,6 +3589,14 @@
          Hud.frost. */
       this.hud.glCanvas = this.canvas;
       this.audio = new global.NR.Audio();
+      /* THE RADIO ASKS THIS BEFORE IT CHOOSES ANYTHING. Every caller that
+         starts the radio without first setting the environment - which is
+         all of js/story.js, because a chapter cannot know what country its
+         start line is in - used to begin a song and cut out of it a frame
+         later. See _syncEnvironment in js/audio.js. */
+      this.audio.environmentSource = () => (
+        this.scene && this.scene.environmentAt
+          ? this.scene.environmentAt(this.distance || 0) : null);
       this.input = new Input();
       /* THE CONTROLLER.
 
@@ -3431,6 +3629,43 @@
       this.scene.gates = LEVELS.map(l => l.to);
 
       const gl = this.gl;
+      /* ---------------------------------------------- REVERSED DEPTH ----
+       *
+       * THE FAR CITY FLICKERED, and it was the depth buffer running out.
+       *
+       * A 24-bit depth buffer with a standard projection spends almost all of
+       * its precision in the first few units in front of the lens: the gap it
+       * can tell apart grows with the SQUARE of the distance over the near
+       * plane. From the chase camera (near 1.0) that is half a unit at three
+       * kilometres. From the driver's seat, whose near plane has to be eight
+       * centimetres or the cabin is cut away, it is SEVEN units - and
+       * NEON HORIZON's street wall wears its window shell half a unit proud of
+       * the tower, the skybridges carry their light strips a fifth of a unit
+       * off the deck, the podium lip sits under half a unit in front of its
+       * face. Past about nine hundred units every one of those pairs was
+       * decided by rounding, differently for every triangle and every frame:
+       * whole facades strobing between the tower's flat neon body and its
+       * windows, bridges blinking.
+       *
+       * REVERSED DEPTH is the fix every modern engine uses. Depth runs from 1
+       * at the near plane to 0 at the far one, into a 32-bit FLOAT buffer, so
+       * the float's own density near zero lands on the far distance and the
+       * precision comes out close to constant relative to distance - a
+       * hundredth of a unit at a kilometre instead of a unit. It needs the
+       * [0,1] clip range, which is EXT_clip_control: on WebView2 and on
+       * WKWebView essentially everywhere, on WebKitGTK on about three machines
+       * in five. Without it the renderer runs exactly as it did.
+       *
+       * It is in force for the scene pass only - see depthMode - because the
+       * shadow cascades and the reflection probe keep their own projections
+       * and their own fixed-point buffers, and the post passes only read. */
+      const params = (() => {
+        try { return new URLSearchParams(global.location ? global.location.search : ''); }
+        catch (e) { return null; }
+      })();
+      const clip = params && params.get('revz') === '0' ? null : gl.getExtension('EXT_clip_control');
+      this.clipControl = clip || null;
+      const zDefs = clip ? { SYNX_REVZ: 1 } : undefined;
       this.pPre = G.program(gl, G.FS_VERT, BLOOM_PRE_FRAG, 'bloomPre');
       this.pDown = G.program(gl, G.FS_VERT, DOWN_FRAG, 'down');
       // the four-tap alternative, for GLOW QUALITY = FAST. Compiled with the
@@ -3438,20 +3673,27 @@
       // touched is a hitch the player caused by changing a setting.
       this.pDownFast = G.program(gl, G.FS_VERT, DOWN_FAST_FRAG, 'downFast');
       this.pUp = G.program(gl, G.FS_VERT, UP_FRAG, 'up');
-      this.pVol = G.program(gl, G.FS_VERT, VOL_FRAG, 'volumetric');
-      this.pOcc = G.program(gl, G.FS_VERT, OCCLUDE_FRAG, 'occlude');
+      this.pVol = G.program(gl, G.FS_VERT, VOL_FRAG, 'volumetric', zDefs);
+      this.pOcc = G.program(gl, G.FS_VERT, OCCLUDE_FRAG, 'occlude', zDefs);
       this.pGod = G.program(gl, G.FS_VERT, GODRAY_FRAG, 'godray');
-      this.pSsr = G.program(gl, G.FS_VERT, SSR_FRAG, 'ssr');
-      this.pAo = G.program(gl, G.FS_VERT, SSAO_FRAG, 'ssao');
+      /* ...and the cheap kernel, for the two presets that cannot afford the
+         full one. Compiled here with everything else rather than the first
+         time a preset selects it: a shader built when a row is touched is a
+         hitch the player caused by changing a setting, which is exactly the
+         reason pDownFast is built up here too. */
+      this.pGodFast = G.program(gl, G.FS_VERT, GODRAY_FRAG, 'godrayFast',
+        { GOD_TAPS: 16, GOD_DECAY: '0.8918' });
+      this.pSsr = G.program(gl, G.FS_VERT, SSR_FRAG, 'ssr', zDefs);
+      this.pAo = G.program(gl, G.FS_VERT, SSAO_FRAG, 'ssao', zDefs);
       this.pDof = G.program(gl, G.FS_VERT, DOF_FRAG, 'dof');
-      this.pPost = G.program(gl, G.FS_VERT, POST_FRAG, 'post');
-      this.pTaa = G.program(gl, G.FS_VERT, TAA_FRAG, 'taa');
+      this.pPost = G.program(gl, G.FS_VERT, POST_FRAG, 'post', zDefs);
+      this.pTaa = G.program(gl, G.FS_VERT, TAA_FRAG, 'taa', zDefs);
       this.pUpscale = G.program(gl, G.FS_VERT, UPSCALE_FRAG, 'upscale');
       this.pFinal = G.program(gl, G.FS_VERT, FINAL_FRAG, 'final');
 
       // linear HDR scene with a sampleable depth buffer for the volumetrics
       // and a packed normal/roughness buffer for the reflections
-      this.rtScene = G.target(gl, 2, 2, { float: true, depthTex: true, mrt: true });
+      this.rtScene = G.target(gl, 2, 2, { float: true, depthTex: true, mrt: true, depth32f: !!clip });
       this.rtVol = G.target(gl, 2, 2, { float: true });
       this.rtOcc = G.target(gl, 2, 2, { float: true });
       this.rtGod = G.target(gl, 2, 2, { float: true });
@@ -3479,6 +3721,46 @@
       this.bloom = [];
       for (let i = 0; i < BLOOM_LEVELS; i++) this.bloom.push(G.target(gl, 2, 2, { float: true }));
       this.emptyVAO = gl.createVertexArray();
+
+      /* ------------------------------------------ WHAT "OFF" LOOKS LIKE --
+       *
+       * The composite samples eight textures and it samples them whether or
+       * not the feature behind each one is switched on: `uSsr` is added
+       * multiplied by zero, `uVol` is read for a transmittance of one, `uGod`
+       * is added multiplied by `uGodAmt`. The branches that could have been
+       * skipped mostly are already; the FETCHES cannot be, because a texture
+       * read is not something a uniform can switch off.
+       *
+       * So on a preset where the feature is off, the sampler is pointed at a
+       * ONE-PIXEL texture instead of at a half-resolution HDR buffer. The
+       * arithmetic is identical - these carry exactly the values the cleared
+       * buffers carried - and the memory traffic is gone. On an integrated
+       * GPU, where the whole post chain is bandwidth and nothing else, five
+       * full-frame fetches a pixel is not a rounding error.
+       *
+       * It also means those buffers no longer have to be CLEARED every frame
+       * to hold a constant, which is five framebuffer binds and five clears
+       * that did nothing.
+       *
+       *   texZero   (0,0,0,0) - nothing added: reflections, shafts, glow
+       *   texClear  (0,0,0,1) - clear air: transmittance 1, no inscatter
+       *   texOne    (1,1,1,1) - no occlusion
+       */
+      const flat = (r, g2, b, a) => {
+        const t = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA,
+          gl.UNSIGNED_BYTE, new Uint8Array([r, g2, b, a]));
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        return t;
+      };
+      this.texZero = flat(0, 0, 0, 0);
+      this.texClear = flat(0, 0, 0, 255);
+      this.texOne = flat(255, 255, 255, 255);
 
       this.proj = M4.make();
       this.view = M4.make();
@@ -3512,6 +3794,9 @@
       this.boostFx = 0;
       this.boostKick = 0;
       this.raceModeFx = 0;
+      this.pedalGo = 0; this.pedalStop = 0;
+      this.jerkX = 0; this.jerkY = 0; this.jerkFov = 0;
+      this._jerkStep = 0; this._jerkSurge = 0;
       this.speedBoostWas = false;
       this.tunnel = 0;
       this.progress = 0;
@@ -3537,7 +3822,7 @@
       this.topSpeedSeen = 0;
       this.cleanTime = 0;
 
-      this.settings = loadSettings();
+      this.settings = loadSettings(this.gl);
       /* Which page of the options screen is open, and which row on it.
          `settingRows` is re-derived whenever the tab changes rather than being
          a second list that has to be kept in step with it. */
@@ -4097,10 +4382,67 @@
      *   to bind it, and a stray nudge of the stick would bind an arrow key to
      *   the handbrake.
      */
+    /* ================= THE CONTROLLER, ONCE A FRAME, ALWAYS =============
+     *
+     * THE BUG THIS EXISTS FOR.
+     *
+     * The pad was polled at the top of `Game.update`, which reads like the
+     * one place every frame passes through and is not. Five modules wrap
+     * that method - the story, the chapter directors, Free Roam, the driver
+     * terminal and multiplayer - and four of them do the same thing on the
+     * screen they own:
+     *
+     *     if (this.modeSelect.isExclusive()) { this.modeSelect.tick(dt); return; }
+     *
+     * `Game.update` is never called on those frames. So on the driver
+     * terminal, in the Story hub, on the Free Roam board, in the multiplayer
+     * lobby and through every cutscene in the campaign, the controller was
+     * not polled at all: `nav()` returned the same empty object for as long
+     * as the screen was up, nothing was synthesised, and a player holding a
+     * pad had four screens they could not move on. It worked everywhere this
+     * file draws and nowhere any other file does, which is exactly the shape
+     * of report that gets filed as "the gamepad is unreliable".
+     *
+     * Polling here fixes it for every screen at once, including any screen
+     * added later, because the frame loop is the one thing no wrapper can
+     * return in front of.
+     *
+     * AND IT IS POLLED EXACTLY ONCE. `navigator.getGamepads` hands back a
+     * SNAPSHOT rather than live objects, so two readers in one frame get two
+     * different frames and one of them misses a button edge. That is why
+     * this is a single call in a single place and why `Game.update` no
+     * longer makes one.
+     */
+    pumpPad(dt) {
+      if (!this.pad) return;
+      this.pad.poll(dt);
+      const nav = this.pad.nav();
+      this.padToKeys(!!(nav && nav.up), !!(nav && nav.down),
+        !!(nav && nav.left), !!(nav && nav.right),
+        this.pad.confirmHit(), this.pad.cancelHit());
+    }
+
+    /* Is the player's own steering and throttle currently on the pad?
+     *
+     * Asked so the bridge above knows when NOT to synthesise a key: an
+     * ArrowLeft dispatched while somebody is driving arrives at the input
+     * layer as full steering lock, on top of the analogue lock the same
+     * stick is already producing.
+     *
+     * `state` alone does not answer it. The Story tutorial is a genuine
+     * drive - the player has the car, the throttle and the wheel - and it
+     * runs with `state` at 'story', so a test on 'racing' and 'countdown'
+     * said no and the tutorial fought itself on a controller. */
+    padDriving() {
+      if (this.state === 'racing' || this.state === 'countdown') return true;
+      const s = this.story;
+      if (s && (s.mode === 'tutorial' || s.mode === 'race')) return true;
+      return false;
+    }
+
     padToKeys(up, down, left, right, ok, back) {
       if (!up && !down && !left && !right && !ok && !back) return;
-      const driving = this.state === 'racing' || this.state === 'countdown';
-      if (driving || (this.input && this.input.captureNext)) return;
+      if (this.padDriving() || (this.input && this.input.captureNext)) return;
       if (up) synthKey('ArrowUp');
       if (down) synthKey('ArrowDown');
       if (left) synthKey('ArrowLeft');
@@ -4144,24 +4486,47 @@
        * ABOVE native nothing changes. Supersampling wants the browser's own
        * box downsample of a larger canvas, which is a better reducer than one
        * bilinear tap, and it costs nothing to keep the old path for it. */
+      /* THE ADAPTIVE FACTOR, and why it is separate from the row above.
+       *
+       * RENDER SCALE is what the player asked for. `dynScale` is what the
+       * machine can actually hold right now, and it is only ever allowed to
+       * take pixels AWAY - it is 1 on any machine that is keeping up, and on
+       * a machine that is not it is the difference between a playable frame
+       * rate and a slideshow. See `adaptResolution`.
+       *
+       * It multiplies the RENDER TARGETS and never the canvas. That matters:
+       * the canvas backing store is what the interface is composited against
+       * and what the operating system presents, so resizing it is a visible
+       * re-layout and a fresh allocation for the compositor as well as for
+       * us. The frame is drawn smaller and the reconstruction pass that
+       * already exists for sub-native RENDER SCALE fits it to the window -
+       * which is exactly what that pass is for. */
+      const dyn = Math.max(0.30, Math.min(1, this.dynScale === undefined ? 1 : this.dynScale));
       const dprBase = Math.min(global.devicePixelRatio || 1, 2.0);
       const ow = Math.max(2, Math.round(w * dprBase));
       const oh = Math.max(2, Math.round(h * dprBase));
       let bw, bh;
+      /* THE CANVAS IS ONLY REALLOCATED WHEN ITS SIZE ACTUALLY CHANGES.
+         Assigning `width` or `height` to a canvas destroys and rebuilds the
+         drawing buffer even when the value is identical - and the adaptive
+         scaler calls this method on every step it takes, on frames where the
+         window has not moved at all. See the same guard in Hud.resize. */
+      const sizeCanvas = (cw, chh) => {
+        if (this.canvas.width !== cw) this.canvas.width = cw;
+        if (this.canvas.height !== chh) this.canvas.height = chh;
+      };
       if (rs >= 1) {
         // supersample: the canvas itself is bigger and the display reduces it
         const dpr = Math.min(dprBase * rs, 2.0);
-        bw = Math.max(2, Math.round(w * dpr));
-        bh = Math.max(2, Math.round(h * dpr));
-        this.canvas.width = bw;
-        this.canvas.height = bh;
-        this.outW = bw; this.outH = bh;
+        sizeCanvas(Math.max(2, Math.round(w * dpr)), Math.max(2, Math.round(h * dpr)));
+        this.outW = this.canvas.width; this.outH = this.canvas.height;
+        bw = Math.max(2, Math.round(this.outW * dyn));
+        bh = Math.max(2, Math.round(this.outH * dyn));
       } else {
         // reconstruct: the canvas is native and the frame is drawn smaller
-        bw = Math.max(2, Math.round(ow * rs));
-        bh = Math.max(2, Math.round(oh * rs));
-        this.canvas.width = ow;
-        this.canvas.height = oh;
+        bw = Math.max(2, Math.round(ow * rs * dyn));
+        bh = Math.max(2, Math.round(oh * rs * dyn));
+        sizeCanvas(ow, oh);
         this.outW = ow; this.outH = oh;
       }
       this.canvas.style.width = w + 'px';
@@ -4171,25 +4536,65 @@
       /* The reconstruction target only exists when there is something to
          reconstruct. Below native it is the canvas size; at or above it, the
          pass is skipped and the buffer is kept at 2x2 rather than holding a
-         full-resolution attachment nothing reads. */
-      if (rs < 1) this.rtUp.resize(this.outW, this.outH);
+         full-resolution attachment nothing reads.
+
+         The test is on the PIXELS rather than on the row, because the
+         adaptive factor can put a frame below the canvas while RENDER SCALE
+         is at or above NATIVE - a supersampled setting on a machine that has
+         momentarily run out of headroom still has to be fitted back to the
+         window by something. */
+      if (bw < this.outW || bh < this.outH) this.rtUp.resize(this.outW, this.outH);
       else this.rtUp.resize(2, 2);
-      this.rtHist[0].resize(bw, bh);
-      this.rtHist[1].resize(bw, bh);
-      this.haveHistory = false;
+      /* A BUFFER NOTHING WRITES DOES NOT NEED TO BE THE SIZE OF THE SCREEN.
+       *
+       * Ten of the targets below belong to passes a preset can switch off,
+       * and they were all allocated at half or quarter resolution whatever
+       * the preset was - eight half-resolution RGBA16F surfaces and two
+       * quarter ones, about thirty megabytes at 1080p, held for the life of
+       * the process so that a shader nobody runs could sample them.
+       *
+       * On a discrete card that is nothing. On the integrated parts that
+       * share system memory with everything else - which is the hardware the
+       * LOW preset is FOR - thirty megabytes of video memory is thirty
+       * megabytes, and reclaiming it is also one less thing for the driver
+       * to thrash when the window is resized.
+       *
+       * `undefined` reads as ON, because this runs once from the constructor
+       * before any setting has been applied and a buffer that was allocated
+       * small and then used would be a far worse bug than one that was
+       * allocated large and then not. applySettings re-runs this whenever the
+       * set of live passes changes. */
+      const on = (v) => v === undefined || !!v;
+      const OFF = 2;
       const hw = Math.max(2, bw >> 1), hh = Math.max(2, bh >> 1);
-      this.rtVol.resize(hw, hh);
-      this.rtOcc.resize(hw, hh);
-      this.rtGod.resize(hw, hh);
-      this.rtSsr.resize(hw, hh);
-      this.rtSsrB.resize(hw, hh);
-      this.rtVolB.resize(hw, hh);
-      this.rtAo.resize(hw, hh);
-      this.rtAoB.resize(hw, hh);
-      this.rtDofA.resize(Math.max(2, bw >> 2), Math.max(2, bh >> 2));
-      this.rtDofB.resize(Math.max(2, bw >> 2), Math.max(2, bh >> 2));
+      const qw = Math.max(2, bw >> 2), qh = Math.max(2, bh >> 2);
+      const taa = on(this.useTaa);
+      this.rtHist[0].resize(taa ? bw : OFF, taa ? bh : OFF);
+      this.rtHist[1].resize(taa ? bw : OFF, taa ? bh : OFF);
+      this.haveHistory = false;
+      const vol = on(this.useVolumetrics);
+      this.rtVol.resize(vol ? hw : OFF, vol ? hh : OFF);
+      this.rtVolB.resize(vol ? hw : OFF, vol ? hh : OFF);
+      const god = on(this.useGodrays);
+      this.rtOcc.resize(god ? hw : OFF, god ? hh : OFF);
+      this.rtGod.resize(god ? hw : OFF, god ? hh : OFF);
+      const ssr = on(this.useSsr);
+      this.rtSsr.resize(ssr ? hw : OFF, ssr ? hh : OFF);
+      this.rtSsrB.resize(ssr ? hw : OFF, ssr ? hh : OFF);
+      const ao = on(this.useAo);
+      this.rtAo.resize(ao ? hw : OFF, ao ? hh : OFF);
+      this.rtAoB.resize(ao ? hw : OFF, ao ? hh : OFF);
+      const dof = on(this.useDof);
+      this.rtDofA.resize(dof ? qw : OFF, dof ? qh : OFF);
+      this.rtDofB.resize(dof ? qw : OFF, dof ? qh : OFF);
+      /* The pyramid only goes as deep as the preset asks for. LOW builds
+         three levels and was allocating six, the largest of which is a
+         quarter of the frame. */
+      const nLev = Math.max(2, Math.min(this.bloom.length, this.bloomLevels || this.bloom.length));
       for (let i = 0; i < this.bloom.length; i++) {
-        this.bloom[i].resize(Math.max(2, bw >> (i + 1)), Math.max(2, bh >> (i + 1)));
+        if (i < nLev) {
+          this.bloom[i].resize(Math.max(2, bw >> (i + 1)), Math.max(2, bh >> (i + 1)));
+        } else this.bloom[i].resize(OFF, OFF);
       }
       this.w = bw; this.h = bh;
       this.hud.resize(w, h, Math.min(global.devicePixelRatio || 1, 2));
@@ -4320,6 +4725,12 @@
       const fl = st.flare === undefined ? 2 : st.flare;
       this.flareAmount = FLARE[fl] === undefined ? FX.flareAmount : FLARE[fl];
 
+      /* THE INTERFACE'S OWN COST, from the same row the world's comes from.
+         See syncGfxClass: a player on LOW has said what kind of machine this
+         is, and the panels in front of the game are not exempt from that. */
+      this.gfxLean = name === 'LOW';
+      this.syncGfxClass();
+
       /* The instruments, which are drawn on the processor rather than the
          graphics card - so this is the one graphics row that helps a machine
          short of CPU. See the note on `gb` in js/hud.js. */
@@ -4436,6 +4847,45 @@
       this.bloomLevels = q.bloomLevels;
       this.useGrain = st.grain === 1;
       this.useMotionBlur = st.motionBlur === 1;
+      /* HOW HARD THE GAME HITS BACK. One multiplier on every camera shake,
+         lens punch and slow-motion beat in the game - see `impact` below and
+         the IMPACT FEEDBACK row. 0 is the accessible setting and leaves the
+         rumble, the sparks, the sound and the damage exactly where they are;
+         it only stops the picture being moved. */
+      const IMPACT = [0, 0.55, 1, 1.5];
+      const ifx = st.impactFx === undefined ? 2 : st.impactFx;
+      this.impactFx = IMPACT[ifx] === undefined ? 1 : IMPACT[ifx];
+      /* WHICH SHAFT KERNEL. Sixteen taps below HIGH, forty at and above it -
+         the same shape of decision GLOW QUALITY makes about the bloom
+         pyramid, and made by the preset for the same reason: a machine that
+         has asked for MEDIUM has not asked to be charged forty texture
+         fetches a pixel for an effect it can only see with the sun in
+         frame. See GODRAY_FRAG. */
+      this.godFast = !(name === 'HIGH' || name === 'ULTRA');
+
+      /* TEXTURE FILTERING, WHICH IS A PRESET DECISION AND WAS NOT.
+       *
+       * Every texture was uploaded with sixteen-times anisotropic filtering,
+       * unconditionally. On the road - one enormous surface seen at a
+       * grazing angle for the whole game, which is the exact worst case - a
+       * 16x sample is sixteen taps per fetch, and on the integrated parts
+       * that a LOW preset exists for it is one of the largest single line
+       * items in the frame.
+       *
+       * It is also the single best-looking thing in the frame on hardware
+       * that can afford it, so it is not something to simply turn down.
+       *
+       * HIGH AND ULTRA KEEP THE FULL SIXTEEN and look exactly as they always
+       * did - not one pixel of the picture this game was tuned to produce
+       * changes. MEDIUM takes eight and LOW four, and those numbers are
+       * chosen from where the curve actually bends: the quality of an
+       * anisotropic filter has sharply diminishing returns above eight, and
+       * four is still four times what a driver falls back to on its own. The
+       * road stays legible into the distance on every preset; what changes is
+       * how many taps the far half of it costs. */
+      if (this.scene && this.scene.setAnisotropy) {
+        this.scene.setAnisotropy(name === 'LOW' ? 4 : name === 'MEDIUM' ? 8 : 16);
+      }
 
       /* ---- the IMAGE group -------------------------------------------- */
       /* AMBIENT OCCLUSION is three-valued now rather than riding the preset:
@@ -4511,10 +4961,35 @@
          The preset still sets a sensible default the first time a quality is
          chosen, but once RENDER SCALE has been touched it is the thing that
          decides, because that is what a resolution control is for. */
+      /* WHETHER THE RENDERER MAY FIND ITS OWN PIXELS. Read before the resize
+         decision below, because a change to it is a change to how big the
+         buffers are. `dynScale` is reset to 1 on any change to this row: a
+         player who has just switched it off is owed the resolution they
+         asked for on the next frame, not whatever the scaler happened to
+         have settled on. */
+      const dyn = st.dynRes === undefined ? 1 : M.clamp(st.dynRes | 0, 0, 2);
+      if (this.dynRes !== dyn) {
+        this.dynRes = dyn;
+        this.dynScale = 1;
+        this._dyn = null;
+      }
+
       const rs = RENDER_SCALES[st.resolution] || RENDER_SCALES[3];
       const wanted = rs.scale;
-      if (this.renderScale !== wanted) {
+      /* THE BUFFERS ARE RESIZED WHEN WHAT IS DRAWN INTO THEM CHANGES, not
+         only when the resolution does.
+         The targets belonging to switched-off passes are now allocated at one
+         pixel (see onResize), so turning WET REFLECTIONS back on has to
+         re-allocate the reflection buffers before the next frame samples
+         them. A signature is the cheapest way to notice, and it cannot go
+         stale the way a list of six conditions would. */
+      const sig = (this.useTaa ? 1 : 0) | (this.useVolumetrics ? 2 : 0)
+        | (this.useGodrays ? 4 : 0) | (this.useSsr ? 8 : 0)
+        | (this.useAo ? 16 : 0) | (this.useDof ? 32 : 0)
+        | ((this.bloomLevels | 0) << 6);
+      if (this.renderScale !== wanted || this._rtSig !== sig) {
         this.renderScale = wanted;
+        this._rtSig = sig;
         this.onResize();
       }
 
@@ -4723,12 +5198,144 @@
        panels are real elements with their own stylesheet, and nothing was
        telling them a menu had opened over the top of them. One class on the
        body, set in the one place that knows the state changed. */
+    /* ==================== WHEN THE GRAPHICS CARD GOES AWAY ==============
+     *
+     * A WebGL context can be taken away from a page at any moment, and on the
+     * hardware this game is trying to be good to it happens for real: a
+     * Windows driver reset (TDR) after a long hitch, a laptop waking from
+     * sleep, a driver updated while the game is open, a second application
+     * asking for the GPU and losing an argument with it. When it happens
+     * every texture, buffer, program and framebuffer becomes invalid at once,
+     * every draw call silently does nothing, and the canvas goes black.
+     *
+     * NOTHING HANDLED IT. The state cache forgot itself, which is necessary
+     * and nowhere near sufficient: the `webglcontextlost` event was never
+     * cancelled, and a browser will not even ATTEMPT to restore a context
+     * whose loss event was not cancelled. So the outcome was a black window,
+     * a frame loop still running at full speed drawing nothing into nothing,
+     * and no message of any kind. The player's only move is to work out for
+     * themselves that the game has died and kill it.
+     *
+     * WHAT THIS DOES, AND WHAT IT HONESTLY CANNOT.
+     *
+     * It cancels the event, so restoration becomes possible. It stops the
+     * loop from drawing, because drawing into a dead context is wasted work
+     * and an error every frame. And it says what happened, in words, with the
+     * one control that can actually fix it.
+     *
+     * It does NOT pretend to rebuild in place. Coming back would mean
+     * re-uploading every texture in a forty-two megabyte archive, relinking
+     * twenty shader programs, reallocating twenty render targets and
+     * regenerating a hundred and seventy-five kilometres of world - which is
+     * precisely what starting the game does, and doing it a second way is two
+     * paths to keep correct instead of one. So the button reloads, the boot
+     * runs exactly as it does on a cold start, and the run in progress is
+     * recovered from the autosave the same way it would be after a crash.
+     */
+    watchContext() {
+      const c = this.canvas;
+      if (!c || !c.addEventListener) return;
+      c.addEventListener('webglcontextlost', (e) => {
+        /* CANCELLING IS WHAT MAKES RESTORATION POSSIBLE. Without it the
+           browser treats the loss as final and `webglcontextrestored` is
+           never fired at all. */
+        e.preventDefault();
+        this.contextLost = true;
+        try { if (this.audio && this.audio.silenceCar) this.audio.silenceCar(); } catch (err) { /* going away anyway */ }
+        this.showContextCard(false);
+      }, false);
+      c.addEventListener('webglcontextrestored', () => {
+        /* The driver has handed a context back. Every object the renderer
+           held belonged to the old one, so there is nothing here to carry
+           over - but the reload will now succeed, which it might not have a
+           moment ago. Say so and let the player press it. */
+        this.showContextCard(true);
+      }, false);
+    }
+
+    showContextCard(restored) {
+      const doc = global.document;
+      const el = doc && doc.getElementById('fatal');
+      const title = doc && doc.getElementById('fatalTitle');
+      const msg = doc && doc.getElementById('fatalMsg');
+      const btn = doc && doc.getElementById('fatalAgain');
+      if (!el) return;
+      if (title) title.textContent = 'The graphics device was reset';
+      if (msg) {
+        msg.textContent = restored
+          ? 'Your graphics driver took the 3D device away and has given it back. '
+            + 'The game needs to rebuild everything it had on the card.\n\n'
+            + 'Your progress is saved, and a run in progress is restored when it can be.'
+          : 'Your graphics driver took the 3D device away from the game. This is '
+            + 'usually a driver reset, a machine waking from sleep, or a driver '
+            + 'that was updated while the game was open.\n\n'
+            + 'Your progress is saved. Restarting the renderer rebuilds everything '
+            + 'and picks the run back up.';
+      }
+      if (btn && !btn.__wired) {
+        btn.__wired = true;
+        btn.addEventListener('click', () => {
+          try { global.location.reload(); } catch (e) { /* nothing left to try */ }
+        });
+      }
+      if (btn) btn.hidden = false;
+      el.classList.remove('hidden');
+      try { if (btn) btn.focus({ preventScroll: true }); } catch (e) { /* older webview */ }
+      /* The pointer has to exist to press it. Every fine-pointer surface in
+         this page is `cursor: none` so the game can draw its own, and the
+         drawn one is not being drawn any more. */
+      if (doc && doc.body) {
+        doc.body.classList.remove('race-active');
+        doc.body.classList.add('native-cursor');
+      }
+    }
+
     syncModalClass() {
       const modal = this.state === 'paused' || this.state === 'finished';
       if (modal === this._modalWas) return;
       this._modalWas = modal;
       const b = global.document.body;
       if (b) b.classList.toggle('synx-modal', modal);
+    }
+
+    /* ================= IS ANYONE ACTUALLY LOOKING AT THE WORLD? =========
+     *
+     * Four screens in this game are full-frame DOM panels laid over the
+     * running renderer: the driver terminal, the Story hub, the Free Roam
+     * board and the multiplayer lobby. Every one of them paints a background
+     * that is 94% opaque at the top and 72% at the bottom, so what is
+     * actually visible of the 3D behind them is a dim wash along the lower
+     * edge - and behind that wash the renderer was doing all of it: three
+     * shadow cascades over a kilometre of road, six reflection-probe faces,
+     * a screen-space reflection march, horizon-based occlusion, a volumetric
+     * ray march and forty-tap light shafts.
+     *
+     * That is the single largest reason this game "lags in the menus". The
+     * menus are not cheap screens with a picture behind them; they are the
+     * full renderer with a sheet over it.
+     *
+     * So while one of them is up, the passes whose results cannot reach the
+     * player are skipped. Not the scene, not the grade, not the bloom - the
+     * road and the neon along the bottom of the panel still look exactly as
+     * they did, because those are the parts that can actually be seen. What
+     * goes is everything that only shows up in reflections, contact shadows
+     * and airborne light, none of which survives a 94% wash.
+     *
+     * THE TITLE SCREEN IS NOT IN THIS LIST, deliberately. It is an attract
+     * reel - the whole point of it is the car on the road looking its best -
+     * and it is drawn at full quality. So is the pause menu, which is a
+     * translucent card over a frozen race the player is still looking at.
+     */
+    worldCovered() {
+      /* The benchmark measures the frame the game actually renders. A budget
+         that quietly removed six passes underneath it would be a benchmark
+         reporting a machine faster than the one being played on. */
+      if (this.benchActive) return false;
+      if (this.modeSelect && this.modeSelect.isExclusive && this.modeSelect.isExclusive()) return true;
+      if (this.freeRoamUi && this.freeRoamUi.isExclusive && this.freeRoamUi.isExclusive()) return true;
+      if (this.multiplayer && this.multiplayer.isExclusive && this.multiplayer.isExclusive()) return true;
+      if (this.story && this.story.coversWorld && this.story.coversWorld()) return true;
+      return false;
     }
 
     /* ------------------------------------------------- POINTER OWNERSHIP --
@@ -5129,8 +5736,7 @@
       car.boosting = true;
       if (this.fx && this.fx.raceModeBurst) this.fx.raceModeBurst(car);
       this.audio.boostHit();
-      this.flash = Math.max(this.flash || 0, 0.09);
-      this.shake = Math.max(this.shake || 0, 0.42);
+      this.fireRaceModeFeel();
       this.hud.toast('raceMode // SYNCHRONIZED', '#39c7ff');
     }
 
@@ -5283,6 +5889,9 @@
             const drop = car.__airPeak || 0;
             if (drop > 0.8) this.audio.land(drop, q);
           }
+          /* The peak is cleared for the next jump, but the response below
+             still needs it - so it is kept for the length of this block. */
+          car.__airPeakAtLand = car.__airPeak || 0;
           car.__airPeak = 0;
           /* Boost, and boost is the right currency: a ramp taken well is one
              of the few places on this road anyone can make some. Paid to every
@@ -5295,6 +5904,35 @@
           if (player) {
             J.taken++;
             if (q >= RAMP_CLEAN) J.clean++;
+            /* ============ WHAT COMING BACK DOWN IS WORTH ================
+             *
+             * A jump is the biggest single thing that happens on this road
+             * and, until now, landing one did nothing to the picture at all:
+             * a sound, some boost and a score. The suspension absorbed it
+             * perfectly and the camera never knew.
+             *
+             * So the landing lands. `drop` is the peak height this jump
+             * actually reached - kept per car a few lines above, because the
+             * solver has already zeroed the height by the time it raises the
+             * flag - so a two-unit step off a kerb is felt as a two-unit step
+             * and a launch off the seawall ramp is felt as a launch.
+             *
+             * AND A CLEAN ONE IS A MOMENT. Landing straight is the skill the
+             * whole ramp system is about, and it is the one thing here that
+             * earns a stop: a tenth of a second, once, at the bottom of a big
+             * one. A scrappy landing from the same height gets the shake and
+             * none of the reward, which is the difference being paid for. */
+            const drop = Math.min(1, (car.__airPeakAtLand || 0) / 9);
+            if (drop > 0.06) {
+              const clean = q >= RAMP_CLEAN;
+              this.impact({
+                shake: 0.30 + drop * 1.15,
+                punch: 0.35 + drop * 0.5,
+                stop: clean && drop > 0.45 ? 0.22 + drop * 0.16 : 0,
+                hold: 0.13,
+              });
+              if (this.pad) this.pad.vibrate(0.3 + drop * 0.6, 90 + drop * 180);
+            }
             /* A landing that scored is a moment. The threshold is the game's
                own definition of clean rather than a second one invented here. */
             if (q >= RAMP_CLEAN && NR.Record) {
@@ -5902,10 +6540,11 @@
          that can take it set `controlsSwapped`; the input layer reads only
          this. */
       this.input.invert = !!this.controlsSwapped;
-      /* Before anything reads it, and before the early return: a pad polled
-         only while the game is running would report every button pressed on
-         the loading screen as a fresh press the moment it ends. */
-      if (this.pad) this.pad.poll(dt);
+      /* THE PAD IS POLLED IN `run`, NOT HERE. See pumpPad: this method is
+         not on the path every frame takes - five modules wrap it and four of
+         them return before it on the screens they own - so a controller
+         polled here is a controller that stops existing the moment a DOM
+         screen opens. */
       if (this.state === 'loading') return;
 
       const inp = this.input;
@@ -5922,21 +6561,11 @@
       this.confirmPointerIndex = -1;
       this.finishPointerIndex = -1;
 
-      /* THE PAD DRIVES THE MENUS TOO.
-
-         Folded into the same locals every screen below already reads, rather
-         than added as a second condition at each of the fourteen places that
-         test them. A controller that can drive the car but not choose a route
-         is a controller that still needs a keyboard beside it, and that was
-         the state of this before. */
-      const nav = this.pad ? this.pad.nav() : null;
-      const padUp = !!(nav && nav.up);
-      const padDown = !!(nav && nav.down);
-      const padLeft = !!(nav && nav.left);
-      const padRight = !!(nav && nav.right);
-      const padOk = !!(this.pad && this.pad.confirmHit());
-      const padBack = !!(this.pad && this.pad.cancelHit());
-      this.padToKeys(padUp, padDown, padLeft, padRight, padOk, padBack);
+      /* THE PAD DRIVES THE MENUS TOO, and the bridge that makes it do so has
+         moved to `pumpPad`, which runs from the frame loop. See the note
+         there: every screen in this file was reachable from a controller and
+         not one of the four DOM screens was, because they never let this
+         method run. */
 
       // Fullscreen is opt-in, on F. Nothing else in the game asks for it.
       if (inp.actHit('fullscreen')) this.toggleFullscreen();
@@ -5972,12 +6601,21 @@
            unreachable and still being typed in and hit-tested is a row
            waiting for somebody to change one of those two files. */
         if (this.benchActive) { this.audio.update(this.car, dt, false); return; }
+        /* THE ROWS ARRIVE IN A CASCADE, each over the same third of a second
+           and each starting when the one above is half way in - see drawMenu,
+           which sets them as a slide rather than as typing. `typed` is still
+           counted in characters, so everything that reads it as "how much of
+           this row is up" is unchanged; what changed is that every row now
+           takes the same time instead of its own length, and they overlap. */
         for (let i = 0; i < this.menuItems.length; i++) {
           const it = this.menuItems[i];
-          const prev = i === 0 || this.menuItems[i - 1].typed >= this.menuItems[i - 1].label.length;
+          const up = this.menuItems[i - 1];
+          const prev = i === 0 || up.typed >= up.label.length * 0.45;
           // held at zero until the opening move has begun to hand over
           const open = this.introReveal === undefined ? 1 : this.introReveal;
-          if (prev && open > 0.02 && it.typed < it.label.length) it.typed += TYPE_CPS * dt;
+          if (prev && open > 0.02 && it.typed < it.label.length) {
+            it.typed = Math.min(it.label.length, it.typed + it.label.length / MENU_ROW_IN * dt);
+          }
         }
         if (inp.hit('arrowup', 'w')) { this.menuIndex = (this.menuIndex + this.menuItems.length - 1) % this.menuItems.length; this.audio.uiMove(); }
         if (inp.hit('arrowdown', 's')) { this.menuIndex = (this.menuIndex + 1) % this.menuItems.length; this.audio.uiMove(); }
@@ -6272,7 +6910,44 @@
         }
         if (this.rival.lastHit) this.rival.lastHit = false;
         this.rivalGap = this.car.sTrack - this.rival.sTrack;
+        const wasPlace = this.place;
         this.place = this.rivalGap >= 0 ? 1 : 2;
+        /* ================= THE ONE THING THIS GAME IS ABOUT ==============
+         *
+         * Overtaking. It is the core loop, it is what every other system on
+         * this road exists to set up, and until now the moment it happened
+         * produced NOTHING: a number on the left flank changed from 2nd to
+         * 1st and that was the whole of it. Every lesser event in the game -
+         * a kerb strike, a boost, a landing - had more feedback than the one
+         * the player is actually playing for.
+         *
+         * So a lead change is a moment. A lens punch, because taking a place
+         * is an acceleration and not a collision; a rumble, because the hands
+         * should know before the eyes read the number; and a word, because at
+         * two hundred kilometres an hour the player is looking at the road.
+         *
+         * IT IS AN EDGE, NOT A STATE, and it is gated on the race being live:
+         * the gap crosses zero constantly on the grid before the lights and
+         * once more as the finish roll drives both cars past the line, and a
+         * lead change announced at either of those is an announcement about
+         * nothing. `active` is the same flag the scoring uses.
+         *
+         * THE WORD IS THE STORY'S WHEN THE STORY IS DRIVING. Ryker, Kael and
+         * Nova all have something to say about being passed - see rivalBanter
+         * in js/story.js - and a toast on top of a line of dialogue is two
+         * things saying the same thing in two registers. The punch and the
+         * rumble still fire, because those are the car and not the script. */
+        if (active && !this.raceOver && wasPlace && wasPlace !== this.place) {
+          const took = this.place === 1;
+          this.impact({ punch: took ? 0.85 : 0.4, shake: took ? 0.22 : 0.14 });
+          if (this.pad) this.pad.vibrate(took ? 0.45 : 0.3, took ? 140 : 90);
+          const storyTalking = !!(this.story && this.story.mode === 'race');
+          if (!storyTalking) {
+            if (took) this.hud.toast('LEAD TAKEN', '#54ff4b');
+            else this.hud.toast('LEAD LOST', '#ff2e88');
+          }
+          if (took && NR.Record) NR.Record.mark('overtake');
+        }
       }
 
       if (this.freeRoam) {
@@ -6280,7 +6955,22 @@
         this.updateFreeRoamRival(dt);
       }
       const wasBoost = this.car.boosting;
-      this.car.update(dt, inp.sample(), active);
+      /* THE PEDALS READ THE SAME COMMAND THE SOLVER DOES.
+       *
+       * Sampled once and kept, rather than asked for again at draw time:
+       * `sample()` clears the frame's edge-triggered presses, so calling it
+       * twice in a frame is not a read, it is a second consumer.
+       *
+       * Damped, and asymmetrically. A pedal is a lever with a foot and a
+       * return spring on it: it goes down as fast as the ankle does and
+       * comes back at whatever the spring gives, which is slower. Feeding
+       * the raw 0-or-1 of a keyboard straight into the geometry makes the
+       * pedal teleport, and a control that teleports reads as a decal. */
+      const cmd = inp.sample();
+      const toPedal = (was, want) => M.damp(was || 0, want, want > (was || 0) ? 22 : 11, dt);
+      this.pedalGo = toPedal(this.pedalGo, cmd.throttle || 0);
+      this.pedalStop = toPedal(this.pedalStop, cmd.brake || 0);
+      this.car.update(dt, cmd, active);
       if (this.car.boosting && !wasBoost) this.audio.boostHit();
       if (this.car.lastHit) {
         const hitType = this.car.lastHitType;
@@ -6292,6 +6982,27 @@
         this.audio.crash(hit);
         this.flash = 0.05 + hit * 0.14;
         this.shake = 0.35 + hit * 0.85;
+        /* HIT STOP, AND ONLY FOR A REAL ONE.
+         *
+         * A few hundredths of a second of dilation is what turns a collision
+         * from a noise into an event: the brain is given time to register
+         * that the thing on screen just happened, which is the whole of why
+         * every action game since the arcades has done it.
+         *
+         * The threshold is the point of the whole feature. `impact` is raised
+         * for a kerb strike and for a head-on alike, and a game that stops
+         * time for a kerb strike is a game nobody can drive - so this fires
+         * only above half, which is a hit hard enough to dent a panel and
+         * crack the screen, and its depth and length both scale from there.
+         * Below that the shake and the flash above are the whole response,
+         * exactly as they were. */
+        if (hit > 0.5) {
+          this.impact({
+            stop: 0.26 + (hit - 0.5) * 0.44,
+            hold: 0.10 + (hit - 0.5) * 0.14,
+            shake: 0.35 + hit * 0.85,
+          });
+        }
         /* The pad feels it too. Scaled by the same `hit` the flash, the shake
            and the sparks are, so the hands are told exactly what the eyes and
            the ears were - a rumble that is the same size for a brush and a
@@ -6534,7 +7245,17 @@
       const rushTarget = ramp(82, 108);       // chassis/camera load builds first
       const limitTarget = ramp(118, 132);     // only the final few mph feel tense
       const boostTarget = this.car.boosting ? 1 : 0;
-      if (boostTarget && !this.speedBoostWas) this.boostKick = 1;
+      if (boostTarget && !this.speedBoostWas) {
+        this.boostKick = 1;
+        /* THE LIGHT-UP. The kick above already opens the lens over about half
+           a second, which is the acceleration; this is the half-frame of
+           violence at the front of it that says something just fired. A
+           shake rather than a stop - a boost is the one event in this game
+           that must never take time away from the player, because the whole
+           point of it is that everything is suddenly happening faster. */
+        this.impact({ shake: 0.42, punch: 1, flash: 0.05 });
+        if (this.pad) this.pad.vibrate(0.55, 160);
+      }
       this.speedBoostWas = !!boostTarget;
       this.boostKick = Math.max(0, this.boostKick - dt * 2.15);
       this.speedRush = M.damp(this.speedRush, rushTarget, 5.5, dt);
@@ -6542,6 +7263,10 @@
       this.boostFx = M.damp(this.boostFx, boostTarget, boostTarget ? 10 : 5, dt);
       this.raceModeFx = M.damp(this.raceModeFx || 0,
         this.raceModeActive ? 1 : 0, this.raceModeActive ? 7.5 : 3.2, dt);
+      /* Stepped once per frame rather than per camera, so the chase view and
+         the bonnet view are jerking to the SAME roll - two cameras rolling
+         their own would disagree on the frame the player switches. */
+      this.raceJerk(dt);
       const base = M.clamp((this.car.speed - 22) / 64, 0, 1);
       const speedTarget = Math.min(1.15,
         base * .54 + rushTarget * .18 + limitTarget * .16 + boostTarget * .24);
@@ -6672,42 +7397,55 @@
        */
       const ahead1 = this.track.at(Math.min(this.track.length - 2, this.distance + 45), {});
       const ahead2 = this.track.at(Math.min(this.track.length - 2, this.distance + 130), {});
-      // how hard the road is about to turn, signed: + is a left-hander
+      /* How hard the road is about to turn, signed: + is a RIGHT-hander. +yaw
+         turns right (see M4.trs) and this is the road's heading ahead minus
+         its heading here. (This used to say left-hander, and the body roll
+         below was written from that belief - which is how the car came to
+         lean INTO every corner.) */
       const bend = M.angDiff(p.yaw, ahead2.yaw);
-      const A = this.attractLine
-        || (this.attractLine = { lat: 0, roll: 0, speed: ATTRACT_SPEED, boost: 0, slip: 0 });
+      const A = this.attractLine || (this.attractLine = {
+        lat: 0, speed: ATTRACT_SPEED, boost: 0, lastSpeed: ATTRACT_SPEED,
+        slip: 0, slipV: 0, roll: 0, rollV: 0, dive: 0, diveV: 0, heave: 0, heaveV: 0,
+      });
+      /* A damped spring toward `want`, second order. Every attitude below used
+         to be a first-order damp, which oozes toward its target and never
+         overshoots - the motion of a hull finding its trim on water, and the
+         reason the whole drive read as steering a boat. A spring arrives,
+         goes a little past and settles, which is what a sprung mass on tyres
+         does. `w` is how quick, `z` how much it rings. */
+      const spring = (k, kv, want, w, z) => {
+        const acc = w * w * (want - A[k]) - 2 * z * w * A[kv];
+        A[kv] += acc * dt;
+        A[k] += A[kv] * dt;
+      };
       /* Toward the inside of the bend, and never past the paint. The road is
-         forty units wide, so eleven either side of centre is a racing line
-         rather than a lane change. */
-      A.lat = M.damp(A.lat, M.clamp(bend * 34, -11, 11), 1.6, dt);
-      A.roll = M.damp(A.roll, M.clamp(-bend * 1.5, -0.11, 0.11), 2.2, dt);
+         forty units wide, so nine either side of centre is a racing line
+         rather than a lane change - and it commits to it rather than
+         drifting across on a slow damp. */
+      A.lat = M.damp(A.lat, M.clamp(bend * 30, -9, 9), 2.2, dt);
 
       /* ---------------------------------------------- AND IT DRIFTS -----
        *
-       * The reel is cut around corners now, so the thing the menu is showing
-       * is a car going through one - and a car going through one at this
-       * speed is SIDEWAYS. Without this it tracked round the bend perfectly
-       * square to its own path, which is not a driver, it is a slot car.
+       * The reel is cut around corners, so the thing the menu is showing is a
+       * car going through one - and a car going through one at this speed is
+       * SIDEWAYS. The slip angle is read off the road ahead, so it builds as
+       * the corner tightens and unwinds as it opens. Everything downstream of
+       * it is the field the solver would have set - `driftAmount` is what the
+       * trail thickens on, what the tyre smoke fires on and what the marks are
+       * laid from - so the effects just see a car that is sliding.
        *
-       * The slip angle is read off the road ahead, so it builds as the corner
-       * tightens and unwinds as it opens. Everything downstream of it is the
-       * same field the solver would have set - `driftAmount` is what the trail
-       * thickens on, what the tyre smoke fires on and what the marks are laid
-       * from (see fx.js) - so the effects do not have to be told about the
-       * menu at all. They just see a car that is sliding, because it is.
-       *
-       * COUNTER-STEER comes out of the same number for free: the hands are
-       * posed from `steer` and on the exit the slip is falling while the road
-       * is still turning, so the wheel comes back through centre exactly when
-       * a driver's would.
+       * On a SPRING now: the flick into the slide overshoots a touch and the
+       * held angle settles, instead of the slip creeping in and out.
        */
+      const kind = shot.kind || 'drift';
       /* ...and a straight is not slid. `bend` is small there anyway, but a
          flat stretch that happens to catch a kink should read as a car
          tracking dead straight, not as one twitching. */
-      const slipGain = (shot.kind === 'flat') ? 0.10 : 0.34;
-      const slipWant = M.clamp(bend * slipGain, -0.46, 0.46);
-      A.slip = M.damp(A.slip === undefined ? 0 : A.slip, slipWant, 3.4, dt);
-      const drift = M.clamp(Math.abs(A.slip) / 0.34, 0, 1);
+      const slipGain = (kind === 'flat') ? 0.10 : 0.34;
+      const slipWant = M.clamp(bend * slipGain, -0.42, 0.42);
+      const building = Math.abs(slipWant) > Math.abs(A.slip);
+      spring('slip', 'slipV', slipWant, building ? 6.0 : 7.4, building ? 0.55 : 0.8);
+      const drift = M.clamp(Math.abs(A.slip) / 0.30, 0, 1);
 
       /* THE REHEAT, AND WHAT THIS STRETCH IS FOR.
        *
@@ -6722,7 +7460,6 @@
        *   DRIFT   on the EXIT - once the car has stopped turning in and the
        *           road is opening up again, which is where a driver's goes.
        */
-      const kind = shot.kind || 'drift';
       let wantBoost;
       if (kind === 'flat') {
         wantBoost = true;
@@ -6731,7 +7468,7 @@
         const toFoot = nx ? nx.s - (nx.crest || 0) - nx.len - this.distance : 1e9;
         wantBoost = (reel.air && reel.air.flying) || (toFoot > -200 && toFoot < 130);
       } else {
-        wantBoost = (Math.abs(slipWant) < Math.abs(A.slip) - 0.01) && drift > 0.25;
+        wantBoost = !building && drift > 0.25;
       }
       A.boost = M.damp(A.boost, wantBoost ? 1 : 0, wantBoost ? 5 : 1.8, dt);
 
@@ -6742,11 +7479,50 @@
       const base = ATTRACT_SPEED * (kind === 'flat' ? 1.24 : 1);
       A.speed = M.damp(A.speed,
         base * (1 - Math.min(0.18, drift * 0.18)) + A.boost * 11, 1.1, dt);
+      const accel = (A.speed - A.lastSpeed) / Math.max(dt, 1e-3);
+      A.lastSpeed = A.speed;
 
+      /* --------------------------------------- THE BODY ON ITS SPRINGS --
+       *
+       * ROLL goes to the OUTSIDE of the turn: the lateral load pushes the
+       * sprung mass away from the centre of the bend, so a right-hander drops
+       * the left side. It used to lean INTO the corner - which is what a boat
+       * or a motorcycle does and a car never does - and at up to six degrees.
+       * Three is a sports car on stiff springs, and a slide adds a little.
+       *
+       * DIVE and SQUAT come off the speed changing: the nose goes down as the
+       * car scrubs speed into a corner and comes up under the reheat.
+       *
+       * AND NONE OF IT MOVES THE WHEELS. They are drawn from their own matrix
+       * - position, heading and the slope of the ground, see `attractWheels`
+       * - so the body rolls and pitches on top of four tyres that stay on
+       * the road. The car used to be rolled as one rigid block, which lifts
+       * the inside wheels clean off the tarmac and sinks the outside ones
+       * into it: the lifted wheel in the report.
+       */
+      spring('roll', 'rollV', M.clamp(bend * 0.55 * (0.65 + 0.35 * drift), -0.052, 0.052), 8.5, 0.42);
+      spring('dive', 'diveV', M.clamp(-accel * 0.0024, -0.024, 0.028), 7.0, 0.5);
+      spring('heave', 'heaveV', 0, 9.5, 0.34);
+
+      /* ------------------------- THE TAIL STEPS OUT; THE NOSE HOLDS THE LINE
+       *
+       * The car used to be placed by its middle, on the racing line, and then
+       * turned by the slip angle about that middle - so the nose swung toward
+       * the inside of the bend exactly as far as the tail swung out. That is
+       * a hull pivoting on its keel. A car in a slide pivots near its FRONT
+       * axle: the front tyres keep tracking the line they are steered along
+       * and it is the rear that comes round. So it is the front axle that is
+       * put on the line, and the body hangs back from it at its own heading.
+       */
+      const FRONT = ATTRACT_AXLE_FRONT;
+      const heading = p.yaw + M.angDiff(p.yaw, ahead1.yaw) * 0.22 + A.slip;
+      const pf = this.track.at(Math.min(this.track.length - 2, this.distance + FRONT),
+        this._attractFront || (this._attractFront = {}));
+      const rfx = Math.cos(pf.yaw), rfz = -Math.sin(pf.yaw);
       this.car.lateral = A.lat;
-      const rx = Math.cos(p.yaw), rz = -Math.sin(p.yaw);
-      this.car.x = p.x + rx * A.lat; this.car.z = p.z + rz * A.lat;
-      this.car.yaw = p.yaw + M.angDiff(p.yaw, ahead1.yaw) * 0.22 + A.slip;
+      this.car.x = pf.x + rfx * A.lat - Math.sin(heading) * FRONT;
+      this.car.z = pf.z + rfz * A.lat - Math.cos(heading) * FRONT;
+      this.car.yaw = heading;
       /* What the effects read. None of these are simulated here - the car is
          being carried, not driven - so they are written by hand, once, in one
          place, rather than being inferred separately by every system that
@@ -6764,8 +7540,26 @@
       this.car.w3slipRatio = drift * 0.82;
       this.car.w0slipRatio = drift * 0.16;
       this.car.w1slipRatio = drift * 0.16;
-      // ...and the hands, which are posed from the steering angle
-      this.car.steer = M.clamp(-A.slip * 0.9 + bend * 0.5, -0.33, 0.33);
+      /* ...and the hands, which are posed from the steering angle - and the
+         front wheels, which wheelsOf reads from it too, as the rack angle in
+         radians.
+
+         A CAR IN A SLIDE IS STEERED AGAINST IT. The fronts point where the
+         car is actually GOING, which in a drift is out of the corner - so the
+         wheel is wound toward the outside by about the body's angle to its
+         path, on top of the little the bend itself needs (wheelbase over
+         radius). This used to steer INTO the corner by half the bend, which
+         at the hairpin was thirteen degrees of lock toward the apex with the
+         tail already thirty degrees out: not a drift, a car spinning, and
+         half of why the drive read as something with no grip at all. The
+         slip's own RATE adds the flick - the turn-in that throws the tail out
+         comes before the catch, exactly as a driver's does. */
+      const pk = this.track.at(Math.min(this.track.length - 2, this.distance + FRONT + 8),
+        this._attractKnee || (this._attractKnee = {}));
+      const curv = M.angDiff(pf.yaw, pk.yaw) / 8;
+      const bodyAngle = M.angDiff(pf.yaw, heading);
+      this.car.steer = M.clamp(ATTRACT_WHEELBASE * curv - bodyAngle * 0.85 + A.slipV * 0.1,
+        -0.45, 0.45);
       this.car.steerVisual = this.car.steer;
       this.car.counterSteering = (A.slip * this.car.steer < 0) ? 1 : 0;
       this.car.roadY = p.y || 0;
@@ -6773,10 +7567,43 @@
       const back = this.track.at(Math.max(0, this.distance - 6), {});
       const ahead = this.track.at(Math.min(this.track.length - 2, this.distance + 6), {});
       this.car.roadPitch = -Math.atan2((ahead.y || 0) - (back.y || 0), 12);
-      this.car.roll = A.roll;
+      /* The last race may have left the solver's ramp tilt on the car; this
+         drive owns the attitude outright. */
+      this.car.rampPitch = 0;
+
+      /* ------------------------------------------------ OFF THE GROUND --
+       *
+       * `air.pitch` is nose-UP positive, like the solver's own flight - and
+       * the renderer draws `pitch` NOSE-DOWN positive (see Game.bodyPitch,
+       * where the road's slope already arrives in that sense). The drive used
+       * to hand the flight's number straight over, so a car climbing a ramp
+       * was drawn with its bonnet tipped into the slope, left the lip
+       * nose-down and landed nose-up. Converted here, where the menu owns it.
+       */
       const air = this.attractAir(dt, reel, p.y || 0);
-      this.car.y = (p.y || 0) + (this.car.lift || 0) + air.height;
-      this.car.pitch = air.pitch;
+      // leaving the lip, the springs let go and the body lifts off them
+      if (air.launched) A.heaveV += 0.45;
+      if (air.landed) {
+        /* THE ARRIVAL, caught by the springs: the body drops onto them and
+           whatever attitude it came down with is handed to the dive spring,
+           still turning, so the picture settles rather than snapping. */
+        A.heaveV -= Math.min(1.5, air.landed * 0.06);
+        A.dive += -air.landPitch;
+        A.diveV += -air.landPitchV;
+      }
+      const ground = -air.pitch;
+      this.car.pitch = ground + A.dive;
+      this.car.roll = A.roll;
+      /* The body rides its springs. In the air they hang the wheels a few
+         centimetres lower, eased out rather than dropped; on the road the
+         tyres are ON the road, so the droop is gone the frame they touch. */
+      A.droop = air.flying ? M.damp(A.droop || 0, 0.05, 6, dt) : 0;
+      const rideY = (p.y || 0) + (this.car.lift || 0) + air.height;
+      this.car.y = rideY + A.heave;
+      this.attractWheels = M4.trs(this.attractWheels || M4.make(),
+        this.car.x, rideY - A.droop, this.car.z, this.car.yaw,
+        this.car.roadPitch + ground, 0);
+      this.attractYaw = this.car.yaw;
       this.car.speed = A.speed;
       this.car.rpm = M.clamp(0.34 + A.speed / 110 + A.boost * 0.2, 0, 1);
       this.car.gear = A.boost > 0.5 ? 6 : 5;
@@ -6790,7 +7617,7 @@
          nothing coming off it. */
       if (this.fx) this.fx.update(dt, this.car, true);
       this.updateAtmosphere(dt);
-      this.attractCamera(dt, shot, air.height > 0.05);
+      this.attractCamera(dt, shot, air.flying || air.height > 0.05);
     }
 
     /* THE ATTRACT CAMERA.
@@ -6911,7 +7738,8 @@
          quarter of a second is a lens that was never clamped at all. */
       const pr = this.track.project(this.eye[0], this.eye[2], s);
       const cp = this.track.at(pr.s, this._attractProbe || (this._attractProbe = {}));
-      const floor = (cp.y || 0) + 0.55;
+      // ...and a ramp is floor too; see attractCamFloor
+      const floor = (cp.y || 0) + attractCamFloor(pr.s) + 0.55;
       if (this.eye[1] < floor) {
         this.eye[1] = floor;
         this.attractEye[1] = floor - car.y;
@@ -6926,57 +7754,56 @@
 
     /* The climb and the flight, for a car nothing is simulating.
      *
-     * It mirrors `Vehicle::update_air` in the core exactly where it matters:
-     * the height over the incline is the driven profile, the launch speed is
-     * that profile's own derivative rather than a number picked to look right,
-     * and the flight is held in ABSOLUTE height so a car that leaves the lip of
-     * MIRAGE CIRCUIT's bore bypass falls the whole twenty-one units to the
-     * road below rather than following the road down. */
+     * It mirrors `Vehicle::update_air` in the core where that is what the menu
+     * is for: the body is SAT on the ramp across its whole length exactly as
+     * the core sits it (see attractSeat), the launch speed is the profile's
+     * own derivative rather than a number picked to look right, and the flight
+     * is held in ABSOLUTE height so a car that leaves the lip of MIRAGE
+     * CIRCUIT's bore bypass falls the whole twelve units to the road below
+     * rather than following the road down.
+     *
+     * WHERE IT DOES NOT MIRROR THE CORE, ON PURPOSE: the attitude in the air.
+     * The core lets the nose fall at a building rate for as long as the car
+     * is up, which over the reel's jumps is a car that leaves the lip thirteen
+     * degrees nose-up and arrives twenty degrees nose-DOWN - the whole front
+     * of the body through the road before the wheels get there. A trailer
+     * does not show that. This is flown instead: the time to touchdown is
+     * worked out from the arc and the road under it, and the nose is brought
+     * round to meet the road over exactly that long - so every jump on the
+     * reel lands on its wheels, front a hair first, and the springs take it.
+     *
+     * Everything here is nose-UP positive, like the core's. The drive flips
+     * it for the renderer; see idleFlyby.
+     *
+     * Returns one reused object: `height` over the road, `pitch`, `flying`,
+     * and on the one frame each happens, `launched`, or `landed` (the speed
+     * it came down at) with the attitude and rotation it arrived with. */
     attractAir(dt, reel, roadY) {
-      const A = global.NR.AIR || { g: 27, pitchAcc: 0.85, pitchMax: 0.85 };
+      const AIR = global.NR.AIR || { g: 27, pitchAcc: 0.85, pitchMax: 0.85 };
       const s = this.distance;
+      const out = this._attractAirOut || (this._attractAirOut = {});
+      out.launched = false; out.landed = 0; out.landPitch = 0; out.landPitchV = 0;
       let state = reel.air;
 
       if (!state || !state.flying) {
         /* ON THE STRUCTURE? The ramps are full width, so arc length decides -
-           and a ramp may have a CREST to drive along before it runs out, which
-           the menu has to show as a car driving along it rather than as a car
-           launching early. Same three-part profile the solver uses; see the
-           note above `Ramp` in crates/synx-core/src/vehicle.rs. */
+           and the car is on one from half a body before the foot, when its
+           nose reaches the incline, to the end of it. A ramp may have a CREST
+           to drive along before it runs out, which the menu has to show as a
+           car driving along it rather than as a car launching early. */
         for (const r of COURSE_RAMPS) {
           const crest = r.crest || 0, drop = r.drop || 0;
-          const foot = r.s - crest - r.len;
-          if (s < foot || s > r.s + drop) continue;
-          const d = s - foot;
-          const lip = r.lip === undefined ? r.h : r.lip;
-          let height, pitch;
-          if (d <= r.len) {
-            const u = d / Math.max(1, r.len);
-            if (drop) {
-              // a ramp onto a deck eases flat at the top; see Ramp in the core
-              height = r.h * u * u * (3 - 2 * u);
-              pitch = Math.atan(6 * r.h * u * (1 - u) / r.len);
-            } else {
-              height = r.h * u * u;
-              pitch = Math.atan(2 * r.h * u / r.len);
-            }
-          } else if (d <= r.len + crest) {
-            const v = (d - r.len) / Math.max(1, crest);
-            height = r.h + (lip - r.h) * v;
-            pitch = Math.atan((lip - r.h) / Math.max(1, crest));
-          } else {
-            // the descent, which is driven rather than flown
-            const v = (d - r.len - crest) / Math.max(1, drop);
-            height = lip * (1 - v * v * (3 - 2 * v));
-            pitch = Math.atan(-6 * lip * v * (1 - v) / drop);
-          }
-          reel.air = { flying: false, ramp: r, height, pitch };
-          return reel.air;
+          const s0 = r.s - crest - r.len;
+          if (s < s0 - ATTRACT_HALF || s > r.s + drop) continue;
+          const seat = attractSeat(r, s, this._attractSeat || (this._attractSeat = {}));
+          reel.air = { flying: false, ramp: r, height: seat.height, pitch: seat.pitch };
+          out.flying = false; out.height = seat.height; out.pitch = seat.pitch;
+          return out;
         }
         /* Past the end of the structure it was on: launch, carrying whatever
            vertical speed the profile was already producing - which off a crest
-           is the shallow rise along it rather than the incline. */
-        /* ...and a ramp with a descent never launches: the car comes off the
+           is the shallow rise along it rather than the incline.
+           ...and a ramp with a descent never launches: the car comes off the
            bottom of the slope at road level, which is the whole point of it. */
         if (state && state.ramp && !state.ramp.drop
             && s > state.ramp.s && state.height > 0.02) {
@@ -6992,25 +7819,59 @@
             height: state.height, pitch: state.pitch,
           };
           state = reel.air;
-        } else if (state) {
-          reel.air = null;
-          return { height: 0, pitch: 0 };
+          out.launched = true;
         } else {
-          return { height: 0, pitch: 0 };
+          reel.air = null;
+          out.flying = false; out.height = 0; out.pitch = 0;
+          return out;
         }
       }
 
-      state.v -= A.g * dt;
+      state.v -= AIR.g * dt;
       state.abs += state.v * dt;
       state.height = state.abs - roadY;
-      // the nose drops, and the drop BUILDS - the same shape the solver uses
-      state.pitchV = Math.max(-A.pitchMax, state.pitchV - A.pitchAcc * dt);
-      state.pitch += state.pitchV * dt;
-      if (state.height <= 0) {
-        reel.air = null;
-        return { height: 0, pitch: 0 };
+
+      /* WHEN IT COMES DOWN, AND ON WHAT. The arc is exact; the road it lands
+         on is looked up where the arc will have carried the car to, twice,
+         because that road is not the road under the car now - off the bore's
+         lip it is twelve units lower. */
+      let land = roadY, T = 0;
+      for (let k = 0; k < 3; k++) {
+        const drop = state.abs - land;                 // how far above it
+        const disc = state.v * state.v + 2 * AIR.g * Math.max(0, drop);
+        T = Math.max(0, (state.v + Math.sqrt(disc)) / AIR.g);
+        const at = this.track.at(Math.min(this.track.length - 2, s + ATTRACT_SPEED * T),
+          this._attractLand || (this._attractLand = {}));
+        land = at.y || 0;
       }
-      return state;
+      /* THE NOSE COMES ROUND TO MEET IT. The rate is picked to arrive at the
+         landing attitude - level with the road, a degree and a half nose-down
+         so the fronts touch first - over the time left, and eased toward, so
+         it starts from nothing at the lip and builds, which is the one thing
+         the core's shape gets right and is kept. */
+      const LAND_PITCH = -0.026;
+      const want = (LAND_PITCH - state.pitch) / Math.max(T, 0.18);
+      state.pitchV += (want - state.pitchV) * Math.min(1, 4.2 * dt);
+      state.pitchV = M.clamp(state.pitchV, -AIR.pitchMax, AIR.pitchMax);
+      state.pitch += state.pitchV * dt;
+      /* ...and whatever the arc does, no end of the body goes through the
+         road. The bumpers hang a fifth of a unit off it, so that is the slack;
+         in a clean flight neither limit is ever reached. */
+      const nose = -Math.asin(M.clamp((state.height + 0.2) / ATTRACT_HALF, 0, 1));
+      const tail = Math.asin(M.clamp((state.height + 0.3) / ATTRACT_HALF, 0, 1));
+      if (state.pitch < nose) { state.pitch = nose; state.pitchV = Math.max(0, state.pitchV); }
+      if (state.pitch > tail) { state.pitch = tail; state.pitchV = Math.min(0, state.pitchV); }
+
+      if (state.height <= 0) {
+        out.landed = Math.max(0, -state.v);
+        out.landPitch = state.pitch;
+        out.landPitchV = state.pitchV;
+        reel.air = null;
+        out.flying = false; out.height = 0; out.pitch = 0;
+        return out;
+      }
+      out.flying = true; out.height = state.height; out.pitch = state.pitch;
+      return out;
     }
 
     /* The gameplay camera, and then the move that may still be carrying it
@@ -7086,8 +7947,13 @@
       const shake = windBuffet
         + hit * hit * 1.6
         + (car.offroad ? Math.min(0.22, car.speed * 0.003) : 0);
-      const buffetX = (Math.sin(this.time * 31.0) + Math.sin(this.time * 47.0) * .45) * shake;
-      const buffetY = (Math.sin(this.time * 37.0 + 1.7) + Math.sin(this.time * 23.0) * .35) * shake * .55;
+      /* The sines are the air and the springs; the jerk is the engine. They
+         are added rather than blended because they are two different things
+         happening to the same camera at the same time. */
+      const buffetX = (Math.sin(this.time * 31.0) + Math.sin(this.time * 47.0) * .45) * shake
+        + (this.jerkX || 0);
+      const buffetY = (Math.sin(this.time * 37.0 + 1.7) + Math.sin(this.time * 23.0) * .35) * shake * .55
+        + (this.jerkY || 0);
       const targetAhead = 7.0 + rush * .6 + limit * .9 + boost * 1.7 + mode * .8;
 
       /* THE CAMERA HAS TO STAY IN THE SAME ROOM AS THE CAR.
@@ -7145,7 +8011,7 @@
       this.fov = M.damp(this.fov,
         Math.min(94, CAM.baseFov + this.speedFx * 2.5
           + rush * 1.6 + limit * 2.0 + boost * 8.0 + kick * 1.4 + mode * 3.2), 4.8, dt);
-      this.fov += (this.shake || 0) * 2.0;
+      this.fov += (this.shake || 0) * 2.0 + (this.jerkFov || 0);
       // a slow-motion beat pinches in, which is what says "look at this"
       this.fov -= (this.slowFov || 0) * 9.0;
     }
@@ -7567,6 +8433,30 @@
     /** True while the camera is the driver's own eye. */
     inCar() { return this.activeCam() === 1; }
 
+    /* The attract drive's wheel matrix, or null once the car is anywhere else.
+       Keyed on the pose itself rather than on a flag, so a race that starts,
+       a pause and a cinematic can never be handed wheels from the menu. */
+    attractWheelsFor(car) {
+      const w = this.attractWheels;
+      // the matrix is single precision; the car is not
+      return (w && w[12] === Math.fround(car.x) && w[14] === Math.fround(car.z)
+        && this.attractYaw === car.yaw) ? w : null;
+    }
+
+    /* WHAT THE DASH SHOWS - see CabCluster in js/scene.js. The same numbers
+       the HUD's speedometer and tach read, in the same unit, so the cluster
+       and the overlay can never disagree. One object, rewritten in place. */
+    cabinGauges() {
+      const car = this.car, g = this._cabGauges || (this._cabGauges = {});
+      g.v = this.useMetric ? (car.speedKmh || 0) : (car.speedMph || 0);
+      g.unit = this.useMetric ? 'KM/H' : 'MPH';
+      g.rpm = car.rpm || 0;
+      g.gear = car.gear | 0;
+      g.boost = car.boost || 0;
+      g.boosting = !!car.boosting;
+      return g;
+    }
+
     /* THE CAR'S OWN TRANSFORM, BUILT BEFORE ANYTHING READS IT.
      *
      * THIS IS WHY THE FIRST-PERSON VIEW DRIFTED BACKWARDS AT SPEED.
@@ -7647,12 +8537,42 @@
      * guessed at all.
      */
     povCamera(car, dt) {
+      /* THE HEAD IS A HEAD, NOT A TRIPOD.
+       *
+       * A camera bolted to the seat reads as a camera. What a driver's head
+       * actually does is small and constant, and all of it is response:
+       *
+       *   it LOOKS INTO the corner - the eyes go to the apex before the car
+       *   gets there, a few degrees ahead of the yaw rate;
+       *   it LEANS against the corner, pushed toward the outside door by the
+       *   lateral load, a centimetre or two;
+       *   and it NODS under braking and settles back under power.
+       *
+       * Every term is damped, so none of it is a twitch, and all of it is
+       * well inside the cabin - see the hole map in the cockpit notes: the
+       * eye can wander four centimetres without finding a way out. */
+      const v = car.speed || 0, yr = car.yawRate || 0;
+      const step = Math.max(1e-3, dt);
+      const accel = this._povV === undefined ? 0 : (v - this._povV) / step;
+      this._povV = v;
+      const lat = M.clamp(v * yr / 26, -1.4, 1.4);
+      this._povLat = M.damp(this._povLat || 0, lat, 3.2, dt);
+      this._povLon = M.damp(this._povLon || 0, M.clamp(accel / 28, -1, 1), 2.6, dt);
+      this._povLook = M.damp(this._povLook || 0,
+        M.clamp(yr * 0.13 + (car.steer || 0) * 0.22, -0.11, 0.11), 2.2, dt);
       /* The free-look turns the head, and the car turns the body under it.
          Composed here because the input belongs to this side; the core is
          given the answer rather than the parts. */
-      const yaw = car.yaw + (this.lookYaw || 0);
-      const pitch = Game.bodyPitch(car)
-        + (this.lookPitch || 0) * 0.9 + POV_PITCH;
+      const yaw = car.yaw + (this.lookYaw || 0) + this._povLook;
+      /* THE LOOK PITCHES WITH THE CABIN IT IS BOLTED INTO. The core's look
+         pitch is UP-positive (see POV_PITCH, and `rise` in Rig::pov) while
+         the body is drawn NOSE-DOWN positive (M4.trs), so adding the body's
+         pitch straight in tipped the view against the car: on every climb the
+         lens swung down into the dash by twice the grade, and over every crest
+         up into the headliner. Negated, the dash holds still in the frame
+         whatever the road does - which is what sitting in a car looks like. */
+      const pitch = -Game.bodyPitch(car)
+        + (this.lookPitch || 0) * 0.9 + POV_PITCH + this._povLon * 0.022;
       const cam = NR.camPov ? NR.camPov(this.model, yaw, pitch) : null;
       /* No core, no eye. Rather than invent one, say so and let the chase
          rig below run: a first-person view that cannot be computed should
@@ -7667,10 +8587,12 @@
       const j = (this.shake || 0) * 0.9 + rush * 0.004 + boost * 0.010
         + (car.offroad ? Math.min(0.05, car.speed * 0.0009) : 0);
       const t = this.time;
+      // the lean: toward the outside door, along the car's own right axis
+      const m = this.model, lean = -this._povLat * 0.013;
       V3.set(this.eye,
-        cam[0] + Math.sin(t * 33.0) * j,
-        cam[1] + Math.sin(t * 41.0 + 1.1) * j * 0.7,
-        cam[2] + Math.cos(t * 29.0) * j);
+        cam[0] + Math.sin(t * 33.0) * j + (this.jerkX || 0) * 0.5 + m[0] * lean,
+        cam[1] + Math.sin(t * 41.0 + 1.1) * j * 0.7 + (this.jerkY || 0) * 0.5 + m[1] * lean,
+        cam[2] + Math.cos(t * 29.0) * j + m[2] * lean);
       V3.set(this.target, cam[3], cam[4], cam[5]);
       /* ...and the view leans with the body. See the note in driver.rs: an
          interior is bolted to the car, so a camera inside one that stays
@@ -7685,10 +8607,13 @@
          the pillars away at the edges and puts the horizon in the middle of
          a very empty frame. It still opens up with speed - that is the one
          cue this view cannot get from a boom it does not have. */
+      /* ...and it opens less than it did. Seven degrees of boost punch from
+         inside a cabin swings the pillars and the roof into the frame; five
+         is still a kick and keeps the cockpit composed. */
       this.fov = M.damp(this.fov,
-        Math.min(88, 62 + this.speedFx * 2.2 + rush * 1.4 + boost * 7.0
+        Math.min(80, 62 + this.speedFx * 2.2 + rush * 1.4 + boost * 5.0
           + (this.raceModeFx || 0) * 3.0), 4.8, dt);
-      this.fov += (this.shake || 0) * 2.0;
+      this.fov += (this.shake || 0) * 2.0 + (this.jerkFov || 0) * 0.7;
       this.fov -= (this.slowFov || 0) * 9.0;
       return true;
     }
@@ -7847,8 +8772,30 @@
       this.fullscreenTri();
     }
 
+    /* REVERSED DEPTH ON OR OFF, for the passes that follow. See the note in
+       the constructor. On: [0,1] clip range, depth cleared to 0 (the far
+       plane), every depth comparison turned round in the state layer. Off:
+       the GL defaults, which the shadow cascades and the reflection probe
+       are written against. The sky asks the scene which it is. Stated in
+       full every time rather than tracked - two calls a frame, and a context
+       that has been lost and restored starts from the defaults anyway. */
+    depthMode(rev) {
+      const cc = this.clipControl;
+      if (!cc) return;
+      const gl = this.gl;
+      rev = !!rev;
+      cc.clipControlEXT(cc.LOWER_LEFT_EXT, rev ? cc.ZERO_TO_ONE_EXT : cc.NEGATIVE_ONE_TO_ONE_EXT);
+      gl.clearDepth(rev ? 0 : 1);
+      if (gl.__reversedDepth) gl.__reversedDepth(rev);
+      if (this.scene) this.scene.revZ = rev;
+    }
+
     draw(dt) {
       const gl = this.gl;
+      /* Standard depth at the top of every frame, whatever the last one left:
+         a frame that threw halfway through the scene pass would otherwise
+         hand this one's shadow cascades a reversed clip range. */
+      this.depthMode(false);
       if (this.state === 'loading' || !this.scene.ready) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, this.outW || this.w, this.outH || this.h);
@@ -7870,6 +8817,33 @@
          * while something opaque is in front of it. */
         if (!(NR.Ignition && NR.Ignition.running)) this.hud.draw(this, dt);
         return;
+      }
+
+      /* WHAT A COVERED FRAME STOPS PAYING FOR.
+       *
+       * See Game.worldCovered. While one of the four full-frame DOM screens
+       * is up, everything below that can only be seen THROUGH the world -
+       * cast shadows, the reflection probe, screen-space reflections,
+       * occlusion, airborne light and the sun's shafts - is skipped, because
+       * it is arriving underneath a sheet that is 94% opaque. The scene pass,
+       * the bloom, the grade and the reconstruction all still run, so the
+       * strip of road visible along the bottom of those panels looks exactly
+       * as it did.
+       *
+       * Held in a local rather than asked six times: the answer walks a chain
+       * of four modules and it cannot change inside one frame. */
+      const covered = this.worldCovered();
+      /* A PASS THAT IS SKIPPED MUST ALSO STOP BEING SAMPLED.
+         Leaving the cascades and the probe switched ON while declining to
+         re-render them would light the frame from a shadow map and a cube
+         taken at whatever moment the panel opened - frozen shadows under a
+         camera that is still moving, which is a worse artefact than no
+         shadows at all. Both readers already have a correct "off" path (see
+         Scene.bindShadows and the probe gate in Scene.bind), so this simply
+         uses it, and the flags are put back the moment the panel closes. */
+      if (this.scene) {
+        if (this.scene.shadow) this.scene.shadow.on = !!this.useShadows && !covered;
+        this.scene.probeOn = !!this.useProbe && !covered;
       }
 
       /* The frame's census, zeroed here because this is the one place that
@@ -7915,13 +8889,22 @@
       const sw = this.camSwitch;
       if (sw) near += (sw.near - near) * sw.w;
       this.camNear = near;   // read by tools/smoke.py --probe bonnet
-      M4.perspectiveLH(this.proj, this.fov * Math.PI / 180, this.w / this.h, near, CAM.far);
+      if (this.clipControl) {
+        M4.perspectiveRevLH(this.proj, this.fov * Math.PI / 180, this.w / this.h, near, CAM.far);
+      } else {
+        M4.perspectiveLH(this.proj, this.fov * Math.PI / 180, this.w / this.h, near, CAM.far);
+      }
       this.nearPlane = near;
       /* Sub-pixel jitter for the temporal resolve. Halton(2,3) over eight
          frames covers the pixel evenly without the clumping a random offset
          gives, and the offset is in NDC, so it is two pixels wide over the
          whole frame regardless of resolution. */
-      if (this.useTaa) {
+      /* ...and the temporal resolve, which is a jitter AND a blend and has
+         to be one decision. Jittering the projection and then declining to
+         resolve it is a frame that shimmers for nothing, which is what a
+         covered frame would otherwise do. */
+      const doTaa = !!this.useTaa && !covered;
+      if (doTaa) {
         this.frameIndex = (this.frameIndex + 1) & 7;
         const jx = (M4.halton(this.frameIndex + 1, 2) - 0.5) * 2 / this.w;
         const jy = (M4.halton(this.frameIndex + 1, 3) - 0.5) * 2 / this.h;
@@ -7938,7 +8921,7 @@
        * which the surface shader then compares against - see the note above
        * Scene.initShadows for why this is the single biggest thing separating
        * the old picture from this one. */
-      if (this.useShadows) {
+      if (this.useShadows && !covered) {
         this.scene.renderShadows(this.eye, this.target, this.distance);
         gl.viewport(0, 0, this.w, this.h);
       }
@@ -7946,7 +8929,7 @@
          Two of its six faces a frame, so it is complete every third one. It
          has to run before the scene pass for the same reason the shadows do:
          it owns the framebuffer while it renders. */
-      if (this.useProbe) {
+      if (this.useProbe && !covered) {
         this.scene.probeHalf = (this.level && this.level.roadHalf ? this.level.roadHalf : 20) + 16;
         this.scene.probeTunnel = this.tunnel;
         /* THE WHOLE CUBE, EVERY FRAME.
@@ -7972,6 +8955,8 @@
       if (gl.drawBuffers) gl.drawBuffers(MRT);
       gl.viewport(0, 0, this.w, this.h);
       gl.clearColor(0.02, 0.01, 0.05, 1);
+      // the world is drawn with reversed depth, where there is any; see depthMode
+      this.depthMode(true);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       // No back-face culling: the imported meshes and the generated road
       // disagree on winding once projected, so culling either way makes part of
@@ -8094,6 +9079,18 @@
              that snaps to its stop and back in one frame is a control that
              was never pressed by a hand. */
           press: this.boostPress || 0,
+          /* ...and which pedal the driver's feet are on. See PEDAL_GO in
+             crates/synx-core/src/driver.rs. */
+          go: this.pedalGo || 0,
+          stop: this.pedalStop || 0,
+          /* What the dash cluster shows - from the seat, and through the side
+             glass on the title screen, where the camera comes in close. */
+          gauges: this.cabinGauges(),
+          /* The menu's drive rolls and pitches the body on its springs over
+             four tyres that stay on the road - see idleFlyby. Its wheel
+             matrix is only good for the pose it was built with, so it is
+             only used while the car is still exactly there. */
+          wheelModel: this.attractWheelsFor(this.car),
           ...wheelsOf(this.car) });
 
       /* Trails and particles are additive light and must not disturb the
@@ -8119,6 +9116,8 @@
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.BLEND);
       gl.depthMask(false);
+      // ...and back to the defaults for everything that is not the world
+      this.depthMode(false);
 
       /* Its OWN array, not the scene's scratch: this is read four passes
          later, in the volumetric blit, and anything that asked the scene for
@@ -8140,13 +9139,38 @@
         onScreen = fx * fy;
       }
 
+      /* ------------------------------------------- WHAT ACTUALLY RUNS ----
+       *
+       * Every pass below used to run on every frame on every preset. The ones
+       * a preset had switched OFF still bound their target and cleared it to
+       * a constant, and the composite still sampled the constant they had
+       * been cleared to - so LOW paid for four framebuffer clears and five
+       * full-frame texture fetches a pixel to arrive at "nothing happened".
+       * The god rays were worse than that: the pass itself ran, forty taps a
+       * pixel over a half-resolution buffer, and its result was multiplied by
+       * zero in the composite.
+       *
+       * So a pass that is off is now SKIPPED, and the sampler that would have
+       * read it is pointed at a one-pixel texture carrying the value the
+       * cleared buffer carried (see texZero / texClear / texOne in the
+       * constructor). Nothing about the picture changes on any preset that
+       * has these features on; on the presets that do not, a measurable share
+       * of the frame simply stops happening.
+       *
+       * These flags are read again at the composite, which is why they are
+       * named here rather than tested twice. */
+      const doSsr = !!this.useSsr && !covered;
+      const doAo = !!this.useAo && !covered;
+      const doVol = !!this.useVolumetrics && !covered;
+      /* The shafts are off when the preset says so, and also when the sun is
+         not in the frame - which is most of the time on a night route, and is
+         exactly when the pass produces a black buffer at full cost. */
+      const doGod = !!this.useGodrays && !covered && onScreen > 0.0015;
+      const bloomAmt = this.bloomAmount === undefined ? FX.bloomAmount : this.bloomAmount;
+      const doBloom = bloomAmt > 0.0005;
+
       // 1. screen-space reflections, half res
-      if (!this.useSsr) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.rtSsr.fb);
-        gl.viewport(0, 0, this.rtSsr.w, this.rtSsr.h);
-        gl.clearColor(0, 0, 0, 0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-      } else {
+      if (doSsr) {
         this.blit(this.pSsr, this.rtSsr, (u) => {
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, this.rtScene.tex);
@@ -8183,12 +9207,7 @@
       }
 
       // 1b. ambient occlusion, half res, resolved with the same two-tap blur
-      if (!this.useAo) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.rtAo.fb);
-        gl.viewport(0, 0, this.rtAo.w, this.rtAo.h);
-        gl.clearColor(1, 1, 1, 1);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-      } else {
+      if (doAo) {
         this.blit(this.pAo, this.rtAoB, (u) => {
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, this.rtScene.depthTex);
@@ -8228,13 +9247,7 @@
       }
 
       // 2. volumetric fog + inscattering, half res
-      if (!this.useVolumetrics) {
-        // transmittance 1, no inscatter: the composite reads it as clear air
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.rtVol.fb);
-        gl.viewport(0, 0, this.rtVol.w, this.rtVol.h);
-        gl.clearColor(0, 0, 0, 1);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-      } else {
+      if (doVol) {
         const h = this.scene.head;
         this.blit(this.pVol, this.rtVol, (u) => {
           gl.activeTexture(gl.TEXTURE0);
@@ -8281,76 +9294,98 @@
         });
       }
 
-      // 3. god rays: sky-only occlusion, then a radial blur toward the sun
-      if (!this.useGodrays) onScreen = 0;
-      this.blit(this.pOcc, this.rtOcc, (u) => {
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.rtScene.tex);
-        U.i(gl, u.uScene, 0);
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, this.rtScene.depthTex);
-        U.i(gl, u.uDepth, 1);
-      });
-      this.blit(this.pGod, this.rtGod, (u) => {
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.rtOcc.tex);
-        U.i(gl, u.uTex, 0);
-        U.v2(gl, u.uSunUv, sunU, sunV);
-        U.f(gl, u.uOnScreen, onScreen);
-      });
+      /* 3. god rays: sky-only occlusion, then a radial blur toward the sun.
+       *
+       * BOTH passes, or NEITHER. The occlusion pass is cheap and the blur is
+       * not, and there was never any point running one without the other:
+       * with the sun off screen, or GOD RAYS off, the blur's own `uOnScreen`
+       * multiplies the entire result by zero. The composite reads a one-pixel
+       * black texture instead, which is the same answer for none of the work.
+       *
+       * The kernel is the preset's: sixteen taps below HIGH, forty at and
+       * above it. See GODRAY_FRAG. */
+      if (doGod) {
+        this.blit(this.pOcc, this.rtOcc, (u) => {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, this.rtScene.tex);
+          U.i(gl, u.uScene, 0);
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, this.rtScene.depthTex);
+          U.i(gl, u.uDepth, 1);
+        });
+        const god = this.godFast ? this.pGodFast : this.pGod;
+        this.blit(god, this.rtGod, (u) => {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, this.rtOcc.tex);
+          U.i(gl, u.uTex, 0);
+          U.v2(gl, u.uSunUv, sunU, sunV);
+          U.f(gl, u.uOnScreen, onScreen);
+        });
+      }
 
       // 4. bloom: threshold into mip 0, walk the pyramid down, then back up
-      this.blit(this.pPre, this.bloom[0], (u) => {
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.rtScene.tex);
-        U.i(gl, u.uTex, 0);
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, this.rtSsr.tex);
-        U.i(gl, u.uSsr, 1);
-        U.f(gl, u.uThreshold, FX.bloomThreshold);
-        U.f(gl, u.uKnee, FX.bloomKnee);
-        U.f(gl, u.uSsrAmt, this.useSsr ? 1 : 0);
-        U.f(gl, u.uNeon, this.neonBoost === undefined ? FX.neon : this.neonBoost);
-      });
-
       const nLev = Math.max(2, Math.min(this.bloom.length, this.bloomLevels || this.bloom.length));
-      gl.activeTexture(gl.TEXTURE0);
-      // thirteen taps or four, from the GLOW QUALITY row
-      const down = this.glowFast ? this.pDownFast : this.pDown;
-      gl.useProgram(down.prog);
-      for (let i = 1; i < nLev; i++) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloom[i].fb);
-        gl.viewport(0, 0, this.bloom[i].w, this.bloom[i].h);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloom[i - 1].tex);
-        U.i(gl, down.u.uTex, 0);
-        this.fullscreenTri();
-      }
+      if (doBloom) {
+        this.blit(this.pPre, this.bloom[0], (u) => {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, this.rtScene.tex);
+          U.i(gl, u.uTex, 0);
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, doSsr ? this.rtSsr.tex : this.texZero);
+          U.i(gl, u.uSsr, 1);
+          U.f(gl, u.uThreshold, FX.bloomThreshold);
+          U.f(gl, u.uKnee, FX.bloomKnee);
+          U.f(gl, u.uSsrAmt, doSsr ? 1 : 0);
+          U.f(gl, u.uNeon, this.neonBoost === undefined ? FX.neon : this.neonBoost);
+        });
 
-      // additive tent upsample back down the chain
-      gl.useProgram(this.pUp.prog);
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.ONE, gl.ONE);
-      for (let i = nLev - 1; i > 0; i--) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloom[i - 1].fb);
-        gl.viewport(0, 0, this.bloom[i - 1].w, this.bloom[i - 1].h);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloom[i].tex);
-        U.i(gl, this.pUp.u.uTex, 0);
-        U.f(gl, this.pUp.u.uRadius, FX.bloomRadius);
-        // the widest levels get stretched sideways: anamorphic streaks
-        const wide = i >= nLev - 2;
-        U.f(gl, this.pUp.u.uStretch,
-          wide ? (this.anamorphic === undefined ? FX.anamorphic : this.anamorphic) : 1.0);
-        /* ...and split into their colours at the skirt, on the same two
-           levels and for the same reason: that is where the glow is wide
-           enough for a fringe to read as a lens rather than as an artefact.
-           See the note in UP_FRAG. */
-        U.f(gl, this.pUp.u.uDisperse, wide ? (this.bloomDisperse || 0) : 0);
-        this.fullscreenTri();
+        /* BACK TO UNIT ZERO, which the pass above did not leave it on.
+           `blit` does not restore the active texture unit and the threshold
+           pass ends with unit 1 selected for its reflection sampler - so
+           without this the whole pyramid would bind its source on the wrong
+           unit while sampling unit 0, which still holds the scene: every
+           level would downsample the SCENE instead of the level above it,
+           and the composite would add a blurred copy of the frame to the
+           frame. */
+        gl.activeTexture(gl.TEXTURE0);
+        // thirteen taps or four, from the GLOW QUALITY row
+        const down = this.glowFast ? this.pDownFast : this.pDown;
+        gl.useProgram(down.prog);
+        for (let i = 1; i < nLev; i++) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloom[i].fb);
+          gl.viewport(0, 0, this.bloom[i].w, this.bloom[i].h);
+          gl.bindTexture(gl.TEXTURE_2D, this.bloom[i - 1].tex);
+          U.i(gl, down.u.uTex, 0);
+          this.fullscreenTri();
+        }
+
+        // additive tent upsample back down the chain
+        gl.useProgram(this.pUp.prog);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        for (let i = nLev - 1; i > 0; i--) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloom[i - 1].fb);
+          gl.viewport(0, 0, this.bloom[i - 1].w, this.bloom[i - 1].h);
+          gl.bindTexture(gl.TEXTURE_2D, this.bloom[i].tex);
+          U.i(gl, this.pUp.u.uTex, 0);
+          U.f(gl, this.pUp.u.uRadius, FX.bloomRadius);
+          // the widest levels get stretched sideways: anamorphic streaks
+          const wide = i >= nLev - 2;
+          U.f(gl, this.pUp.u.uStretch,
+            wide ? (this.anamorphic === undefined ? FX.anamorphic : this.anamorphic) : 1.0);
+          /* ...and split into their colours at the skirt, on the same two
+             levels and for the same reason: that is where the glow is wide
+             enough for a fringe to read as a lens rather than as an artefact.
+             See the note in UP_FRAG. */
+          U.f(gl, this.pUp.u.uDisperse, wide ? (this.bloomDisperse || 0) : 0);
+          this.fullscreenTri();
+        }
+        gl.disable(gl.BLEND);
       }
-      gl.disable(gl.BLEND);
 
       // 5. depth-of-field source: quarter res, separable blur
-      if (this.useDof) {
+      const doDof = !!this.useDof && !covered;
+      if (doDof) {
         this.blit(this.pDof, this.rtDofA, (u) => {
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, this.rtScene.tex);
@@ -8370,37 +9405,41 @@
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.rtScene.tex);
         U.i(gl, u.uScene, 0);
+        /* EVERY SAMPLER THAT IS NOT IN USE POINTS AT ONE PIXEL.
+           See the note above the SSR pass: the composite fetches all of these
+           whether or not their feature ran, so a switched-off pass is a
+           half-resolution read per pixel for a constant. These carry exactly
+           the constants the cleared buffers used to. */
         gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloom[0].tex);
+        gl.bindTexture(gl.TEXTURE_2D, doBloom ? this.bloom[0].tex : this.texZero);
         U.i(gl, u.uBloom, 1);
         gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, this.rtVol.tex);
+        gl.bindTexture(gl.TEXTURE_2D, doVol ? this.rtVol.tex : this.texClear);
         U.i(gl, u.uVol, 2);
         gl.activeTexture(gl.TEXTURE3);
-        gl.bindTexture(gl.TEXTURE_2D, this.rtGod.tex);
+        gl.bindTexture(gl.TEXTURE_2D, doGod ? this.rtGod.tex : this.texZero);
         U.i(gl, u.uGod, 3);
         gl.activeTexture(gl.TEXTURE4);
-        gl.bindTexture(gl.TEXTURE_2D, this.rtSsr.tex);
+        gl.bindTexture(gl.TEXTURE_2D, doSsr ? this.rtSsr.tex : this.texZero);
         U.i(gl, u.uSsr, 4);
         gl.activeTexture(gl.TEXTURE5);
-        gl.bindTexture(gl.TEXTURE_2D, this.useDof ? this.rtDofB.tex : this.rtScene.tex);
+        gl.bindTexture(gl.TEXTURE_2D, doDof ? this.rtDofB.tex : this.texZero);
         U.i(gl, u.uDof, 5);
         gl.activeTexture(gl.TEXTURE6);
         gl.bindTexture(gl.TEXTURE_2D, this.rtScene.depthTex);
         U.i(gl, u.uDepth, 6);
         gl.activeTexture(gl.TEXTURE7);
-        gl.bindTexture(gl.TEXTURE_2D, this.rtAo.tex);
+        gl.bindTexture(gl.TEXTURE_2D, doAo ? this.rtAo.tex : this.texOne);
         U.i(gl, u.uAo, 7);
         U.f(gl, u.uTime, this.time);
         U.f(gl, u.uSpeed, this.speedFx);
         U.f(gl, u.uFlash, this.flash);
         U.f(gl, u.uTunnel, this.tunnel);
         const raceModeGrade = this.raceModeFx || 0;
-        const bloomBase = this.bloomAmount === undefined ? FX.bloomAmount : this.bloomAmount;
         // raceMode supplies more emissive geometry of its own. Protect the
         // road and bodywork instead of letting the extra blue light clip the
         // entire frame to white.
-        U.f(gl, u.uBloomAmt, bloomBase * (1 - raceModeGrade * .24));
+        U.f(gl, u.uBloomAmt, bloomAmt * (1 - raceModeGrade * .24));
         /* Chapter 7 takes a trim of its own. Even with the facades weighted
            correctly, a city built entirely out of light is brighter than a
            coast road at dusk, and the route is thirty kilometres long: what
@@ -8424,11 +9463,11 @@
            now that the push is headroom-limited and cannot clip a channel to
            black; see the note beside it in POST_FRAG. */
         U.f(gl, u.uGradeSat, GRADE_SAT * (ls / 1.22) * (1 - raceModeGrade * .10));
-        U.f(gl, u.uGodAmt, FX.godrayAmount);
-        U.f(gl, u.uSsrAmt, this.useSsr ? 1 : 0);
-        U.f(gl, u.uDofAmt, this.useDof ? 1 : 0);
+        U.f(gl, u.uGodAmt, doGod ? FX.godrayAmount : 0);
+        U.f(gl, u.uSsrAmt, doSsr ? 1 : 0);
+        U.f(gl, u.uDofAmt, doDof ? 1 : 0);
         U.f(gl, u.uFlareAmt, (this.flareAmount === undefined ? FX.flareAmount : this.flareAmount) * onScreen);
-        U.f(gl, u.uAoAmt, this.useAo ? FX.aoAmount : 0);
+        U.f(gl, u.uAoAmt, doAo ? FX.aoAmount : 0);
         U.v2(gl, u.uSunUv, sunU, sunV);
         U.v2(gl, u.uRes, this.w, this.h);
         U.f(gl, u.uGrain, this.useGrain === false ? 0 : 1);
@@ -8441,7 +9480,12 @@
       /* 7. Temporal resolve. The result becomes next frame's history, so the
             two buffers swap rather than one being copied into the other. */
       let shown = this.rtLdr;
-      if (this.useTaa) {
+      if (!doTaa) {
+        /* Nothing was written into the history this frame, so whatever is in
+           it belongs to a different camera. Say so, or the first frame after
+           a panel closes blends the live picture against a still one. */
+        this.haveHistory = false;
+      } else {
         const prev = this.rtHist[this.histIndex];
         const next = this.rtHist[this.histIndex ^ 1];
         this.blit(this.pTaa, next, (u) => {
@@ -8485,7 +9529,12 @@
        * produce the image it was handed. */
       let outRes = [this.w, this.h];
       const upMode = this.upscaler === undefined ? 2 : this.upscaler;
-      if (this.renderScale < 1 && upMode > 0 && this.outW > this.w) {
+      /* Asked of the PIXELS, not of the RENDER SCALE row. The adaptive factor
+         can leave a frame smaller than the canvas while the row itself says
+         NATIVE or above, and a reconstruction that only ran when the row was
+         below native would leave those frames to the browser's own bilinear
+         stretch - which is the exact look this pass exists to replace. */
+      if (upMode > 0 && this.outW > this.w) {
         const src = shown;
         this.blit(this.pUpscale, this.rtUp, (u) => {
           gl.activeTexture(gl.TEXTURE0);
@@ -8557,6 +9606,159 @@
       gl.enable(gl.DEPTH_TEST);
 
       this.hud.draw(this, dt);
+    }
+
+    /* ==================== WHAT THE GAME DOES BACK ========================
+     *
+     * The single thing that separates an arcade racer from a driving model
+     * with a camera on it is what happens in the tenth of a second AFTER
+     * something happens. This is that tenth of a second, in one place, so
+     * that every event in the game reaches for the same vocabulary rather
+     * than inventing its own.
+     *
+     * The three verbs, and each of them says a different thing:
+     *
+     *   SHAKE   the world was hit. It is displacement, it decays fast, and
+     *           it is the one everybody reaches for first.
+     *   PUNCH   the lens reacted. A short outward kick of field of view,
+     *           which is what reads as acceleration rather than as damage -
+     *           this is the boost's verb, not the crash's.
+     *   STOP    time noticed. A few hundredths of a second of dilation, which
+     *           is the oldest trick in action games and is the one that makes
+     *           an event feel EARNED rather than merely loud. It is spent
+     *           sparingly and only on things worth looking at: a hard impact,
+     *           a jump landed from height. A game that stops time for a kerb
+     *           strike is a game nobody can drive.
+     *
+     * EVERY ONE OF THEM IS SCALED BY ONE ROW. See IMPACT FEEDBACK in
+     * js/settings.js: at 0 this method still runs, still returns, and moves
+     * nothing - the rumble, the sparks, the sound and the damage all happen
+     * outside it, so the accessible setting costs a player none of the
+     * information and only the motion.
+     */
+    impact(opts) {
+      const k = this.impactFx === undefined ? 1 : this.impactFx;
+      if (k <= 0) return;
+      const o = opts || {};
+      if (o.shake) this.shake = Math.max(this.shake || 0, o.shake * k);
+      if (o.punch) this.boostKick = Math.max(this.boostKick || 0, o.punch * k);
+      if (o.flash) this.flash = Math.max(this.flash || 0, o.flash * k);
+      /* The dilation is deliberately NOT scaled the same way. Shake and punch
+         are how much the picture moves and a player who wants more can have
+         more; a stop is a hole in the input, and a hole twice as long is not
+         twice as good - it is a game that stops responding. So HEAVY gets a
+         longer hold and the same depth, and the depth itself is capped. */
+      if (o.stop) {
+        this.slowMo(Math.min(0.55, o.stop * Math.min(1.15, k)),
+          (o.hold === undefined ? 0.16 : o.hold) * Math.min(1.3, k));
+      }
+    }
+
+    /* ================= raceMode: THE JERK, NOT THE WOBBLE ===============
+     *
+     * Everything else that moves this camera is a SINE. Wind buffet, the
+     * speed tremor, the boost shake - all of them are one or two sines added
+     * together, because that is what air over a body and a chassis on its
+     * springs actually do: they are continuous, and so is their derivative.
+     *
+     * raceMode is not that. It is a driver link slammed into sync with an
+     * engine that is suddenly making half again what it made a second ago,
+     * and the physical thing that describes is JERK - the derivative of
+     * acceleration - which is precisely the quantity a sine does not have
+     * much of. A smooth wobble at a bigger amplitude does not read as more
+     * violent; it reads as the same camera, further away from centre.
+     *
+     * So this is SAMPLE AND HOLD. A new offset is rolled at a rate and then
+     * held perfectly flat until the next roll, which means every roll is a
+     * step discontinuity - the camera is somewhere, then it is instantly
+     * somewhere else. That is a hard, digital, snapped-to-the-grid tremble
+     * rather than a hand-held one, it is the right fiction for a machine
+     * synchronising rather than a body being buffeted, and it is the one
+     * thing on this camera that does not look like the rest of the camera.
+     *
+     * IT ONLY EXISTS WHILE THE BOOST IS ACTUALLY FIRING.
+     *
+     * This was gated on raceModeActive, which is a THIRTY SECOND window, so
+     * the camera trembled for the whole of it whether the player was using
+     * the thing or coasting through it. Thirty seconds of stepped camera is
+     * not a light-up, it is a fault - and it was strong enough at 1.66x the
+     * boost's own tremor to be the loudest thing on the screen for half a
+     * minute.
+     *
+     * `boostFx` is the damped state of car.boosting, which the solver
+     * recomputes every tick from the player's input and their remaining fuel
+     * (vehicle.rs:704). Multiplying by it means the jerk is present exactly
+     * while the engine is being asked for the extra, and gone the moment it
+     * is not - which is what the effect was always describing.
+     *
+     * AND IT IS QUIET NOW. Sustained amplitude is about six tenths of the
+     * boost's buffet rather than one and two thirds of it: enough to tell
+     * the picture apart from an ordinary boost, not enough to notice for its
+     * own sake. The surge on the activation frame is a short step above that
+     * and decays inside a third of a second. The moment the mode fires is
+     * carried by fireRaceModeFeel's punch and flash, which are instant and
+     * cost the player nothing; this is only the texture underneath it.
+     *
+     * IT IS THE ACCESSIBILITY SETTING'S BUSINESS. Scaled by `impactFx` and
+     * genuinely zero at OFF, on the same terms as impact() above: a player
+     * who has said they do not want the picture thrown about has said it
+     * about this too, and the mode still announces itself in the toast, the
+     * exhaust, the audio and the rumble. */
+    raceJerk(dt) {
+      const k = this.impactFx === undefined ? 1 : this.impactFx;
+      const m = this.raceModeFx || 0;
+      const using = this.boostFx || 0;
+      const drive = m * using * Math.min(1.2, k);
+      if (k <= 0 || drive <= 0.0025) {
+        this.jerkX = 0; this.jerkY = 0; this.jerkFov = 0;
+        this._jerkStep = 0; this._jerkSurge = 0;
+        return;
+      }
+      this._jerkSurge = Math.max(0, (this._jerkSurge || 0) - dt * 2.6);
+      const surge = this._jerkSurge;
+      /* Held between rolls, so the motion is steps and not a curve. The rate
+         climbs with the surge: the slam is fast enough to strobe, the cruise
+         is slow enough to sit behind. */
+      this._jerkStep = (this._jerkStep || 0) + dt * (19 + m * 9 + surge * 16);
+      if (this._jerkStep >= 1) {
+        this._jerkStep %= 1;
+        this._jx = Math.random() * 2 - 1;
+        this._jy = Math.random() * 2 - 1;
+        this._jf = Math.random() * 2 - 1;
+      }
+      /* Sustained amplitude sits BELOW the boost's own tremor (~0.05 world
+         units at the chase camera). The surge is a brief step above it on the
+         frames the mode engages, and is gone inside a third of a second. */
+      const amp = drive * (0.030 + surge * 0.085);
+      this.jerkX = (this._jx || 0) * amp;
+      this.jerkY = (this._jy || 0) * amp * 0.62;
+      this.jerkFov = (this._jf || 0) * drive * (0.18 + surge * 0.55);
+    }
+
+    /* The light-up, shared by the two places that can start the mode: the
+       open road (updateFreeRoamRaceMode) and Chapter 6's calibration run.
+       Both used to write `flash` and `shake` by hand, with different numbers,
+       so the reward felt like two different abilities depending on where it
+       was handed to you.
+
+       NO HIT STOP, for exactly the reason the boost has none - see the note
+       at the light-up in updateAtmosphere. This is the one class of event in
+       the game whose entire meaning is that everything is suddenly happening
+       FASTER, and taking a tenth of a second of control away to celebrate it
+       says the opposite.
+
+       A STEP ABOVE THE BOOST, NOT A LEAP. The first version of this doubled
+       the boost in every channel and it was too much on top of the tremble
+       it also started; 0.5 is the number Chapter 6's calibration run used
+       before any of this, which was right. The mode still announces itself
+       louder than a boost - it is a touch more shake, a little more lens and
+       a longer rumble - and the rest of the difference is carried by the
+       exhaust, the toast and the audio rather than by the camera. */
+    fireRaceModeFeel() {
+      this._jerkSurge = 1;
+      this.impact({ shake: 0.5, punch: 1.15, flash: 0.08 });
+      const k = this.impactFx === undefined ? 1 : this.impactFx;
+      if (this.pad && k > 0) this.pad.vibrate(Math.min(1, 0.7 * k), 220);
     }
 
     /* A BEAT, RATHER THAN A NUMBER.
@@ -8677,8 +9879,35 @@
            Skipping is what makes it a LIMIT rather than a target - the loop
            never tries to catch up, so a cap can only ever slow the game down
            to the number asked for, never speed it up past what it can hold. */
-        const gap = this.frameInterval || 0;
+        /* THE MENU DOES NOT NEED SIXTY FRAMES OF THE WORLD BEHIND IT.
+         *
+         * While one of the full-frame DOM panels is up (see worldCovered)
+         * the 3D is a dim wash along the bottom edge of an opaque sheet, and
+         * it was being redrawn as often as a race. The panels themselves are
+         * CSS - their entrances, their grids and their sweeps run on the
+         * compositor and are completely unaffected by this - so the only
+         * thing the cap touches is the part nobody can see, and it hands
+         * roughly half the frame back to a machine that is short of one.
+         *
+         * Thirty-six rather than thirty, so the attract camera in that strip
+         * still reads as moving rather than stepping, and never SLOWER than
+         * a cap the player has already chosen. */
+        /* A DEAD CONTEXT IS NOT DRAWN INTO. Every call would be a no-op and
+           several would raise, sixty times a second, behind a card that has
+           already told the player what happened. The loop stays alive so
+           that `webglcontextrestored` can still be delivered. */
+        if (this.contextLost) {
+          requestAnimationFrame(frame);
+          return;
+        }
+        let gap = this.frameInterval || 0;
+        if (this.worldCovered()) gap = Math.max(gap, 1000 / 36);
         if (gap > 0 && now - last < gap - 0.5) {
+          /* A SKIPPED FRAME IS EVIDENCE. It means the machine offered a frame
+             the limiter did not want, which is the only reliable way to know
+             there is headroom while a cap is holding the wall clock at
+             exactly the interval asked for. See adaptResolution. */
+          this._capSkips = (this._capSkips || 0) + 1;
           requestAnimationFrame(frame);
           return;
         }
@@ -8687,6 +9916,8 @@
            faster than they can be drawn. Skipped whole, for the same reason a
            capped frame is. */
         if (this.gpuBusy()) {
+          // ...and this one is the opposite evidence: the GPU is behind.
+          this._gpuSkips = (this._gpuSkips || 0) + 1;
           requestAnimationFrame(frame);
           return;
         }
@@ -8696,6 +9927,7 @@
         last = now;
         if (!isFinite(dt) || dt < 0) dt = 0;
         this.fpsSample(dt);
+        this.adaptResolution(frameMs);
         dt = Math.min(dt, 0.05);
         /* THE DILATION RUNS ON REAL TIME and the simulation runs on scaled
            time, which is the whole point: a slowed frame must not also slow
@@ -8726,6 +9958,11 @@
          */
         const tSim = performance.now();
         try {
+          /* THE CONTROLLER, BEFORE ANYTHING READS IT. Here rather than inside
+             update() because update() is not on the path every frame takes -
+             see pumpPad. Inside the try, because a pad that throws must not
+             take the frame with it. */
+          this.pumpPad(dt);
           this.update(dt * this.timeScale);
           const tDraw = performance.now();
           // ...and the interface animates on the wall clock, because a menu
@@ -8772,6 +10009,277 @@
      * the simulation uses, and before time dilation - or a slow-motion beat
      * would read as the game having dropped to a quarter of its frame rate.
      */
+    /* ====================================================================
+     * ADAPTIVE RESOLUTION
+     * ====================================================================
+     *
+     * WHAT IT IS FOR
+     *
+     * Every other control in this game is a decision a player makes once,
+     * against a machine, before they have seen the game move. That is fine
+     * for someone who knows what ambient occlusion costs on their own card,
+     * and it is no use at all to the far more common case: a laptop with
+     * integrated graphics where the SHIPPED settings run the title screen at
+     * forty and the city at eleven, and the player's only recourse is to
+     * walk down a list of eleven rows turning things off until it stops
+     * hurting - throwing away the look of the game to buy frames the
+     * renderer could have found on its own.
+     *
+     * So this buys them instead, out of the one resource that is genuinely
+     * elastic: how many pixels the frame is drawn at. It never turns a
+     * feature off. The shadows, the reflections, the volumetrics, the grade
+     * and the neon are all exactly what the preset asked for - there are
+     * simply fewer pixels of them for as long as the machine cannot afford
+     * more, and the reconstruction pass that already exists for sub-native
+     * RENDER SCALE fits the result back to the window.
+     *
+     * IT CAN ONLY EVER TAKE PIXELS AWAY. `dynScale` is capped at 1, so the
+     * player's own RENDER SCALE is a ceiling this cannot exceed. On a machine
+     * that holds the target it sits at 1 and does nothing whatsoever; the
+     * game renders precisely as it always did.
+     *
+     * WHAT THE TARGET IS
+     *
+     * Sixty frames a second, or the FRAME LIMIT if one is set, or the
+     * display's own refresh if that is slower than sixty - which is the part
+     * that stops a 50 Hz panel being mistaken for a struggling machine and
+     * driven to the floor for nothing. The refresh is not asked for, because
+     * a page cannot ask: it is the fastest frame the machine has actually
+     * produced recently, clamped to the range real displays live in.
+     *
+     * IT KNOWS WHEN LOWERING THE RESOLUTION IS NOT THE ANSWER
+     *
+     * This is the part that matters most, and the part naive versions of this
+     * get wrong. A machine bound by its PROCESSOR - too many draw calls, a
+     * slow simulation step, a garbage collection every second - does not get
+     * one frame faster for being given fewer pixels. A scaler that cannot
+     * tell the difference walks all the way to its floor, makes the game look
+     * like a video call, and returns nothing.
+     *
+     * So the first step down is a MEASUREMENT. If the frame time does not
+     * actually improve by a few per cent after it, the verdict is that this
+     * machine is not short of fill rate, the step is handed back, and the
+     * whole mechanism stands down for half a minute before it is willing to
+     * ask again. A 30 Hz display falls out of the same test, because vsync
+     * holds its frame time wherever the resolution goes.
+     *
+     * HOW IT AVOIDS OSCILLATING
+     *
+     * Downward moves are quick, because a player is feeling every frame of
+     * the delay. Upward moves are slow and get slower: each time a step up
+     * has to be undone, the number of good windows required before the next
+     * attempt doubles. A machine that genuinely sits on the boundary
+     * therefore settles rather than pumping between two resolutions, which is
+     * far more distracting than simply being at the lower one.
+     */
+    adaptResolution(frameMs) {
+      /* OFF is the default until a setting says otherwise, and OFF has to
+         mean no arithmetic rather than arithmetic that decides to do
+         nothing - this is called on every frame the game draws. */
+      const mode = this.dynRes | 0;
+      const A = this._dyn || (this._dyn = {
+        n: 0, sum: 0, min: 1e9, t: 0,
+        good: 0, bad: 0, upNeed: 6, cool: 0, sinceUp: 99,
+        probe: 0, probeFrom: 0, standDown: 0,
+      });
+      if (!mode || A.off || this.benchActive || this.state === 'loading'
+          || !this.scene || !this.scene.ready) {
+        /* Reset the evidence rather than carrying a stale window across a
+           load, a benchmark or a settings change. */
+        A.n = 0; A.sum = 0; A.min = 1e9; A.t = 0; A.good = 0; A.bad = 0;
+        this._capSkips = 0; this._gpuSkips = 0;
+        return;
+      }
+      if (!isFinite(frameMs) || frameMs <= 0) return;
+      /* A single enormous frame is an event - a shader compile, a chapter
+         loading its world, the window being dragged to another monitor - and
+         not a statement about how fast this machine is. */
+      const ms = Math.min(frameMs, 500);
+      A.n++;
+      A.sum += ms;
+      if (ms < A.min) A.min = ms;
+      A.t += ms;
+      if (A.t < 450 || A.n < 8) return;
+
+      const mean = A.sum / A.n;
+      const capSkips = this._capSkips || 0;
+      const gpuSkips = this._gpuSkips || 0;
+      const frames = A.n;
+      A.n = 0; A.sum = 0; A.min = 1e9; A.t = 0;
+      this._capSkips = 0; this._gpuSkips = 0;
+
+      /* THE TARGET, AND WHY IT IS A FLAT NUMBER.
+       *
+       * Sixty frames a second, or the FRAME LIMIT if the player set one.
+       * That is all of it.
+       *
+       * There was a third term: an estimate of the DISPLAY's own refresh,
+       * read from the fastest frame the machine had produced, so that a page
+       * could not be asked to hold sixty on a panel that only shows fifty.
+       * It was wrong in the one way an estimate like that can be wrong, and
+       * the scaler's own test found it: a machine pinned at forty-two frames
+       * a second never produces a frame faster than twenty-three
+       * milliseconds, so the estimate walked up to meet it, the target walked
+       * up with it, and the scaler concluded that forty-two frames a second
+       * WAS this display's refresh rate and stopped - two steps short of the
+       * one thing it exists to do.
+       *
+       * The case it was protecting is covered properly by the probe below,
+       * and covered by measurement rather than by inference. On a display
+       * slower than sixty, vertical sync holds the frame time wherever the
+       * pixel count goes: a step down buys nothing, the probe says so, the
+       * step is handed back and the scaler stands down. Same mechanism as a
+       * processor-bound machine, because from here they are the same
+       * machine - one where fewer pixels do not mean more frames. */
+      const cap = this.frameInterval || 0;
+      const target = cap > 0 ? cap : 16.7;
+
+      const steps = DYN_STEPS;
+      const floor = mode >= 2 ? 0.45 : 0.645;
+      let idx = A.idx === undefined ? 0 : A.idx;
+
+      if (A.cool > 0) { A.cool--; A.sinceUp++; return; }
+      if (A.standDown > 0) { A.standDown--; A.sinceUp++; return; }
+
+      /* THE VERDICT ON THE PROBE STEP. See the note above: if the frame time
+         did not move when the pixel count did, this machine is not short of
+         fill rate and there is nothing here to win. */
+      if (A.probe) {
+        A.probe = 0;
+        const gained = (A.probeFrom - mean) / Math.max(1, A.probeFrom);
+        if (gained < 0.03) {
+          /* HAND THE STEP BACK AND ASK LESS OFTEN EACH TIME.
+           *
+           * Sixty-six windows is about half a minute, which is long enough
+           * that a route change or a cutscene - the things that genuinely
+           * alter what the frame is made of - has a chance to happen first.
+           * So the first refusal is not final: a machine that was
+           * processor-bound on the Aurora Forge production hall may be
+           * fill-bound on the Neon Horizon deck, and it deserves to be asked
+           * again.
+           *
+           * But it must not be asked again FOREVER. Two machines are refusing
+           * here for reasons that will not change - one bound by its
+           * processor, one on a display slower than sixty hertz with vsync
+           * holding the frame time wherever the pixels go - and for both of
+           * them every re-ask is a visible step down and back up for nothing.
+           * So the wait doubles, and after the third refusal the scaler
+           * accepts the answer and stops for the session. */
+          /* Back by ONE, not all the way to the top. The steps before this
+             one were each measured and each paid for themselves; only the
+             last one did not, and throwing away everything that worked would
+             put a machine that is genuinely fill-bound back at the frame rate
+             it could not hold. */
+          A.idx = idx = Math.max(0, idx - 1);
+          this.setDynScale(steps[idx]);
+          A.fails = (A.fails || 0) + 1;
+          A.standDown = Math.min(1200, 66 * Math.pow(2, A.fails - 1));
+          A.good = 0; A.bad = 0;
+          if (A.fails >= 3) {
+            A.off = true;
+            console.info('SYNX: adaptive resolution stopped - three measurements '
+              + 'say this frame is not limited by how many pixels it draws');
+          } else if (!A._said) {
+            A._said = true;
+            console.info('SYNX: adaptive resolution stood down - this frame is not fill-bound');
+          }
+          return;
+        }
+        /* It DID help, so whatever it was refusing for before is not what is
+           happening now. The next refusal starts its wait from the bottom. */
+        A.fails = 0;
+      }
+
+      const over = mean > target * 1.10 || gpuSkips > frames * 0.25;
+      const held = mean <= target * 1.02 || capSkips > frames * 0.10;
+
+      if (over) {
+        A.bad++;
+        A.good = 0;
+        // a frame that is half the rate it should be does not get two windows
+        const urgent = mean > target * 1.6;
+        if (A.bad >= (urgent ? 1 : 2) && idx < steps.length - 1 && steps[idx + 1] >= floor) {
+          if (A.sinceUp <= 3) A.upNeed = Math.min(40, A.upNeed * 2);
+          A.idx = ++idx;
+          A.bad = 0;
+          A.cool = 2;
+          /* EVERY step is measured, not only the first.
+             It used to be the first alone, on the reasoning that a machine
+             either is or is not short of fill rate. It is not that simple:
+             with vertical sync the frame time comes in quantised steps, so a
+             machine can be genuinely fill-bound at full resolution and stop
+             being fill-bound three steps down - and a scaler that only asked
+             at the top would walk past that point to its floor, throwing
+             pixels away for frames it was already getting. */
+          A.probe = 1; A.probeFrom = mean;
+          this.setDynScale(steps[idx]);
+        }
+        A.sinceUp++;
+        return;
+      }
+
+      A.bad = 0;
+      if (held) A.good++; else A.good = 0;
+      A.sinceUp++;
+      if (A.good >= A.upNeed && idx > 0) {
+        A.idx = --idx;
+        A.good = 0;
+        A.cool = 2;
+        A.sinceUp = 0;
+        this.setDynScale(steps[idx]);
+      }
+    }
+
+    /** Apply an adaptive factor, reallocating only when it actually moves. */
+    setDynScale(v) {
+      const want = Math.max(0.3, Math.min(1, v));
+      if (this.dynScale === want) return;
+      this.dynScale = want;
+      this.onResize();
+      this.syncGfxClass();
+    }
+
+    /* ================= THE INTERFACE'S OWN LOW SETTING ==================
+     *
+     * Everything else on the graphics screen is about the 3D. The INTERFACE
+     * is a separate cost and, on the machines this matters for, a large one:
+     * the panels in css/style.css carry seven full-frame backdrop blurs,
+     * several sheets that animate for as long as a screen is open, and a
+     * great many stacked shadows - none of which goes through the renderer,
+     * the preset, or the render scale. It is the browser's compositor, and a
+     * full-frame backdrop blur on integrated graphics is milliseconds.
+     *
+     * That is the missing half of "it lags in the menus even on LOW". The
+     * preset made the WORLD cheap and left the panels in front of it exactly
+     * as expensive as they had always been.
+     *
+     * `data-gfx="lean"` is the switch, and the stylesheet decides what it
+     * means - see LEAN DECORATION at the bottom of css/style.css. It is set
+     * from two places, because there are two different ways to know:
+     *
+     *   THE PRESET. Somebody who has chosen LOW has told us what kind of
+     *   machine this is, and they did not choose it for the blur radii.
+     *
+     *   THE SCALER. A machine that has had to give up a third of its pixels
+     *   to hold sixty frames is a machine that cannot afford the decoration
+     *   either, whatever preset it is nominally running. This is what catches
+     *   the case the preset cannot: HIGH on hardware that turns out not to
+     *   manage it.
+     *
+     * It is a class on <body>, applied only when it changes, so the cost of
+     * asking is one comparison per settings change and per scaler step.
+     */
+    syncGfxClass() {
+      const body = global.document && global.document.body;
+      if (!body) return;
+      const lean = !!this.gfxLean
+        || (this.dynScale !== undefined && this.dynScale < 0.8);
+      if (lean === this._gfxLeanWas) return;
+      this._gfxLeanWas = lean;
+      if (lean) body.setAttribute('data-gfx', 'lean');
+      else body.removeAttribute('data-gfx');
+    }
+
     fpsSample(dt) {
       const F = this.fps || (this.fps = { now: 0, worst: 0, n: 0, sum: 0, peak: 0, t: 0 });
       if (!(dt > 0)) return;

@@ -124,6 +124,36 @@
       const want = TABS.indexOf(String(global.location.hash || '').replace('#', '').toUpperCase());
       if (want >= 0) this.tab = want;
 
+      /* ---------------------------------------------- THE FIRST LAUNCH ---
+       *
+       * This screen is the first thing a desktop player ever sees, and the
+       * moment they press PLAY it writes a COMPLETE settings blob - every
+       * row filled in from `r.def` by applyDefaults below. So the shipped
+       * defaults are not a starting point that the game gets a chance to
+       * revise later: on the desktop build they are the final answer, and on
+       * an integrated laptop the final answer was HIGH, NATIVE, everything
+       * on. That is eleven frames a second on the title screen, and it is
+       * the first impression the project makes.
+       *
+       * So when the blob is genuinely EMPTY - not a single row saved, which
+       * happens exactly once in the life of an install - the rows are seeded
+       * from what the machine appears to be. See NR.Settings.guessTier. It
+       * runs before applyDefaults so that anything the profile did not have
+       * an opinion about still lands on the shipped default, and it is never
+       * consulted again: one saved row is enough to make every future launch
+       * the player's own.
+       *
+       * The player is TOLD, rather than having their settings quietly
+       * decided for them, and the row they would change is one tab away. */
+      const empty = !this.game || Object.keys(this.game).length === 0;
+      if (empty && S.seed) {
+        const t = S.seed(this.game);
+        if (t) {
+          this.seeded = t;
+          this.ui.graphics.title = 'Detected: ' + (t.renderer || 'unknown');
+        }
+      }
+
       this.applyDefaults();
       /* ...and whatever the benchmark measured last time, applied once. It
          runs after applyDefaults so it is writing over a complete settings
@@ -134,6 +164,20 @@
       this.buildTabs();
       this.bind();
       this.render();
+
+      /* SAY SO. A screen that has silently decided something on a player's
+         behalf is a screen they cannot argue with. The preset it chose is on
+         the GRAPHICS tab and every row of it is theirs to change. */
+      if (this.seeded) {
+        /* Named from the PRESET that was applied, not from the tier index -
+           two of the four tiers land on LOW and a message that reported the
+           tier would be naming an internal number at the player. */
+        const NAME = ['LOW', 'MEDIUM', 'HIGH', 'ULTRA'];
+        this.note('First launch: settings started at '
+          + (NAME[this.game.quality | 0] || 'HIGH')
+          + ' for this machine. Change anything on GRAPHICS, or run BENCHMARK '
+          + 'for a measured answer.');
+      }
 
       /* SHOW THE WINDOW.
        *

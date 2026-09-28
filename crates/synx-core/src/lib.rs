@@ -131,9 +131,17 @@ pub unsafe extern "C" fn synx_free(ptr: *mut u8) {
 ///      up on the breach, so the failure would be a TypeError thrown mid-race
 ///      on one particular kilometre of one route. That is precisely the class
 ///      of break this version guard exists to turn into a message at load.
+/// v19: `synx_drv_pose` took three channels and now takes five - the boost,
+///      and then the throttle and the brake, for the two pedals and the feet
+///      on them. This is the first entry in this list that changes the ARITY
+///      of an existing export rather than adding a new one, and that does not
+///      surface as a TypeError naming a missing symbol: calling a wasm
+///      function with the wrong number of arguments TRAPS, on the frame the
+///      driver is first posed, saying nothing about why. The guard turns it
+///      back into a sentence.
 #[no_mangle]
 pub extern "C" fn synx_abi_version() -> u32 {
-    18
+    19
 }
 
 // ------------------------------------------------------------------ world ---

@@ -546,6 +546,102 @@ def _glass_shards(size, cells, seed, np):
     return out
 
 
+def _value_noise(size, cells, seed, np):
+    """Smooth value noise on a `cells`-square lattice, tiling at the edges."""
+    rnd = np.random.RandomState(seed & 0x7FFFFFFF)
+    g = rnd.rand(cells, cells)
+    g = np.vstack([g, g[:1]])
+    g = np.hstack([g, g[:, :1]])          # wrap, so the sheet tiles
+    u = (np.arange(size) / float(size)) * cells
+    i = np.floor(u).astype(int) % cells
+    f = u - np.floor(u)
+    f = f * f * (3 - 2 * f)               # smoothstep, not linear
+    a = g[np.ix_(i, i)]
+    b = g[np.ix_(i + 1, i)]
+    c = g[np.ix_(i, i + 1)]
+    d = g[np.ix_(i + 1, i + 1)]
+    fx = f[:, None]
+    fy = f[None, :]
+    return (a * (1 - fx) * (1 - fy) + b * fx * (1 - fy)
+            + c * (1 - fx) * fy + d * fx * fy)
+
+
+def _leather_height(size, seed, np):
+    """A grain field: several octaves of cell noise, creased into pebbles.
+
+    Leather is not a texture of MARKS, it is a surface of CELLS with narrow
+    valleys between them. Summing octaves gives the lumps; taking one minus
+    the absolute distance from a mid level turns each smooth octave into
+    ridges with creases between them, which is what the eye reads as hide
+    rather than as noise.
+    """
+    h = np.zeros((size, size))
+    amp, cells = 1.0, 9
+    for _ in range(5):
+        n = _value_noise(size, cells, seed + cells * 7919, np)
+        h += amp * (1.0 - np.abs(n - 0.5) * 2.0)
+        amp *= 0.52
+        cells *= 2
+    h -= h.min()
+    h /= max(h.max(), 1e-6)
+    # a fine pore over the grain, which is what still reads at arm's length
+    pore = _value_noise(size, max(4, size // 3), seed ^ 0x5F356495, np)
+    return np.clip(h * 0.88 + pore * 0.12, 0, 1)
+
+
+# THERE IS NO STITCHING ON THIS SHEET, AND THERE CANNOT BE.
+#
+# It had two rows of amber saddle stitch, which is the detail that says
+# "trimmed" rather than "moulded" - and it had to come off, because of how
+# the cabin is mapped rather than because of how it looked. Every piece of
+# the generated interior is the same unit cube, and each of its faces
+# carries the whole of 0..1 whatever size the piece is scaled to. A stitch
+# row at v=0.18 therefore lands in the same relative place on a dash slab
+# 2.2 units wide AND on a five-centimetre switch cap - so the switch gets a
+# band of amber across a third of its face and reads as painted.
+#
+# Grain survives that because it is scale-free noise and is only ever asked
+# to be texture. A seam is a feature at a known size, and a feature needs a
+# UV layout the box mapping does not have. If the cabin ever gets one, the
+# stitching belongs in it.
+
+def _to_srgb(c, np):
+    """Linear reflectance -> an sRGB byte value.
+
+    THE SAMPLER DECODES THIS SHEET. Every albedo the game loads is sRGB and is
+    decoded back to linear on the way in (see `loadTexture` in js/scene.js), so
+    a generator that writes LINEAR numbers into it has them decoded a second
+    time: 0.128 written raw comes back as 0.014, and a dash that should be a
+    dark grey arrives very nearly black. The colours below are reflectances,
+    so they are encoded here exactly once.
+    """
+    c = np.clip(c, 0.0, 1.0)
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * np.power(c, 1 / 2.4) - 0.055)
+
+
+def _cabin_albedo(size, seed, np):
+    """Dash hide: a near-black grain with a cool sheen and amber stitching."""
+    h = _leather_height(size, seed, np)
+    base = np.array([0.128, 0.126, 0.150])          # the moulding's own colour
+    peak = np.array([0.196, 0.200, 0.238])          # where the grain catches
+    rgb = base[None, None, :] + (peak - base)[None, None, :] * h[:, :, None]
+    return np.clip(_to_srgb(rgb, np) * 255.0, 0, 255).astype(np.uint8)
+
+
+def _height_normal(h, strength, np):
+    """A tangent-space normal from a height field, by central difference."""
+    dx = (np.roll(h, -1, 1) - np.roll(h, 1, 1)) * strength
+    dy = (np.roll(h, -1, 0) - np.roll(h, 1, 0)) * strength
+    n = np.stack([-dx, -dy, np.ones_like(h)], 2)
+    n /= np.sqrt((n * n).sum(2))[:, :, None]
+    return np.clip((n * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
+
+
+def _cabin_normal(size, seed, np):
+    h = _leather_height(size, seed, np)
+    return _height_normal(h, 22.0, np)
+
+
 def cmd_gentex(args):
     """The R-IX's own surface maps, and the shattered-glass sheet.
 
@@ -568,6 +664,14 @@ def cmd_gentex(args):
         ('raptor_carbon_NRM.png', 256, lambda: _carbon_normal(256, 8, np)),
         ('raptor_flake_NRM.png', 256, lambda: _flake_normal(256, 2600, 0x9E3779B9, np)),
         ('glass_shards.png', 512, lambda: _glass_shards(512, 22, 0x1B873593, np)),
+        # THE CABIN, which had no surface on it at all. Every moulding in the
+        # generated interior was a flat colour with a specular lobe, and the
+        # driving seat is the one place in this game where that is unmissable:
+        # it is the closest surface to the camera anywhere in the game, and it
+        # was the only one with nothing written on it. 512 rather than the 256
+        # the car's maps use, for the same reason.
+        ('cabin_hide.png', 512, lambda: _cabin_albedo(512, 0x2545F491, np)),
+        ('cabin_hide_NRM.png', 512, lambda: _cabin_normal(512, 0x2545F491, np)),
     ]
     print('generated surface maps ->')
     for name, size, make in jobs:

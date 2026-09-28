@@ -70,10 +70,16 @@
    * how alike its first and last six seconds are - and the notes beside each
    * one are those numbers, so a title can be argued with rather than believed.
    *
-   * The title keeps its own looping theme. On the road, FIVE full-length songs
-   * form an environment-aware radio: each environment has a primary song and
-   * at least one compatible alternate, so a long route can continue without
-   * immediately repeating the track that just finished.
+   * The title keeps its own looping theme. On the road, SEVEN full-length
+   * songs form an environment-aware radio: each environment has at least one
+   * primary song and at least one compatible alternate, so a long route can
+   * continue without immediately repeating the track that just finished.
+   *
+   * Three of the four environments now have TWO primaries - the canyon and
+   * the mesa gained one each with MIDNIGHT DRIFT and NEON OVERDRIVE, and the
+   * city already had two - which is what a hundred and twenty-seven
+   * kilometres of Free Roam actually needs: a route long enough to outlast
+   * its own playlist used to land back on the song it started with.
    *
    * `station` and `freq` are what the tuner in the HUD reads off. A fixed
    * score has no frequency because it is not on the air - it is the building
@@ -161,6 +167,57 @@
          the one thing a radio must not be. */
       title: 'NEON PURSUIT', station: 'SYNX FM', freq: 107.9,
     },
+    {
+      key: 'midnight_drift', file: 'radio/midnight_drift.ogg', gain: 1.10,
+      primary: 'canyon', environments: ['canyon', 'city'],
+      /* A minor at 108 BPM, and BOTH of those numbers are why it is a canyon
+         station rather than a city one. A minor is CANYON VELOCITY's key -
+         the two are the only minor-key material on the dial - and 108 sits
+         squarely between the 97 BPM cruise that the coast and the mesa share
+         and the 148 BPM sprint that THE SPINE was otherwise carried by
+         alone. That route had exactly one primary and it was the fastest
+         thing in the pack, so a long run down it had nowhere to go but back
+         to the same sprint. This is the same road at a pace somebody can
+         hold.
+
+         The city is its alternate because the title is not a lie about it:
+         it is the darker of the two arrivals, and it measures within four
+         hundred hertz of MIDNIGHT CIRCUIT's centroid.
+
+         It loops at 0.54, which is mid-table, and that is deliberate for a
+         SECOND primary - it is the one that follows, not the one left
+         running longest. That job still belongs to COASTLINE DRIVE.
+
+         Its fader is 1.10 rather than 1.25 because it masters hot: -16.7
+         dBFS RMS against the four originals' -17.8 average. 0.8 dB back puts
+         it at the same apparent level as everything either side of it, which
+         is the only thing a dial has to get right. */
+      title: 'MIDNIGHT DRIFT', station: 'SYNX FM', freq: 92.3,
+    },
+    {
+      key: 'neon_overdrive', file: 'radio/neon_overdrive.ogg', gain: 1.20,
+      primary: 'mesa', environments: ['mesa', 'coast'],
+      /* FILED ON WHAT IT MEASURES, NOT ON WHAT IT IS CALLED - the same rule
+         NEON PURSUIT is filed under, and this is the track that tests it. It
+         is in C major, which is ELECTRIC HORIZON's key and therefore the
+         mesa's, and its spectral centroid is within fifteen hertz of it.
+         Two songs that measure the same belong to the same country whatever
+         the one with OVERDRIVE in its name sounds like it ought to be doing.
+         MIRAGE CIRCUIT is open, high and bright; so is this.
+
+         It loops at 0.76 - behind only COASTLINE DRIVE and NEON PURSUIT -
+         and that is what earns it the mesa's second primary rather than a
+         place further down the dial. The open country is the longest
+         unbroken stretch a Free Roam tour crosses, so it is the one that
+         most needs a station able to come round again without announcing
+         that it has.
+
+         1.20, for the same reason as the others and by the same arithmetic:
+         -17.5 dBFS RMS wants 1.7 dB back, and 1.20 is 1.58 of it. Every
+         station on this dial now lands within a tenth of a decibel of the
+         same apparent level. */
+      title: 'NEON OVERDRIVE', station: 'SYNX FM', freq: 97.9,
+    },
   ];
   const MUSIC_TRACKS = [MENU_TRACK, CUTSCENE_TRACK, FACTORY_TRACK, FINAL_TRACK].concat(RADIO_TRACKS);
   /* By key, for the one question the interface asks: what is this? */
@@ -198,6 +255,17 @@
       this.intent = null;        // 'menu', 'radio', or null
       this.environment = 'coast';
       this.lastRadio = null;
+      /* THE LAST FEW SONGS, NOT THE LAST ONE.
+         With three or four stations compatible with a country, refusing only
+         the immediately previous track still allows A B A B A for an entire
+         tour, which is the shape of "the radio keeps repeating". Three is the
+         most that can be refused while the smallest pool (three) can still
+         always find something. */
+      this.recent = [];
+      /* WHERE THE CAR IS, ASKED AT THE MOMENT OF THE DECISION.
+         Set by Game once. See the note on _startRadio for why the radio pulls
+         this rather than waiting to be told. */
+      this.environmentSource = null;
       this.musicVol = undefined;
     }
 
@@ -516,50 +584,104 @@
       return true;
     }
 
-    /** Pick an environment-compatible song without immediately repeating. */
+    /* ================= WHERE THE CAR IS, BEFORE ANYTHING IS CHOSEN ======
+     *
+     * The radio used to be TOLD the environment, and the two things that tell
+     * it did not agree about when.
+     *
+     *   js/game.js sets the environment and then asks for the radio, in that
+     *   order, which is right.
+     *
+     *   js/story.js just asks for the radio - it is starting a chapter, and
+     *   it has no idea what country the chapter's start line is in. The
+     *   environment was then corrected a frame later by the per-frame update
+     *   in updateAudioEnvironment, which restarted the radio.
+     *
+     * So every chapter whose start line was not in the environment left over
+     * from the last thing the player did began a song and cut out of it
+     * within a frame. Chapter 3 was the reliable one - MIRAGE CIRCUIT is
+     * `mesa` and almost everything before it leaves the environment on
+     * `coast` - but it was never a chapter 3 bug, it was every caller that
+     * cannot know the answer, which is most of them.
+     *
+     * Asking is the fix, and it has to be asking rather than being told,
+     * because only the caller that already knew was getting it right. The
+     * decision now reads the car's position at the instant it is made. */
+    _syncEnvironment() {
+      const src = this.environmentSource;
+      if (!src) return;
+      let name = null;
+      try { name = src(); } catch (e) { return; }
+      if (name && ENVIRONMENTS.has(name)) this.environment = name;
+    }
+
+    /** Pick a compatible song, preferring the country's own and refusing
+     *  anything heard recently. */
     _pickRadio(environmentChange) {
       const usable = (d) => {
         const t = this.tracks[d.key];
         return !t || !t.broken;
       };
-      let pool;
-      if (environmentChange) {
-        pool = RADIO_TRACKS.filter(d => d.primary === this.environment && usable(d));
-      } else {
-        pool = RADIO_TRACKS.filter(d => d.environments.indexOf(this.environment) >= 0 && usable(d));
-      }
-      if (!pool.length) pool = RADIO_TRACKS.filter(usable);
+      const env = this.environment;
+      /* ONE POOL, NOT TWO. Restricting an environment change to `primary`
+         meant the coast had exactly one station and played it every single
+         time the player drove into it. Every song that lists this country is
+         eligible; the country's own are merely preferred, below. */
+      const compat = RADIO_TRACKS.filter(d => usable(d) && d.environments.indexOf(env) >= 0);
+      const pool = compat.length ? compat : RADIO_TRACKS.filter(usable);
+      if (!pool.length) return null;
 
-      // Avoid both the track still on the fader and the last radio song heard.
-      // If an environment has only one usable file, broaden to its compatible
-      // alternate before ever allowing an immediate repeat.
-      let fresh = pool.filter(d => d.key !== this.current && d.key !== this.lastRadio);
-      if (!fresh.length) {
-        fresh = RADIO_TRACKS.filter(d => usable(d) &&
-          d.environments.indexOf(this.environment) >= 0 &&
-          d.key !== this.current && d.key !== this.lastRadio);
-      }
-      if (!fresh.length) {
-        fresh = RADIO_TRACKS.filter(d => usable(d) && d.key !== this.current && d.key !== this.lastRadio);
+      /* Refuse everything heard recently, then give that up one song at a
+         time - oldest forgiven first - until something is left. A pool of
+         three against a memory of three would otherwise have no answer. */
+      const recent = this.recent;
+      let fresh = pool.filter(d => d.key !== this.current && recent.indexOf(d.key) < 0);
+      for (let keep = recent.length - 1; !fresh.length && keep > 0; keep--) {
+        const tail = recent.slice(recent.length - keep);
+        fresh = pool.filter(d => d.key !== this.current && tail.indexOf(d.key) < 0);
       }
       if (!fresh.length) fresh = pool.filter(d => d.key !== this.current);
       if (!fresh.length) fresh = pool;
-      return fresh.length ? fresh[Math.floor(Math.random() * fresh.length)] : null;
+
+      /* Driving INTO a country leads with one of its own, so arriving
+         somewhere sounds like arriving. A song that simply ended mid-country
+         draws from everything compatible, so a long run does not circle the
+         one or two primaries. */
+      const own = fresh.filter(d => d.primary === env);
+      const from = (environmentChange && own.length) ? own : fresh;
+      return from[Math.floor(Math.random() * from.length)];
     }
 
     _startRadio(environmentChange) {
+      this._syncEnvironment();
       const next = this._pickRadio(!!environmentChange);
       if (!next) { this._mixTo(null, false); return; }
       this.lastRadio = next.key;
+      this.recent.push(next.key);
+      while (this.recent.length > 3) this.recent.shift();
       this._mixTo(next.key, true);
     }
 
-    /** Set the scenery family. Crossing a boundary mid-song starts a fade. */
+    /* Set the scenery family. Crossing a boundary mid-song starts a fade.
+     *
+     * A SONG THAT BELONGS TO THE COUNTRY YOU HAVE JUST ENTERED KEEPS PLAYING.
+     * This used to restart the radio on every boundary, unconditionally, and
+     * the routes cross several: a tour of Neon Horizon changed song at each
+     * one whether or not the song it was already playing was written for the
+     * country it had just arrived in. Every track lists two environments
+     * precisely so that it can carry across a boundary, and that was the one
+     * thing the table's second column was never used for.
+     *
+     * The music now only changes when it has an actual reason to, which is
+     * both fewer transitions and better ones. */
     setEnvironment(name) {
       const next = ENVIRONMENTS.has(name) ? name : 'coast';
       if (next === this.environment) return;
       this.environment = next;
-      if (this.intent === 'radio') this._startRadio(true);
+      if (this.intent !== 'radio') return;
+      const cur = this._radioDef(this.current);
+      if (cur && cur.environments.indexOf(next) >= 0) return;
+      this._startRadio(true);
     }
 
     /**
