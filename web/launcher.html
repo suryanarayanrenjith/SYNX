@@ -14,9 +14,11 @@
      pack at load, which is the right trade for the game and the wrong one for
      a launcher that has to be on screen instantly. The two faces are 35 KB
      between them, so they sit in web/fonts/ and are declared in launcher.css.
-     Nothing here touches the network: a desktop game whose settings screen
+     Nothing here NEEDS the network: a desktop game whose settings screen
      needs Google Fonts is a settings screen that does not open on a machine
-     with no connection. -->
+     with no connection. The one thing that uses it - the network row and the
+     update notice - starts after the screen is up and says nothing when
+     there is nothing to say. -->
 <link rel="stylesheet" href="css/launcher.css">
 <link rel="icon" href="favicon.png">
 </head>
@@ -62,8 +64,26 @@
     <div class="build">
       <span>BUILD</span><b id="version">-</b>
       <span>GRAPHICS</span><b id="graphics">-</b>
+      <!-- Whether the internet can be reached, proven rather than assumed -
+           see js/connectivity.js. Multiplayer is the one mode that needs it. -->
+      <span>NETWORK</span><b id="network" data-state="unknown">CHECKING</b>
     </div>
   </header>
+
+  <!-- THE UPDATE NOTICE. Hidden unless this build is behind the newest release
+       (js/updater.js), and never shown at all without a connection to find
+       that out with. It floats in the top corner rather than taking a band of
+       the screen: a player who does not care can ignore it without anything
+       having moved under the cursor. GET IT opens the SYNX site's download
+       section in a window of its own - see open_site in src-tauri. -->
+  <aside id="update" class="synx-cut" hidden role="status" aria-live="polite">
+    <div class="up-text">
+      <b>UPDATE AVAILABLE</b>
+      <span><i id="updateFrom">-</i><em aria-hidden="true">▸</em><i id="updateTo">-</i></span>
+    </div>
+    <button type="button" id="updateGet" class="ui-btn synx-cut">GET IT</button>
+    <button type="button" id="updateClose" class="up-x" aria-label="Dismiss the update notice">×</button>
+  </aside>
 
   <nav id="tabs" role="tablist" aria-label="Launcher sections"></nav>
 
@@ -118,6 +138,10 @@
 <!-- The rows themselves. Shared with the in-game options screen so the two
      cannot disagree about what a setting is called or what it defaults to. -->
 <script src="js/settings.js"></script>
+<!-- The network, and whether this build is the newest. Both are started by
+     launcher.js only after the screen is up: nothing here may delay it. -->
+<script src="js/connectivity.js"></script>
+<script src="js/updater.js"></script>
 <script src="js/launcher.js"></script>
 </body>
 </html>

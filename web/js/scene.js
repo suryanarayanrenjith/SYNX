@@ -391,6 +391,12 @@
   uniform samplerCube uEnv;    // the sky cubemap
   uniform float uEnvLevels;
   uniform float uHasEnv;
+  /* How overcast the sky is, 0..1, and the colour of the cloud deck. The
+     sky pass draws the deck; this is what every reflection of the sky and
+     the aerial haze see instead, so a wet road under a cloud deck reflects
+     the cloud deck and not the clear night that was there before it. */
+  uniform float uOvercast;
+  uniform vec3 uCloudCol;
   /* --- the local reflection probe ---------------------------------------
      A small cubemap captured live around the car, so what the road reflects
      is the neon standing beside it rather than only the sky. See
@@ -420,6 +426,55 @@
   /* PROCEDURAL WINDOWS: cell width, cell height (world units), the share of
      windows that are lit, and 1 to switch it on. See towerWindows. */
   uniform vec4 uWindows;
+
+  /* --- rain on the road ----------------------------------------------------
+     See js/weather.js, which owns all of these. uRoad marks the carriageway -
+     the one surface water stands on - and everything else is the sky's: how
+     hard it is raining, how much water is standing, how wet the tarmac is,
+     the ripple clock, Lagarde's ripple sheet and the map of where the road
+     is low. All zero when it is dry, and the block that reads them is then
+     one compare. */
+  uniform float uRoad;
+  uniform float uRain;
+  uniform float uPuddle;
+  uniform float uRainWet;
+  uniform float uRainTime;
+  uniform sampler2D uRipple;
+  uniform sampler2D uPuddleMap;
+
+  /* ONE LAYER OF RIPPLES, as Remember Me drew them (Lagarde, "Water drop 2b",
+     2013). One fetch gives a circle's direction, how far across it this texel
+     is and when that circle's drop lands; a ring then runs out from the
+     centre and fades, once per cycle. The result is a slope in the plane. */
+  vec2 rippleLayer(vec2 uv, float t, float w, float lod) {
+    vec4 r = textureLod(uRipple, uv, lod);
+    vec2 d = r.gb * 2.0 - 1.0;
+    float drop = fract(r.a + t);
+    float tf = drop - 1.0 + r.r;
+    float df = clamp(0.2 + w * 0.8 - drop, 0.0, 1.0);
+    return d * (df * r.r * sin(clamp(tf * 9.0, 0.0, 3.0) * 3.14159265));
+  }
+  /* ...and four of them, each at its own scale, speed and offset, the later
+     ones joining in as the rain gets heavier: a drizzle rings a puddle here
+     and there, a downpour boils it. */
+  vec2 rainRipples(vec2 p, float rain, float t, float lod) {
+    vec4 w = clamp(rain * 4.0 - vec4(0.0, 1.0, 2.0, 3.0), 0.0, 1.0);
+    vec2 n = rippleLayer(p + vec2(0.25, 0.0), t, w.x, lod) * w.x;
+    if (w.y > 0.0) n += rippleLayer(p * 1.13 + vec2(-0.55, 0.3), t * 0.85 + 0.2, w.y, lod) * w.y;
+    if (w.z > 0.0) n += rippleLayer(p * 0.91 + vec2(0.6, 0.85), t * 0.93 + 0.45, w.z, lod) * w.z;
+    if (w.w > 0.0) n += rippleLayer(p * 1.07 + vec2(0.5, -0.75), t * 1.13 + 0.7, w.w, lod) * w.w;
+    return n;
+  }
+  /* How low this spot of road is, 0..1 - where standing water gathers first.
+     Two reads of one tiling map at unrelated scales and a rotation, so the
+     tile never repeats along a road three hundred kilometres long. The value
+     sits around 0.55 and rarely passes 0.8: see the flood line below. */
+  float puddleDepth(vec2 q, float lod) {
+    float a = textureLod(uPuddleMap, q * (1.0 / 19.0), lod).r;
+    vec2 qr = vec2(q.x * 0.8 - q.y * 0.6, q.x * 0.6 + q.y * 0.8);
+    float b = textureLod(uPuddleMap, qr * (1.0 / 47.0) + vec2(0.31, 0.77), lod).r;
+    return a * 0.62 + b * 0.38;
+  }
 
   /* --- crash damage, the paint half -------------------------------------
      The same six bowls the vertex stage pushed the panel in with, reused to
@@ -812,6 +867,19 @@
     diffOut = Edss * irradiance;
   }
 
+  /* The cloud deck, without the texture the sky pass gives it: bright where
+     it is low over the horizon and lit from underneath by everything the
+     route has switched on, darker toward the zenith. The sky pass (SKY_FRAG)
+     draws exactly this times its mottling, so the reflection and the sky
+     agree. */
+  vec3 cloudDeck(vec3 d) {
+    return uCloudCol * mix(1.7, 0.55, smoothstep(0.0, 0.55, d.y));
+  }
+  /* ...which reaches all the way down. Leave the horizon band open and the
+     far road, which reflects exactly that band at a grazing angle, stays a
+     bright cyan mirror under a black sky. */
+  float cloudCover(float y) { return smoothstep(-0.04, 0.05, y); }
+
   // analytic fallback, used only when the cubemap has not loaded
   vec3 skyTint(vec3 dir) {
     float up = dir.y * 0.5 + 0.5;
@@ -831,7 +899,9 @@
     float lod = clamp(rough, 0.0, 1.0) * uEnvLevels;
     vec3 c = texLinear(textureLod(uEnv, dir, lod).rgb);
     float sunAmt = pow(max(dot(normalize(dir), uSunDir), 0.0), 16.0);
-    return c + uSunCol * sunAmt * (1.0 - rough) * 0.12;
+    c += uSunCol * sunAmt * (1.0 - rough) * 0.12 * (1.0 - uOvercast);
+    if (uOvercast > 0.001) c = mix(c, cloudDeck(normalize(dir)), uOvercast * cloudCover(dir.y));
+    return c;
   }
 
   /* PARALLAX CORRECTION.
@@ -1267,6 +1337,70 @@
         nt.xy *= mix(1.0, 0.18, clamp(viewDist / 320.0, 0.0, 1.0));
         N = normalize(cotangentFrame(N, vWorld, nuv) * nt);
       }
+
+      /* ---------------------------------------------- RAIN ON THE ROAD --
+       *
+       * Lagarde's four states of a surface in the rain (after Nakamae et al.):
+       * dry, wet, drenched at the margin of a puddle, and under standing
+       * water. What each does to the material, in his terms:
+       *
+       *   WET          porous asphalt drinks the water and goes DARK - the
+       *                diffuse falls by more than half - and its gloss rises.
+       *   DRENCHED     the ring round a puddle, darker and glossier still.
+       *   UNDER WATER  a flat mirror of water over it: the grain drowns, the
+       *                normal goes flat, the reflectance is water's (F0 0.02)
+       *                and the roughness is almost none.
+       *
+       * The puddles fill from the lowest ground up as the storm goes on and
+       * drain after it, and the rain writes ripples on the water - and a
+       * little on the film over the rest of the road. This is the normal the
+       * reflection pass reads too, so the neon in a puddle shivers with it.
+       * Only on the carriageway, only facing the sky, never in a tunnel. */
+      float water = 0.0, soak = 0.0, margin = 0.0;
+      if (uRoad > 0.5 && uRainWet + uPuddle > 0.002) {
+        /* How much ground this pixel covers, for the reads below. Taken
+           here, where the only test so far is on uniforms and every pixel of
+           a quad is still running together: past the next one a derivative is
+           undefined, and on some drivers that is a sparkle along every
+           puddle's edge. */
+        vec2 wdx = dFdx(vWorld.xz), wdy = dFdy(vWorld.xz);
+        float foot = sqrt(max(dot(wdx, wdx), dot(wdy, wdy)));
+        vec3 gN = normalize(vNrm);
+        if (gN.y < 0.0) gN = -gN;
+        float cover = smoothstep(0.80, 0.96, gN.y)
+                    * clamp((uSkyOcc - 0.25) / 0.75, 0.0, 1.0) * (1.0 - uTunnel);
+        if (cover > 0.001) {
+          float pd = puddleDepth(vWorld.xz, log2(max(foot * 13.5, 1e-3)));
+          /* The flood line, falling as the water rises. The map sits around
+             0.55, so 0.80 is the odd low spot and 0.635 - the height of the
+             storm - puts about a fifth of the carriageway under water. A road
+             that is ALL puddle is a mirror, and a mirror of this sky is a
+             pale lilac sheet with no road in it. */
+          float line = 0.80 - uPuddle * 0.165;
+          water = smoothstep(line, line + 0.03, pd) * cover;
+          margin = smoothstep(line - 0.06, line, pd) * uPuddle * cover;
+          soak = clamp(uRainWet, 0.0, 1.0) * cover;
+          /* Porosity: the asphalt drinks the water and goes dark, the paint
+             on it does not - so the lines still read through a wet road. */
+          float lum = dot(albedo * baseCol, vec3(0.2126, 0.7152, 0.0722));
+          float porous = 1.0 - smoothstep(0.10, 0.40, lum);
+          albedo *= mix(1.0, mix(0.82, 0.50, porous), soak);
+          albedo *= mix(1.0, 0.80, margin) * mix(1.0, 0.85, water);
+          N = normalize(mix(N, gN, max(water, max(margin * 0.8, soak * 0.45))));
+          /* Ripples on the standing water. A ring is a few centimetres
+             across, so they go before a cell is five pixels wide - past
+             that a ring is noise, and noise on a mirror is sparkle. */
+          if (uRain > 0.01 && viewDist < 30.0) {
+            float cellPx = foot * (16.0 / 1.7);
+            float fine = (1.0 - smoothstep(0.10, 0.22, cellPx)) * (1.0 - smoothstep(14.0, 30.0, viewDist));
+            if (fine > 0.001) {
+              vec2 rp = rainRipples(vWorld.xz * (1.0 / 1.7), uRain, uRainTime * 1.35,
+                                    log2(max(foot * 150.6, 1e-3)));
+              N = normalize(N + vec3(rp.x, 0.0, rp.y) * max(water, margin * 0.5) * fine * 1.6);
+            }
+          }
+        }
+      }
       vec3 L = normalize(uSunDir);
       vec3 H = normalize(L + V);
       float ndl = max(dot(N, L), 0.0);
@@ -1309,6 +1443,10 @@
       float outdoor = clamp((uSkyOcc - 0.25) / 0.75, 0.0, 1.0);
       float wetHere = uWet * outdoor;
       float smoothness = clamp(uSmooth + wetHere * 0.38, 0.0, 0.975);
+      // ...and the rain's own: a film on the tarmac, a mirror in a puddle
+      smoothness = mix(smoothness, 0.86, soak * 0.45);
+      smoothness = mix(smoothness, 0.95, margin);
+      smoothness = mix(smoothness, 0.985, water);
       float coat = uClearcoat;
 
       /* --- the paint, after the crash ------------------------------------
@@ -1361,6 +1499,7 @@
       a = clamp(a + min(nvar * 2.0, 0.32), 0.0, 1.0);
       // metals have no diffuse and take their reflection colour from albedo
       vec3 f0 = mix(vec3(0.04), albedo * baseCol, uMetal);
+      f0 = mix(f0, vec3(0.02), water);   // water's own reflectance, IOR 1.33
 
       vec3 lamp = headlights(vWorld, N);
       /* ...and the lights the ROAD has of its own. Added to the same term the
@@ -1430,10 +1569,16 @@
          what the neon beside the road belongs in. The diffuse half stays on
          the sky: irradiance is a hemisphere average and a 128-pixel local
          capture adds nothing to it but noise. */
-      iblSplit(f0, rough, ndv, skyIrradiance(N) * uAmbInt, envSampleAt(R, rough, vWorld),
+      /* ...and on a road the rain has glossed, the reflection takes the same
+         widened lobe the anti-aliasing above gave the lights: a sharp mirror
+         of a sky whose light is all in one thin horizon band, seen through
+         the asphalt's grain, is a field of single bright pixels. Only where
+         the rain is, so a dry road reflects exactly as it always has. */
+      float roughEnv = mix(rough, max(rough, sqrt(a)), max(soak, margin) * (1.0 - water));
+      iblSplit(f0, roughEnv, ndv, skyIrradiance(N) * uAmbInt, envSampleAt(R, roughEnv, vWorld),
                iblDiff, iblSpec);
       vec3 env = iblSpec
-               * (0.30 + wetHere * 1.10 + uMetal * 0.85)
+               * (0.30 + wetHere * 1.10 + uMetal * 0.85 + margin * 0.20 + water * 0.45)
                * (1.0 - uTunnel * 0.75) * mix(1.0, contact, 0.8);
       // the diffuse half of the same integral, which the ambient term below
       // would otherwise be double-counting by eye
@@ -1646,11 +1791,41 @@
   uniform float uTime;
   uniform float uSkyDim;       // per-level: how much daylight is left in it
   uniform float uDayMode;      // Level 5 volcano: replace the night cubemap entirely
+  uniform float uOvercast;     // the rain's cloud, 0..1 - see js/weather.js
+  uniform vec3 uCloudCol;
 
   float hash21(vec2 p) {
     p = fract(p * vec2(233.34, 851.73));
     p += dot(p, p + 23.45);
     return fract(p.x * p.y);
+  }
+  float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
+               mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+  }
+
+  /* THE CLOUD DECK. Rain does not fall out of a clear sky: under a storm the
+     stars go, the sun goes, and the sky is a low ceiling lit from beneath by
+     the city - which is what leaves the neon as the brightest thing in the
+     frame, and the wet road with something worth reflecting. Projected onto a
+     plane overhead so it foreshortens toward the horizon the way a cloud base
+     does, two octaves of slow noise for its texture, and the same colour ramp
+     the scene shader reflects (cloudDeck there). */
+  vec3 cloudSky(vec3 d, vec3 under) {
+    float cover = smoothstep(-0.04, 0.05, d.y);
+    vec2 q = d.xz / max(d.y + 0.10, 0.06);
+    float n = vnoise(q * 1.6 + vec2(uTime * 0.012, uTime * 0.004)) * 0.65
+            + vnoise(q * 4.3 - vec2(uTime * 0.020, -uTime * 0.009)) * 0.35;
+    // the mottling fades out low down, where the deck is too far to resolve
+    float far = smoothstep(0.03, 0.30, d.y);
+    float m = mix(1.0, 0.62 + n * 0.76, far);
+    vec3 deck = uCloudCol * mix(1.7, 0.55, smoothstep(0.0, 0.55, d.y)) * m;
+    // ...and where it is thin, a little of the night behind it shows through
+    float gap = (1.0 - smoothstep(0.30, 0.55, n)) * far * 0.45;
+    deck = mix(deck, under * 0.55, gap);
+    return mix(under, deck, uOvercast * cover);
   }
 
   /* A star field on a coarse cell grid: one candidate per cell, most of them
@@ -1723,7 +1898,8 @@
     // stars sit above the haze band and fade out around the sun
     float up = smoothstep(0.02, 0.42, d.y);
     float away = 1.0 - pow(max(dot(d, normalize(uSunDir)), 0.0), 2.0);
-    c += vec3(0.72, 0.80, 1.0) * stars(d) * up * away * 0.85;
+    float clear = 1.0 - uOvercast;
+    if (clear > 0.001) c += vec3(0.72, 0.80, 1.0) * stars(d) * up * away * 0.85 * clear;
 
     // A broad, evenly falling glow rather than a hot point: three lobes,
     // widest first, so the light scatters across the sky instead of
@@ -1731,11 +1907,13 @@
     float sd = max(dot(d, normalize(uSunDir)), 0.0);
     c += uSunCol * (pow(sd, 4.0) * 0.045
                   + pow(sd, 22.0) * 0.070
-                  + pow(sd, 90.0) * 0.095);
+                  + pow(sd, 90.0) * 0.095) * (1.0 - uOvercast * 0.85);
 
     // a cool wash along the horizon band, which is where this sky's energy is
     float band = exp(-abs(d.y) * 9.0);
     c += vec3(0.02, 0.10, 0.15) * band * 0.5;
+
+    if (uOvercast > 0.001) c = cloudSky(d, c);
 
     c = mix(c, vec3(0.004, 0.006, 0.016), uTunnel * 0.94);
     outColor = vec4(c, 1.0);
@@ -7231,6 +7409,7 @@
       U.f(gl, this.skyProg.u.uTime, this.time);
       U.f(gl, this.skyProg.u.uSkyDim, this.skyDim === undefined ? 0.62 : this.skyDim);
       U.f(gl, this.skyProg.u.uDayMode, this.level5DaySky ? 1 : 0);
+      this.uploadCloud(this.skyProg.u);
       const sd = this.sunDirection(camPos || [0, 0, 0]);
       U.v3(gl, this.skyProg.u.uSunDir, sd[0], sd[1], sd[2]);
       const sc = this.sunColor || [1.00, 0.42, 0.36];
@@ -8175,7 +8354,11 @@
          everywhere the machine can afford a fetch, and the first thing to go
          where it cannot. */
       U.f(gl, this.prog.u.uDetailNrm, this.detailNrm === undefined ? 1 : this.detailNrm);
-      U.f(gl, this.prog.u.uSunInt, this.sunInt === undefined ? 1.5 : this.sunInt);
+      /* Under the rain's cloud the key light is mostly gone and the sun's
+         disc with it; see uploadCloud. */
+      const oc = this.uploadCloud(this.prog.u);
+      this.sunVeil = 1 - 0.92 * oc;
+      U.f(gl, this.prog.u.uSunInt, (this.sunInt === undefined ? 1.5 : this.sunInt) * (1 - 0.55 * oc));
       U.i(gl, this.prog.u.uDebug, this.debug || 0);
       /* Kept, because drawWorld needs it: how far scenery can be culled
          without the player seeing it go is a question about the fog, and this
@@ -8183,6 +8366,7 @@
       this.fogNow = o.fogDensity === undefined ? this.fogDensity : o.fogDensity;
       U.f(gl, this.prog.u.uFogDensity, this.fogNow);
       const ft = o.fogTint || this.fogTint;
+      this.fogTintNow = ft;
       U.v3(gl, this.prog.u.uFogTint, ft[0], ft[1], ft[2]);
 
       const h = this.head;
@@ -8251,7 +8435,47 @@
       U.f(gl, this.prog.u.uCsmSoft, this.shadowSoft);
       this.bindShadows(this.prog);
       this.bindProbe(this.prog);
+      /* THE WEATHER, on the two units nothing else in this pass uses. Bound
+         every frame, to a placeholder when it is dry: a sampler with nothing
+         behind it is a unit the driver is entitled to object to. */
+      {
+        const W = this.weatherSurface, u = this.prog.u;
+        U.f(gl, u.uRain, W ? W.rain : 0);
+        U.f(gl, u.uPuddle, W ? W.puddle : 0);
+        U.f(gl, u.uRainWet, W ? W.wet : 0);
+        U.f(gl, u.uRainTime, W ? W.t % 600 : 0);
+        gl.activeTexture(gl.TEXTURE9);
+        gl.bindTexture(gl.TEXTURE_2D, (W && W.ripple) || this.white);
+        U.i(gl, u.uRipple, 9);
+        gl.activeTexture(gl.TEXTURE10);
+        gl.bindTexture(gl.TEXTURE_2D, (W && W.puddleTex) || this.white);
+        U.i(gl, u.uPuddleMap, 10);
+      }
       gl.activeTexture(gl.TEXTURE0);
+    }
+
+    /** Is this material the carriageway - the one surface water stands on? */
+    roadOf(mat) {
+      if (!mat) return 0;
+      if (mat._road === undefined) mat._road = /RoadSunset/i.test(String(mat.name || '')) ? 1 : 0;
+      return mat._road;
+    }
+
+    /* THE RAIN'S CLOUD, for whichever program is about to draw: how overcast
+       the sky is, and the colour of the deck - the route's own fog tint at
+       about the level of its ambient, which is the city's light on the
+       underside of the cloud. Returns the overcast. */
+    uploadCloud(u) {
+      const gl = this.gl, W = this.weatherSurface;
+      const oc = W && W.overcast > 0 ? Math.min(1, W.overcast) : 0;
+      U.f(gl, u.uOvercast, oc);
+      if (oc > 0) {
+        // ...leaning violet, as the underside of a cloud over neon does
+        const ft = this.fogTintNow || this.fogTint || [1, 1, 1];
+        const k = 0.035 + 0.022 * (this.ambInt === undefined ? 1.9 : this.ambInt);
+        U.v3(gl, u.uCloudCol, ft[0] * k * 0.92, ft[1] * k * 0.80, ft[2] * k * 1.22);
+      }
+      return oc;
     }
 
     /* ONE DRAW, AND EVERYTHING THAT DOES NOT CHANGE BETWEEN TWO OF THEM.
@@ -8338,7 +8562,9 @@
         U.f(gl, this.prog.u.uSmooth, this.smoothnessOf(mat));
         U.f(gl, this.prog.u.uMetal, this.metalOf(mat));
         U.f(gl, this.prog.u.uReflect, this.reflectOf(mat));
-        U.f(gl, this.prog.u.uEmisPulse, (mat && mat.pulse) ? mat.pulse(this.time) : 1);
+        U.f(gl, this.prog.u.uRoad, this.roadOf(mat));
+        U.f(gl, this.prog.u.uEmisPulse, ((mat && mat.pulse) ? mat.pulse(this.time) : 1)
+          * (mat && mat.name === 'Sun' && this.sunVeil !== undefined ? this.sunVeil : 1));
         U.f(gl, this.prog.u.uFogScale, (mat && mat.noFog) ? 0 : 1);
         U.f(gl, this.prog.u.uFadeV, (mat && mat.fadeV) ? mat.fadeV : 0);
         U.f(gl, this.prog.u.uClearcoat, this.clearcoatOf(mat));

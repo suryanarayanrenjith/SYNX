@@ -193,6 +193,79 @@ html, body {
 }
 .build span { color: var(--ink-faint); font: 700 8px/1.5 var(--font); letter-spacing: .18em; }
 .build b { color: var(--ink-body); font: 700 9.5px/1.5 var(--font); letter-spacing: .08em; }
+/* What the connectivity monitor last proved. Faint while it is still asking,
+   so "checking" never reads as an answer. */
+#network { transition: color var(--t-base) var(--ease); }
+#network[data-state="unknown"] { color: var(--ink-faint); }
+#network[data-state="online"] { color: var(--cyan); text-shadow: 0 0 10px rgba(57, 230, 255, .45); }
+#network[data-state="offline"] { color: #ff5a78; text-shadow: 0 0 10px rgba(255, 90, 120, .4); }
+
+/* --------------------------------------------------------------- update --
+   The notice for a build that is behind the newest release. Fixed in the top
+   corner, over the sky and clear of the header's build block, so appearing
+   moves nothing on the screen. Same glass and cut as the panel, lit in the
+   PLAY button's colours: it is the one other thing here worth pressing. */
+#update {
+  position: fixed;
+  /* Slim, and high in the corner: the header's build block starts about
+     fifty pixels down, and the notice has to clear it with room to spare. */
+  top: 9px;
+  right: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px 5px 14px;
+  --cut: 10px;
+  --edge: rgba(255, 46, 136, .65);
+  box-shadow: 0 0 26px rgba(255, 46, 136, .22);
+  animation: update-in var(--t-slow) var(--ease-out) both;
+}
+#update[hidden] { display: none; }
+@keyframes update-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: none; }
+}
+.up-text { display: grid; gap: 3px; position: relative; z-index: 1; }
+.up-text b {
+  color: var(--pink);
+  font: 900 8.5px/1 var(--font);
+  letter-spacing: .24em;
+  text-shadow: 0 0 10px rgba(255, 46, 136, .55);
+}
+.up-text span { display: flex; align-items: center; gap: 7px; color: var(--ink-mute); font: 700 9.5px/1 var(--font); letter-spacing: .08em; }
+.up-text i { font-style: normal; }
+.up-text i + em + i { color: var(--ink-key); }
+.up-text em { color: var(--amber); font-style: normal; font-size: 9px; }
+#update .ui-btn {
+  position: relative;
+  z-index: 1;
+  padding: 7px 12px;
+  font-size: 8.5px;
+  --cut: 8px;
+  --edge: var(--amber);
+  background: linear-gradient(120deg, rgba(255, 46, 136, .30), rgba(139, 92, 246, .22));
+  color: var(--ink-key);
+}
+#update .ui-btn:hover, #update .ui-btn:focus-visible { background: linear-gradient(120deg, rgba(255, 46, 136, .46), rgba(139, 92, 246, .32)); }
+.up-x {
+  position: relative;
+  z-index: 1;
+  appearance: none;
+  border: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: none;
+  color: var(--ink-faint);
+  font: 700 15px/1 var(--font);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease);
+}
+.up-x:hover, .up-x:focus-visible { color: var(--ink-key); outline: none; }
+@media (prefers-reduced-motion: reduce) {
+  #update { animation: none; }
+}
 
 /* ----------------------------------------------------------------- tabs -- */
 #tabs { display: flex; gap: 6px; flex-wrap: wrap; }

@@ -175,43 +175,75 @@
 
   /* ------------------------------------------------------------- audio --
    *
-   * A CROSS-PLANE V8, and it is not made of oscillators.
+   * A SIXTIES CROSS-PLANE V8, and it is not made of oscillators.
    *
    * The first version of this was: two detuned sawtooths at the firing
    * frequency, a square an octave down, a lowpass that opened with the revs.
    * It was reported as sounding like a motorcycle, and it was one - a smooth
-   * even harmonic series rising in pitch is a small single with an open pipe,
-   * and no amount of filtering turns that into a large V8, because the
-   * problem was never the spectrum. An engine is a train of discrete,
-   * UNEVENLY SPACED pressure pulses ringing a pipe that has its own fixed
-   * resonances. None of those three things is something an oscillator does.
+   * even harmonic series rising in pitch is a small single with an open pipe.
+   * The second modelled the engine properly and then drove its output stage
+   * forty-five decibels too hot, which turned the whole thing into a clipped
+   * square wave: the CRACKLE in the report. See js/engine-worklet.js for both
+   * stories and for what the engine now is.
    *
-   * So the engine proper now lives in js/engine-worklet.js, on the audio
-   * thread, where a crank angle can be advanced one sample at a time and the
-   * firing events land exactly where the crank puts them. Read that file for
-   * what it models and why. This side is the three layers around it that are
-   * genuinely continuous and belong on the main graph:
-   *
-   *   the INDUCTION - air being pulled in, a broad filtered roar that tracks
-   *   the throttle more than the revs;
-   *   the BLOWER - a supercharger whine, a quiet sine at a high multiple of
-   *   the crank speed, which is the one part of a car that IS a pure tone;
-   *   the STARTER - a geared whine and the chug of a cold engine turning
-   *   over, which stops the moment it catches.
+   * EVERYTHING IS ON THE AUDIO THREAD NOW - the starter, the induction, the
+   * exhaust, the limiter - so the graph on this side is the worklet and one
+   * gain. It used to carry a looped two-second noise buffer (whose seam was a
+   * click every two seconds), a free-running blower sine, a starter triangle
+   * and a DynamicsCompressor that added ten decibels of make-up gain to a
+   * signal that was already clipped. None of them is needed and every one of
+   * them was something else that could go wrong on a machine that was
+   * struggling.
    *
    * AND A FALLBACK. AudioWorklet has been in every shipping browser for
    * years, but a context can still refuse to load a module - a file: origin,
    * a policy, an old embedded webview - and a cold open with no sound is a
    * worse failure than a cold open with an approximate one. The fallback is
-   * the old oscillator stack with its filter pulled down two octaves and a
-   * tremolo at the half-order standing in for the rumble: not right, but
-   * recognisably a car, and nobody should ever hear it.
+   * an oscillator stack: not right, but recognisably a car, and nobody should
+   * ever hear it.
    */
+
+  /* THE VOICE: what the audio thread is told, as one function of the moment
+     in the script and of where the needle is. One function so that the page
+     and the offline render in the test harness cannot disagree about what the
+     engine was asked to do. The object is reused; it is read at once.
+
+     THE NEEDLE READS A RACING TACH AND THE NOTE IS A MUSCLE CAR'S. The dial
+     runs to ten thousand with the limiter at 9,200 - it is an instrument in a
+     racing game - but a big-block V8 at nine thousand is a scream, not a
+     roar. So the revs the ENGINE is given ease away from the needle's above
+     fifteen hundred and arrive at four fifths of it at the stop: 9,200 on the
+     dial is about 7,400 in the pipes, which is where a hot sixties V8 lives.
+     Idle, the catch and the lope are untouched. */
+  const VOICE_MASTER = 0.9;
+  const VOICE_TAU = { rpm: 0.02, load: 0.03, gain: 0.03, cut: 0, fire: 0, crank: 0.05 };
+  const VOICE = { rpm: 0, load: 0, gain: 0, fire: 0, crank: 0, cut: 0 };
+  function voice(s, needle, outro) {
+    const k = Math.max(0, Math.min(1, (needle - 1500) / 7500));
+    const running = !!s.live;
+    VOICE.rpm = needle * (1 - 0.2 * k * k * (3 - 2 * k));
+    VOICE.load = s.load || 0;
+    // silent through the dial's self-test; on from the moment the key turns
+    VOICE.gain = (running || s.crank) ? 1 : 0;
+    VOICE.fire = running ? 1 : 0;
+    VOICE.crank = running ? 0 : Math.min(1, s.crank || 0);
+    /* ...and the limiter, which is a FUEL CUT rather than a ceiling on the
+       revs. The script bounces the needle off it; this makes that audible
+       by throwing away three firings in five while it is happening. */
+    VOICE.cut = (running && !outro && needle >= REDLINE + 700) ? 0.6 : 0;
+    return VOICE;
+  }
+
   function makeAudio() {
     const AC = global.AudioContext || global.webkitAudioContext;
     if (!AC) return null;
     let ctx;
-    try { ctx = new AC(); } catch (e) { return null; }
+    /* 'interactive' is the default everywhere; asking for it out loud stops
+       an embedded engine picking a power-saving buffer that underruns while
+       the page is still busy settling after the load. */
+    try { ctx = new AC({ latencyHint: 'interactive' }); } catch (e) {
+      try { ctx = new AC(); } catch (e2) { return null; }
+    }
 
     /* THE PLAYER'S OWN LEVEL, BEFORE ANY OF THIS IS AUDIBLE.
        The launcher's SOUND FX row is five steps from silent to full and it is
@@ -234,103 +266,25 @@
     master.gain.value = 0;
     master.connect(ctx.destination);
 
-    /* A gentle bus compressor over the lot. The exhaust is a pulse train and
-       pulse trains have a crest factor a long way above their average, so
-       without this the peaks set the level and the engine sits too quietly
-       between them - which is the difference between a recording of an engine
-       and an engine. */
-    let bus = master;
-    if (ctx.createDynamicsCompressor) {
-      const comp = ctx.createDynamicsCompressor();
-      comp.threshold.value = -24;
-      comp.knee.value = 12;
-      comp.ratio.value = 4;
-      comp.attack.value = 0.004;
-      comp.release.value = 0.12;
-      comp.connect(master);
-      bus = comp;
-    }
-
-    /* ---------------------------------------------------- the induction -- */
-    const noise = ctx.createBufferSource();
-    {
-      const len = Math.floor(ctx.sampleRate * 2);
-      const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-      const d = buf.getChannelData(0);
-      /* Brown-ish rather than white: an air intake is a low roar, and white
-         noise under an engine reads as tape hiss. */
-      let last = 0;
-      for (let i = 0; i < len; i++) {
-        const w = Math.random() * 2 - 1;
-        last = (last + 0.035 * w) / 1.035;
-        d[i] = last * 3.2;
-      }
-      noise.buffer = buf;
-      noise.loop = true;
-    }
-    const air = ctx.createBiquadFilter();
-    air.type = 'bandpass';
-    air.frequency.value = 300;
-    air.Q.value = 0.7;
-    const airGain = ctx.createGain();
-    airGain.gain.value = 0;
-    noise.connect(air);
-    air.connect(airGain);
-    airGain.connect(bus);
-    noise.start();
-
-    /* ------------------------------------------------------- the blower -- */
-    const blower = ctx.createOscillator();
-    blower.type = 'sine';
-    blower.frequency.value = 200;
-    const blowerGain = ctx.createGain();
-    blowerGain.gain.value = 0;
-    blower.connect(blowerGain);
-    blowerGain.connect(bus);
-    blower.start();
-
-    /* ------------------------------------------------------ the starter -- */
-    const crank = ctx.createOscillator();
-    crank.type = 'triangle';
-    crank.frequency.value = 30;
-    const crankGain = ctx.createGain();
-    crankGain.gain.value = 0;
-    crank.connect(crankGain);
-    crankGain.connect(bus);
-    crank.start();
-
-    /* ------------------------------------------------------ the engine --- */
     const rig = {
       ctx, master, level,
       node: null,          // the worklet, once it has loaded
       fallback: null,      // ...or the oscillator stack, if it never does
-      set(rpm, load, open, cut) {
-        const now = ctx.currentTime, k = 0.02;
+      set(v) {
+        const now = ctx.currentTime;
         if (this.node) {
           const p = this.node.parameters;
-          p.get('rpm').setTargetAtTime(rpm, now, k);
-          p.get('load').setTargetAtTime(load, now, k);
-          p.get('gain').setTargetAtTime(open * 0.9, now, 0.03);
-          p.get('cut').value = cut || 0;
+          for (const key in VOICE_TAU) {
+            const prm = p.get(key);
+            if (!prm) continue;
+            const tau = VOICE_TAU[key];
+            if (tau > 0) prm.setTargetAtTime(v[key], now, tau);
+            else prm.value = v[key];
+          }
         } else if (this.fallback) {
-          this.fallback(rpm, load, open);
+          this.fallback(v);
         }
-        /* The layers on this side. The firing frequency of an eight-cylinder
-           four-stroke is four events a revolution, and the induction and the
-           blower are both tied to it rather than to the rpm directly so that
-           everything on this screen is describing the same engine. */
-        const hz = Math.max(12, (rpm / 60) * 4);
-        air.frequency.setTargetAtTime(Math.min(1800, 140 + hz * 1.5), now, 0.04);
-        airGain.gain.setTargetAtTime(open * (0.02 + load * 0.16), now, 0.05);
-        // a blower turns two and a half times for every turn of the crank
-        blower.frequency.setTargetAtTime((rpm / 60) * 2.6 * 3, now, 0.03);
-        blowerGain.gain.setTargetAtTime(open * load * 0.020, now, 0.06);
-        master.gain.setTargetAtTime(open * level * 0.62, now, 0.04);
-      },
-      starter(on, speed) {
-        const now = ctx.currentTime;
-        crankGain.gain.setTargetAtTime(on ? 0.09 * level : 0, now, 0.05);
-        crank.frequency.setTargetAtTime(28 + speed * 120, now, 0.06);
+        master.gain.setTargetAtTime(level * VOICE_MASTER, now, 0.04);
       },
       stop() {
         try {
@@ -348,16 +302,21 @@
        one frame and cannot block on either, so the fallback is wired up NOW
        and the worklet replaces it if and when it arrives - which on any
        modern machine is well inside the first half second, during the dial
-       self-test, before there is an engine to hear. */
-    rig.fallback = makeFallback(ctx, bus);
+       self-test, before there is an engine to hear.
+
+       The query string is the module's version. A webview caches worklet
+       modules as hard as it caches anything, and a new engine behind an old
+       URL is the old engine. */
+    rig.fallback = makeFallback(ctx, master);
     global.__ignRig = 0;
     if (ctx.audioWorklet && ctx.audioWorklet.addModule) {
-      ctx.audioWorklet.addModule('js/engine-worklet.js?v=rust-1').then(() => {
+      ctx.audioWorklet.addModule('js/engine-worklet.js?v=v8-2').then(() => {
         if (!rig.ctx || rig.ctx.state === 'closed') return;
         const node = new global.AudioWorkletNode(ctx, 'synx-engine', {
           numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+          parameterData: { fire: 0, crank: 0, gain: 0 },
         });
-        node.connect(bus);
+        node.connect(master);
         // ...and the approximation stands down without a seam
         if (rig.fallback && rig.fallback.mute) rig.fallback.mute();
         rig.node = node;
@@ -370,34 +329,34 @@
 
   /* THE APPROXIMATION, for a context that will not load a worklet.
 
-     Deliberately not the thing it replaces. The old stack's two faults were a
+     Deliberately modest. The first oscillator engine's two faults were a
      filter that opened to nine kilohertz - which is what made it scream - and
      a perfectly even pulse rate, which is what made it a single. Here the
-     filter tops out at eighteen hundred, and a tremolo at half the firing
-     rate stands in for the uneven banks, which gets some of the rumble
-     without any of the machinery. Not right. Recognisably a car. */
+     filter tops out at eighteen hundred, the shaper is driven gently, and a
+     tremolo at half the firing rate stands in for the uneven banks. Not
+     right. Recognisably a car. */
   function makeFallback(ctx, out) {
     const shaper = ctx.createWaveShaper();
     {
       const n = 1024, curve = new Float32Array(n);
       for (let i = 0; i < n; i++) {
         const x = (i / (n - 1)) * 2 - 1;
-        curve[i] = Math.tanh(x * 2.6) * 0.9;
+        curve[i] = Math.tanh(x * 1.6) / Math.tanh(1.6);
       }
       shaper.curve = curve;
-      shaper.oversample = '2x';
+      shaper.oversample = '4x';
     }
     const tone = ctx.createBiquadFilter();
     tone.type = 'lowpass';
     tone.frequency.value = 300;
-    tone.Q.value = 1.4;
+    tone.Q.value = 0.9;
     const lump = ctx.createGain();          // the tremolo the banks would give
     lump.gain.value = 1;
     const bark = ctx.createBiquadFilter();
     bark.type = 'peaking';
-    bark.frequency.value = 118;
-    bark.Q.value = 1.2;
-    bark.gain.value = 9;
+    bark.frequency.value = 110;
+    bark.Q.value = 1.0;
+    bark.gain.value = 6;
     const level = ctx.createGain();
     level.gain.value = 0;
     shaper.connect(tone); tone.connect(bark); bark.connect(lump);
@@ -410,25 +369,26 @@
       o.connect(g); g.connect(shaper); o.start();
       return o;
     };
-    const a = mk('sawtooth', 0, 0.30);
-    const b = mk('sawtooth', 11, 0.24);
-    const c = mk('square', -5, 0.20);
+    const a = mk('sawtooth', 0, 0.26);
+    const b = mk('sawtooth', 11, 0.20);
+    const c = mk('triangle', -5, 0.30);
     // the rumble, such as it is: a half-order wobble under the whole thing
     const lfo = ctx.createOscillator();
     lfo.type = 'sine';
     const lfoGain = ctx.createGain();
-    lfoGain.gain.value = 0.34;
+    lfoGain.gain.value = 0.3;
     lfo.connect(lfoGain); lfoGain.connect(lump.gain); lfo.start();
 
-    const fn = (rpm, load, open) => {
+    const fn = (v) => {
       const now = ctx.currentTime, k = 0.02;
-      const hz = Math.max(12, (rpm / 60) * 4);
+      const hz = Math.max(12, (v.rpm / 60) * 4);
       a.frequency.setTargetAtTime(hz, now, k);
       b.frequency.setTargetAtTime(hz, now, k);
       c.frequency.setTargetAtTime(hz * 0.5, now, k);
       lfo.frequency.setTargetAtTime(hz * 0.5, now, k);
-      tone.frequency.setTargetAtTime(Math.min(1800, 180 + hz * 1.1 + load * 520), now, 0.03);
-      level.gain.setTargetAtTime(open * 0.55, now, 0.04);
+      tone.frequency.setTargetAtTime(Math.min(1800, 180 + hz * 1.1 + v.load * 520), now, 0.03);
+      const open = v.gain * (v.fire ? 1 : 0.3);
+      level.gain.setTargetAtTime(open * 0.45, now, 0.04);
     };
     fn.mute = () => {
       try { level.gain.setTargetAtTime(0, ctx.currentTime, 0.05); } catch (e) { /* gone */ }
@@ -457,7 +417,10 @@
     if (t < 2.35) {
       const k = (t - 1.75) / 0.6;
       const flare = Math.sin(Math.PI * Math.min(1, k * 1.4)) * 1750;
-      return { rpm: 900 + flare * (1 - k * 0.55), load: 0.45 * (1 - k), crank: 0, live: true };
+      /* ...and the first few firings are the loudest thing the engine does
+         until the limiter: a cold V8 catches on a rich charge and barks. */
+      const bark = Math.max(0, 1 - k * 1.15);
+      return { rpm: 900 + flare * (1 - k * 0.55), load: 0.95 * Math.pow(bark, 1.4), crank: 0, live: true };
     }
     // ...and from here on it is idling unless something says otherwise
     const idle = () => 900 + Math.sin(t * 9.3) * 32 + Math.sin(t * 23.7) * 14;
@@ -1434,16 +1397,9 @@
       /* THE REVS THEMSELVES, not a frequency derived from them. The engine
          keeps its own crank angle on the audio thread and works out where
          its eight cylinders are from it - see js/engine-worklet.js - so what
-         crosses the boundary is the same number the needle is showing. */
-      const live = s.live ? 1 : (s.crank ? 0.35 : 0);
-      /* ...and the limiter, which is a FUEL CUT rather than a ceiling on the
-         revs. The script already bounces the needle off it; this is what
-         makes that audible, by throwing away three firings in five while it
-         is happening. It is the sound of a car being held against its stop
-         and it is the loudest thing on this screen. */
-      const cut = (s.live && !outroAt && shownRpm >= REDLINE + 700) ? 0.6 : 0;
-      audio.set(shownRpm, s.load, live, cut);
-      audio.starter(!!s.crank, s.crank || 0);
+         crosses the boundary is what the needle is showing, voiced: see
+         voice() for the one liberty it takes. */
+      audio.set(voice(s, shownRpm, !!outroAt));
     }
 
     /* WHEN IT IS ALLOWED TO END, which is now a property of the performance

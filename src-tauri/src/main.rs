@@ -61,6 +61,7 @@ mod diag;
 mod launcher;
 mod platform;
 mod save;
+mod site;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -138,7 +139,7 @@ fn host_info(app: tauri::AppHandle) -> HostInfo {
         platform: std::env::consts::OS,
         arch: std::env::consts::ARCH,
         cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
-        version: env!("CARGO_PKG_VERSION"),
+        version: env!("SYNX_VERSION"),
         persistent: save::dir(&app).is_some(),
         vsync: startup_vsync(),
         graphics: platform::describe(startup_renderer()),
@@ -234,7 +235,7 @@ fn launcher_view(app: tauri::AppHandle, window: WebviewWindow) -> LauncherView {
         sizes,
         started_gpu: startup_renderer() == platform::Renderer::Gpu,
         graphics: platform::describe(startup_renderer()),
-        version: env!("CARGO_PKG_VERSION"),
+        version: env!("SYNX_VERSION"),
         platform: std::env::consts::OS,
     }
 }
@@ -337,23 +338,126 @@ fn diag_open() -> bool {
     if !p.exists() {
         return false;
     }
-    /* No shell plugin, and no shell. Each platform's own opener is invoked
-       directly with the path as an argument, so nothing is ever interpreted as
-       a command - the path is data, and a folder name with a space or an
-       ampersand in it cannot become anything else. */
+    open_with_system(p.as_os_str())
+}
+
+/// Hand a file or an address to whatever the desktop opens it with.
+///
+/// No shell plugin, and no shell. Each platform's own opener is invoked
+/// directly with the target as an argument, so nothing is ever interpreted as
+/// a command - the target is data, and a folder name with a space or an
+/// ampersand in it, or an address with a query string, cannot become anything
+/// else.
+fn open_with_system(target: &std::ffi::OsStr) -> bool {
     #[cfg(target_os = "windows")]
     let r = diag::quiet(std::process::Command::new("rundll32"))
         .args(["url.dll,FileProtocolHandler"])
-        .arg(&p)
+        .arg(target)
         .spawn();
     #[cfg(target_os = "macos")]
-    let r = std::process::Command::new("open").arg(&p).spawn();
+    let r = std::process::Command::new("open").arg(target).spawn();
     #[cfg(target_os = "linux")]
-    let r = std::process::Command::new("xdg-open").arg(&p).spawn();
+    let r = std::process::Command::new("xdg-open").arg(target).spawn();
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     let r: std::io::Result<std::process::Child> =
         Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no opener"));
     r.is_ok()
+}
+
+// ------------------------------------------------------------- the site ----
+
+/// Hand an address to the desktop's own browser. Web addresses only - see
+/// `site::is_web` - so the site window can never become a way to open a file
+/// or run a protocol handler.
+fn open_in_browser(u: &tauri::Url) -> bool {
+    site::is_web(u) && open_with_system(std::ffi::OsStr::new(u.as_str()))
+}
+
+/// Open the SYNX site in a window of its own, at one of its sections.
+///
+/// ASYNC ON PURPOSE. A window built from a synchronous command deadlocks on
+/// Windows - the command holds the thread the new webview needs - which is
+/// Tauri's own documented rule, and the same trap the note at the top of this
+/// file describes for the game window.
+///
+/// WHAT THE WINDOW MAY DO: show the site, and nothing else.
+///
+///   * It stays on the site. A link off it - GitHub, a download - goes to the
+///     desktop's browser instead, which handles a 50 MB download with a
+///     progress bar and a place to put it, where a game's webview would
+///     either do nothing or do it silently.
+///   * It cannot reach the game. Tauri refuses every command from a remote
+///     origin unless a capability grants it, and this app grants none - so
+///     the page in this window cannot touch the save, the settings or quit.
+///   * On Windows it is built with the main window's exact WebView2
+///     arguments: one process shares one browser environment, and a second
+///     window asking for a different one is refused outright.
+///
+/// Opening it again while it is open brings it forward at the new section.
+#[tauri::command]
+async fn open_site(app: tauri::AppHandle, section: Option<String>) -> Result<bool, String> {
+    /* Built here from what was compiled in - the page only names a section -
+       so the window can never be pointed anywhere else. */
+    let url = site::url(
+        site::section(section.as_deref()),
+        env!("SYNX_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+    .ok_or("the site's address could not be built")?;
+
+    if let Some(w) = app.get_webview_window(site::WINDOW) {
+        let _ = w.navigate(url);
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(true);
+    }
+
+    let nav = app.clone();
+    #[allow(unused_mut)]
+    let mut b = tauri::WebviewWindowBuilder::new(&app, site::WINDOW, tauri::WebviewUrl::External(url))
+        .title(format!("SYNX // {}", site::HOST))
+        .inner_size(1180.0, 800.0)
+        .min_inner_size(820.0, 560.0)
+        .resizable(true)
+        .center()
+        .focused(true)
+        .theme(Some(tauri::Theme::Dark))
+        .on_navigation(|u| {
+            if site::on_site(u) {
+                return true;
+            }
+            open_in_browser(u);
+            false
+        })
+        // target=_blank and window.open: the same decision, in the same window.
+        .on_new_window(move |u, _features| {
+            if site::on_site(&u) {
+                if let Some(w) = nav.get_webview_window(site::WINDOW) {
+                    let _ = w.navigate(u);
+                }
+            } else {
+                open_in_browser(&u);
+            }
+            tauri::webview::NewWindowResponse::Deny
+        })
+        // ...and anything that tries to download in here goes to the browser too.
+        .on_download(|_webview, event| {
+            if let tauri::webview::DownloadEvent::Requested { url, .. } = event {
+                open_in_browser(&url);
+            }
+            false
+        });
+
+    #[cfg(target_os = "windows")]
+    {
+        b = b.additional_browser_args(&platform::browser_args(startup_renderer(), startup_vsync()));
+    }
+
+    b.build().map_err(|e| format!("the site window could not be opened: {e}"))?;
+    diag::note("opened the SYNX site");
+    Ok(true)
 }
 
 #[tauri::command]
@@ -762,7 +866,7 @@ fn main() {
 
     diag::note(format!(
         "start: SYNX {} on {} {}",
-        env!("CARGO_PKG_VERSION"),
+        env!("SYNX_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH
     ));
@@ -830,6 +934,7 @@ fn main() {
             diag_previous,
             diag_clear,
             diag_open,
+            open_site,
             clip_write,
             clips_dir,
             clips_open,
@@ -889,6 +994,19 @@ fn main() {
             diag::begin_step(dir2.as_deref(), "creating the game window and its webview");
             let window = b.build()?;
             diag::end_step(dir2.as_deref(), "creating the game window and its webview");
+
+            /* ONE GAME, ONE PROCESS. The site window is a side trip (see
+               open_site), and closing the game must not leave it open on its
+               own with nothing behind it - so it goes when this one does, and
+               the process ends with the last window as it always has. */
+            let closer = handle.clone();
+            window.on_window_event(move |e| {
+                if let tauri::WindowEvent::Destroyed = e {
+                    if let Some(w) = closer.get_webview_window(site::WINDOW) {
+                        let _ = w.close();
+                    }
+                }
+            });
 
             // The game window's shape is applied after the build, because the
             // monitor is only addressable once there is a window to ask

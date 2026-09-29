@@ -73,15 +73,19 @@ jobs:
 
       - name: Work out the next version
         id: pick
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             # A tag pushed by hand says what it wants to be called.
             version="${GITHUB_REF_NAME#v}"
           else
-            # Otherwise: one past the highest that has already been published.
-            version=$(gh release list --limit 200 --json tagName --jq '.[].tagName' \
+            # Otherwise: one past the highest that has already been used.
+            #
+            # Read from the repository's tags, over git, rather than from the
+            # releases API: one request with no JSON and no page limit - this
+            # publishes on every push, so "the newest 200 releases" is a limit
+            # it would reach - and a version whose release was deleted is
+            # still never handed out twice, because its tag remains.
+            version=$(git ls-remote --tags --refs origin 'v*' \
                       | python3 tools/version.py --next)
           fi
           # An empty answer here would tag the release `v` and name it

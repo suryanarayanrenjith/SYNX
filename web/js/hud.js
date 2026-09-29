@@ -314,6 +314,40 @@
    * wrong. */
   function hRestore(c) { c.restore(); c.__f = ''; }
 
+  /* ------------------------------------------------ THE GLOW SPRITE CACHE --
+   *
+   * WHAT THE HUD SPENDS ITS FRAME ON. Nearly every word on it is a fillText
+   * with a shadow blur under it - a label is one blur, a neon title is two, a
+   * panel is a large drop shadow and a glowing stroke - and the canvas is
+   * cleared and redrawn whole sixty times a second. The words do not change:
+   * SCORE, GEAR, BOOST, the rows of the options screen, the frame of a card
+   * are the same pixels in the same place on every one of those frames.
+   * Where the 2D context is on the GPU (WebView2, WebKitGTK from 2.46) every
+   * blur is two more render passes competing with the 3D for the same weak
+   * card; where it is on the CPU it is a software Gaussian over the bounding
+   * box. Either way it is work whose answer is already known.
+   *
+   * So a label, a neon title or a finished panel that is asked for TWICE IN A
+   * ROW with exactly the same text, font, colour, glow, opacity and sub-pixel
+   * position is drawn once into a sprite of its own and blitted from then on.
+   *
+   * IT IS THE SAME PICTURE, NOT A LOOKALIKE. The sprite is drawn with the
+   * same fractional device-pixel offset the live call would have had, and is
+   * blitted one-to-one at a whole device pixel, so the glyphs rasterise onto
+   * exactly the same grid. The caller's opacity is baked INTO the sprite
+   * rather than applied to it, and source-over is associative: compositing
+   * the pre-built group gives what drawing its layers would have, to within
+   * the last bit of rounding. Anything that is moving, fading, rotated or
+   * composited any other way changes its key every frame, never reaches the
+   * second sighting, and is drawn exactly as it always was.
+   *
+   * Nothing is cached until the typefaces have loaded - a sprite built from
+   * the fallback font would outlive it - and anything unused for a couple of
+   * seconds is dropped, as is everything on a resize. */
+  const GLYPH_AREA = 8e6;       // device pixels the cache may hold in total
+  const GLYPH_IDLE = 150;       // frames a sprite may go unused before it goes
+  const GLYPH_BIG = 3e6;        // a single sprite larger than this is not kept
+
   class Hud {
     constructor(canvas, data) {
       this.canvas = canvas;
@@ -480,6 +514,8 @@
       this.canvas.style.width = w + 'px';
       this.canvas.style.height = h + 'px';
       this.w = w; this.h = h;
+      // every sprite was built for the old scale and pixel ratio
+      if (this.glyphs) this.dropGlyphs();
       /* The authored interface is 1280x720. Scaling from height alone works at
          16:9, but a portrait or narrow browser window makes the virtual width
          smaller than the menu itself: panels clip at both sides and the title,
@@ -503,16 +539,173 @@
        on `gb` at the top of this file. */
     setGlow(scale) { GLOW = scale === undefined ? 1 : Math.max(0, scale); }
 
+    // ------------------------------------------------- the sprite cache --
+    /* Once a frame, from draw(): age the cache, roll the sightings over, and
+       switch it on the first time the typefaces are known to be loaded. */
+    glyphFrame() {
+      const G = this.glyphs || (this.glyphs = {
+        on: false, frame: 0, map: new Map(), area: 0,
+        now: new Set(), prev: new Set(), probe: null,
+      });
+      G.frame++;
+      const t = G.prev; G.prev = G.now; G.now = t; t.clear();
+      if (!G.on && G.frame % 15 === 1) {
+        try {
+          const f = global.document.fonts;
+          G.on = !!(f && f.status === 'loaded'
+            && f.check('900 16px "Orbitron"') && f.check('600 16px "Orbitron"'));
+        } catch (e) { G.on = false; }
+      }
+      if (G.frame % 30 === 0) {
+        for (const [key, e] of G.map) {
+          if (G.frame - e.used > GLYPH_IDLE) { G.area -= e.cv.width * e.cv.height; G.map.delete(key); }
+        }
+      }
+    }
+
+    dropGlyphs() {
+      const G = this.glyphs;
+      if (!G) return;
+      G.map.clear(); G.area = 0; G.now.clear(); G.prev.clear();
+    }
+
+    /* Whether the context is in the one state a sprite can stand in for: the
+       HUD's own transform, plain source-over, no offset shadow inherited. */
+    glyphReady(c) {
+      const G = this.glyphs;
+      if (!G || !G.on || c.globalCompositeOperation !== 'source-over'
+          || c.shadowOffsetX || c.shadowOffsetY) return false;
+      if (c.filter !== undefined && c.filter !== 'none') return false;
+      const m = c.getTransform();
+      return m.a === this.dpr && m.d === this.dpr && m.b === 0 && m.c === 0
+        && m.e === 0 && m.f === 0;
+    }
+
+    /* Serve the thing described by `this.gp` - one reused object, so a hit
+       allocates nothing but its key - from the cache, and blit it with its
+       origin at CSS (sx, sy). On its second sighting it is built: painted into
+       a sprite whose transform puts its origin on the same sub-pixel it would
+       have had on the canvas. False means "draw it yourself". */
+    glyphBlit(key, sx, sy) {
+      const G = this.glyphs, c = this.ctx, dpr = this.dpr;
+      const dx = sx * dpr, dy = sy * dpr;
+      const ix = Math.floor(dx), iy = Math.floor(dy);
+      const fx = dx - ix, fy = dy - iy;
+      const full = key + '@' + Math.round(fx * 64) + ',' + Math.round(fy * 64);
+      let e = G.map.get(full);
+      if (!e) {
+        if (!G.prev.has(full)) { G.now.add(full); return false; }
+        const ext = this.glyphExt(this.gp);
+        const ox = Math.ceil(ext[0] * dpr) + 2, oy = Math.ceil(ext[1] * dpr) + 2;
+        const W = ox + Math.ceil(ext[2] * dpr) + 2, H = oy + Math.ceil(ext[3] * dpr) + 2;
+        if (!(W > 0 && H > 0) || W * H > GLYPH_BIG) return false;
+        if (G.area + W * H > GLYPH_AREA) this.dropGlyphs();
+        const cv = global.document.createElement('canvas');
+        cv.width = W; cv.height = H;
+        const s = cv.getContext('2d');
+        if (!s) return false;
+        s.setTransform(dpr, 0, 0, dpr, ox + fx, oy + fy);
+        this.glyphPaint(s, this.gp);
+        e = { cv, ox, oy, used: G.frame };
+        G.map.set(full, e);
+        G.area += W * H;
+      }
+      e.used = G.frame;
+      c.save();
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      c.globalAlpha = 1;
+      c.shadowBlur = 0;
+      c.drawImage(e.cv, ix - e.ox, iy - e.oy);
+      hRestore(c);
+      return true;
+    }
+
+    /* How far a cached thing's ink can reach from its origin, in CSS pixels:
+       left, up, right, down. Text is measured; a panel is its own box plus
+       its drop shadow. Only ever asked when a sprite is being built. */
+    glyphExt(p) {
+      if (p.kind === 'P') {
+        const pad = p.drop * 2 + p.glow * 2 + 4;
+        return [pad, pad, p.W + pad, p.H + pad + p.dropY];
+      }
+      const G = this.glyphs;
+      const q = G.probe || (G.probe = global.document.createElement('canvas').getContext('2d'));
+      q.font = p.font;
+      q.textAlign = p.align;
+      q.textBaseline = 'middle';
+      const m = q.measureText(p.txt);
+      const w = m.width;
+      const l = m.actualBoundingBoxLeft !== undefined ? m.actualBoundingBoxLeft
+        : (p.align === 'center' ? w / 2 : p.align === 'right' ? w : 0);
+      const r = m.actualBoundingBoxRight !== undefined ? m.actualBoundingBoxRight : w - l;
+      const u = m.actualBoundingBoxAscent !== undefined ? m.actualBoundingBoxAscent : p.px * 0.75;
+      const d = m.actualBoundingBoxDescent !== undefined ? m.actualBoundingBoxDescent : p.px * 0.75;
+      // a blur of b reaches about 1.5b device pixels; this is comfortably past it
+      const pad = Math.max(p.b1, p.b2) * 2 + p.px * 0.12 + 3;
+      return [Math.max(0, l) + pad, Math.max(0, u) + pad, Math.max(0, r) + pad, Math.max(0, d) + pad];
+    }
+
+    /* Paint a cached thing into its sprite, with its origin at (0, 0). These
+       are the SAME calls, in the same order, as the live paths below - the
+       sprite is that drawing, done once. */
+    glyphPaint(s, p) {
+      if (p.kind === 'P') {
+        s.globalAlpha = p.a;
+        this.panelBody(s, 0, 0, p.W, p.H, p.cut, p.col, p.fa);
+        return;
+      }
+      s.globalAlpha = p.a;
+      s.font = p.font;
+      s.textAlign = p.align;
+      s.textBaseline = 'middle';
+      s.shadowColor = p.color;
+      s.shadowBlur = p.b1;
+      s.fillStyle = p.color;
+      s.fillText(p.txt, 0, 0);
+      if (p.kind === 'N') {
+        s.shadowBlur = p.b2;
+        s.fillText(p.txt, 0, 0);
+        s.shadowBlur = 0;
+        s.fillStyle = '#ffffff';
+        s.globalAlpha = p.a2;
+        s.fillText(p.txt, 0, 0);
+      }
+    }
+
+    /** The one parameter block the cache reads from; see glyphBlit. */
+    get gp() {
+      return this._gp || (this._gp = {
+        kind: '', txt: '', font: '', align: '', color: '', px: 0, b1: 0, b2: 0, a: 1, a2: 1,
+        W: 0, H: 0, cut: 0, col: '', fa: 0, drop: 0, dropY: 0, glow: 0,
+      });
+    }
+
     // -------------------------------------------------------- primitives --
     label(txt, x, y, size, color, align, weight, alpha) {
       const c = this.ctx;
+      const font = (weight || 700) + ' ' + this.vs(size) + 'px "Orbitron", "Segoe UI", system-ui, sans-serif';
+      const blur = gb(this.vs(size) * 0.5);
+      if (this.glyphReady(c)) {
+        const p = this.gp;
+        p.kind = 'L';
+        p.txt = String(txt);
+        p.font = font;
+        p.align = align || 'left';
+        p.color = color;
+        p.px = this.vs(size);
+        p.b1 = blur; p.b2 = 0;
+        // an opacity the caller set, or the one it inherited: baked in either way
+        p.a = alpha !== undefined ? alpha : c.globalAlpha;
+        const key = 'L|' + p.txt + '|' + font + '|' + p.align + '|' + color + '|' + blur + '|' + p.a;
+        if (this.glyphBlit(key, this.vx(x), this.vy(y))) return;
+      }
       c.save();
       if (alpha !== undefined) c.globalAlpha = alpha;
-      setFont(c, (weight || 700) + ' ' + this.vs(size) + 'px "Orbitron", "Segoe UI", system-ui, sans-serif');
+      setFont(c, font);
       c.textAlign = align || 'left';
       c.textBaseline = 'middle';
       c.shadowColor = color;
-      c.shadowBlur = gb(this.vs(size) * 0.5);
+      c.shadowBlur = blur;
       c.fillStyle = color;
       c.fillText(txt, this.vx(x), this.vy(y));
       hRestore(c);
@@ -733,6 +926,22 @@
     neon(txt, x, y, size, color, align, weight, alpha) {
       const c = this.ctx;
       const px = this.vs(size);
+      if (this.glyphReady(c)) {
+        const p = this.gp;
+        p.kind = 'N';
+        p.txt = String(txt);
+        p.font = (weight || 800) + ' ' + px + 'px "Orbitron", system-ui, sans-serif';
+        p.align = align || 'center';
+        p.color = color;
+        p.px = px;
+        p.b1 = gb(px * 0.85); p.b2 = gb(px * 0.35);
+        p.a = alpha !== undefined ? alpha : c.globalAlpha;
+        // the white core's opacity is absolute here, exactly as below
+        p.a2 = (alpha === undefined ? 1 : alpha) * 0.55;
+        const key = 'N|' + p.txt + '|' + p.font + '|' + p.align + '|' + color + '|'
+          + p.b1 + '|' + p.b2 + '|' + p.a + '|' + p.a2;
+        if (this.glyphBlit(key, this.vx(x), this.vy(y))) return;
+      }
       c.save();
       if (alpha !== undefined) c.globalAlpha = alpha;
       setFont(c, (weight || 800) + ' ' + px + 'px "Orbitron", system-ui, sans-serif');
@@ -831,6 +1040,29 @@
       const W = this.vs(w), H = this.vs(h);
       const cut = Math.min(W, H) * 0.09;
       const col = color || CYAN;
+      const a = fillA === undefined ? 0.78 : fillA;
+      /* A card that has ARRIVED is the same picture every frame - the options
+         panel, the pause card, the BEST readout - and it is the most expensive
+         single thing the interface draws: a wide drop shadow under its whole
+         area and a glowing stroke round it. See the glow sprite cache. Its
+         opacity is set, not inherited, so it goes into the key as `k`. */
+      if (this.glyphReady(c)) {
+        const p = this.gp;
+        p.kind = 'P';
+        p.W = W; p.H = H; p.cut = cut; p.col = col; p.fa = a; p.a = k;
+        p.drop = gb(this.vs(26)); p.dropY = this.vs(8); p.glow = gb(this.vs(12));
+        const key = 'P|' + W + '|' + H + '|' + col + '|' + a + '|' + k + '|' + p.drop + '|' + p.glow;
+        if (this.glyphBlit(key, X, Y)) return;
+      }
+      c.save();
+      c.globalAlpha = k;
+      this.panelBody(c, X, Y, W, H, cut, col, a);
+      hRestore(c);
+    }
+
+    /* The panel itself, into any context, with its top-left at (X, Y). The
+       caller owns the save, the opacity and the restore. */
+    panelBody(c, X, Y, W, H, cut, col, a) {
       const path = () => {
         c.beginPath();
         c.moveTo(X + cut, Y);
@@ -841,10 +1073,7 @@
         c.lineTo(X, Y + cut);
         c.closePath();
       };
-      c.save();
-      c.globalAlpha = k;
 
-      const a = fillA === undefined ? 0.78 : fillA;
       /* The drop, first and underneath - AND IN PROPORTION.
        *
        * The shadow is drawn by filling the panel's own shape and letting the
@@ -897,7 +1126,6 @@
       c.shadowBlur = gb(this.vs(12));
       path();
       c.stroke();
-      hRestore(c);
     }
 
     /** A hex or rgb(a) colour at a given alpha. */
@@ -2305,6 +2533,7 @@
       const c = this.ctx;
       c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
       c.clearRect(0, 0, this.w, this.h);
+      this.glyphFrame();
 
       /* HOW LONG THIS SCREEN HAS BEEN UP.
        *
@@ -2865,14 +3094,22 @@
         const c = this.ctx;
         c.save();
         c.globalAlpha = quiet;
-        const bw = RIVAL_W, bx = RX, by = 226;
+        /* From the seat the BODY readout hangs directly under this group (see
+           BODY INTEGRITY below), in the one band between here and the toast
+           stack, and its label was printed into the rail's marker. So there
+           the rail tucks up under the number, into the space that was
+           already between them, and the marker is a little shorter: a clear
+           gap between the two readouts instead of one running into the
+           other. Crossfaded with the rest of the seat's layer. */
+        const tuck = pk * 8;
+        const bw = RIVAL_W, bx = RX, by = 226 + tuck;
         c.fillStyle = INK.faint;
         c.fillRect(this.vx(bx), this.vy(by), this.vs(bw), this.vs(3));
         const f = Math.max(-1, Math.min(1, (g.rivalGap || 0) / 200));
         const mid = bx + bw * 0.5;
         c.fillStyle = col; c.shadowColor = col; c.shadowBlur = gb(this.vs(7));
         c.fillRect(this.vx(mid + f * bw * 0.5) - this.vs(2), this.vy(by + 4),
-          this.vs(4), this.vs(11));
+          this.vs(4), this.vs(11 - tuck * 0.25));
         hRestore(c);
       }
 
@@ -2986,19 +3223,21 @@
         /* From the seat the left flank is the door and the dash, so there it
            hangs under the rival readout instead - the same bar, crossfaded
            between the two places with the rest of the seat's layer. */
-        // (the seat's spot clears the toast stack's top slot, 167..197)
-        const spots = [[-444, -216, ck], [RIVAL_X + 100, 201, pk]];
+        // (the seat's spot clears the toast stack's top slot, 167..197; its
+        // label sits a touch closer to its bar, which with the rival rail's
+        // tuck above leaves the two readouts a clear gap)
+        const spots = [[-444, -216, ck, 16], [RIVAL_X + 100, 201, pk, 14]];
         const col = d > 0.66 ? PINK : (d > 0.33 ? AMBER : CYAN);
         /* What it is costing, in the only currency this game has. Below about
            a tenth it rounds to nothing and saying "-0%" is worse than saying
            nothing at all. */
         const loss = Math.round((1 - 1 / Math.sqrt(1 + 0.42 * d)) * 100);
-        for (const [bx, by, k] of spots) {
+        for (const [bx, by, k, up] of spots) {
           if (k <= 0.001) continue;
-          this.label('BODY', bx - 100, by + 16, 11, INK.mute, 'left', 700, 0.85 * k);
+          this.label('BODY', bx - 100, by + up, 11, INK.mute, 'left', 700, 0.85 * k);
           this.meterBar(bx, by, 200, 1 - d, col, 0.9 * k);
           if (loss >= 1) {
-            this.label('-' + loss + '% TOP END', bx + 100, by + 16, 10, col, 'right', 800,
+            this.label('-' + loss + '% TOP END', bx + 100, by + up, 10, col, 'right', 800,
               k * (d > 0.66 ? 0.55 + 0.45 * Math.sin(g.time * 5) : 0.8));
           }
         }
@@ -3326,7 +3565,6 @@
     drawPadDiagram(g, cx, cy, scale) {
       const c = this.ctx;
       const pad = g.pad;
-      const info = pad ? pad.describe() : { connected: false };
       const B = global.NR.PAD_BUTTONS || {};
       const live = !!(pad && pad.active);
 
@@ -3334,247 +3572,370 @@
       const S = (n) => this.vs(n * scale);
       const X = (x) => this.vx(cx + x * scale);
       /* LOCAL +Y POINTS DOWN, and the HUD's points up.
-         The geometry above is written the way a drawing is - triggers at the
-         top with a negative y - so the flip happens here, once, rather than
-         every literal in the path being negated and one of them being missed. */
+         The geometry is written the way a drawing is - triggers at the top
+         with a negative y - so the flip happens here, once, rather than every
+         literal in the path being negated and one of them being missed. */
       const Y = (y) => this.vy(cy - y * scale);
 
-      /* Everything is dimmed when there is nothing attached. The layout is
-         still drawn - it is the reference for a pad the player is about to
-         plug in - but it must not look like it is reporting state. */
-      /* Dimmed when nothing is attached, but only to a half - this is still
+      /* Dimmed when nothing is attached, but only by a third - this is still
          the reference for a pad about to be plugged in, and at a third it was
          a smudge rather than a diagram. */
-      const alpha = live ? 1 : 0.55;
-      const bodyCol = live ? 'rgba(57,230,255,' : 'rgba(150,180,222,';
+      const alpha = live ? 1 : 0.62;
+      const rim = live ? 'rgba(57,230,255,' : 'rgba(150,180,222,';
       const on = AMBER;
+      const held = (i) => !!(pad && i !== undefined && pad.held(i));
+      const font = (px) => '900 ' + S(px) + 'px "Orbitron", system-ui, sans-serif';
+      const text = (str, x, y, px, col) => {
+        c.fillStyle = col;
+        setFont(c, font(px));
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillText(str, X(x), Y(y) + S(0.4));
+      };
 
       c.save();
       c.globalAlpha = alpha;
+      c.lineJoin = 'round';
+      c.lineCap = 'round';
 
-      /* TRIGGERS AND BUMPERS, BEHIND THE SHOULDERS - and drawn FIRST, so the
-       * body is painted over their lower edge.
+      /* ============================================== THE SHELL, AS ONE PATH
        *
-       * A controller seen from the front shows its bumpers along the top of
-       * the shell and its triggers above and behind those, both disappearing
-       * behind the shoulder. The diagram used to draw them afterwards, on top,
-       * with each bumper's lower edge half a unit inside the silhouette - so
-       * the shell's outline ran straight through LB and RB, and each trigger
-       * sat on its bumper's frame. From the page that read as four pills
-       * stacked on a line rather than as a pad.
+       * A modern pad seen from the front: a top edge that rises into two
+       * shoulders, flanks that fall away into grips hanging down and out, and a
+       * belly that dips between the hands. Written as the RIGHT half, from the
+       * top centre round to the bottom centre, and mirrored - so the two sides
+       * cannot disagree, and a change to the shape is a change to one list.
        *
-       * The shoulder passes through about y -40 at x 82. Each bumper is 11
-       * tall and centred on -44, so its bottom two units are behind the shell
-       * and the rest stands clear above it; each trigger sits on top of its
-       * bumper, from -63 to -49. The whole pair still ends 17 units under the
-       * explanation band above the diagram (see the layout note on the page),
-       * which is what an earlier version collided with. */
-      const trig = (x, y, v, lbl) => {
-        const w = 28, h = 14;
-        // its own dark face first, so the fill has something to light
+       * `k` and `oy` inset it: the faceplate line inside the rim is the same
+       * outline drawn smaller, which is what makes the body read as a moulding
+       * with an edge rather than as a flat cut-out. */
+      const HALF = [
+        // [c1x, c1y, c2x, c2y, x, y] from the previous point
+        [26, -38, 52, -42, 78, -47],        // top edge, rising to the shoulder
+        [100, -51, 121, -45, 128, -26],     // the shoulder rolls over
+        [134, -8, 137, 18, 134, 40],        // outer flank
+        [131, 62, 119, 80, 101, 81],        // the end of the grip
+        [85, 82, 74, 72, 66, 60],           // inside of the grip
+        [58, 50, 46, 44, 30, 44],           // into the belly
+        [18, 44, 8, 46, 0, 46],             // bottom centre
+      ];
+      const shell = (k, oy) => {
+        const px = (x) => X(x * k), py = (y) => Y(y * k + oy);
         c.beginPath();
-        const x0 = X(x - w / 2), y0 = Y(y - h / 2);
-        if (c.roundRect) c.roundRect(x0, y0, S(w), S(h), [S(6), S(6), S(2), S(2)]);
-        else c.rect(x0, y0, S(w), S(h));
-        c.fillStyle = 'rgba(10,4,26,0.95)';
+        c.moveTo(px(0), py(-38));
+        for (const s of HALF) c.bezierCurveTo(px(s[0]), py(s[1]), px(s[2]), py(s[3]), px(s[4]), py(s[5]));
+        // ...and back up the left side, the same curves mirrored and reversed
+        for (let i = HALF.length - 1; i >= 0; i--) {
+          const s = HALF[i];
+          const prev = i > 0 ? HALF[i - 1] : [0, 0, 0, 0, 0, -38];
+          c.bezierCurveTo(px(-s[2]), py(s[3]), px(-s[0]), py(s[1]), px(-prev[4]), py(prev[5]));
+        }
+        c.closePath();
+      };
+
+      /* =================================== TRIGGERS AND BUMPERS, CLEAR OF IT
+       *
+       * They used to be four pills stacked flat on the shoulder line: each
+       * trigger sat flush on its bumper and the shell's outline ran straight
+       * through both bumpers, so LT/LB and RT/RB read as one overlapping
+       * lump. Now each is its own part with air around it:
+       *
+       *   the BUMPER is a band that follows the curve of the shoulder, two
+       *   units off the shell along its whole length;
+       *   the TRIGGER stands above and behind it, two units clear of the
+       *   bumper, and fills from the bottom as it is squeezed.
+       *
+       * Drawn first, so the shell's glow falls over their feet. */
+      const trigger = (sx, v, lbl) => {
+        const w = 32, h = 17, x = 88 * sx, top = -80;
+        const x0 = X(x - w / 2), y0 = Y(top);
+        const ww = S(w), hh = S(h);
+        c.beginPath();
+        if (c.roundRect) c.roundRect(x0, y0, ww, hh, [S(8), S(8), S(2.5), S(2.5)]);
+        else c.rect(x0, y0, ww, hh);
+        const face = c.createLinearGradient(0, y0, 0, y0 + hh);
+        face.addColorStop(0, 'rgba(34,16,72,0.97)');
+        face.addColorStop(1, 'rgba(12,5,30,0.97)');
+        c.fillStyle = face;
         c.fill();
-        c.strokeStyle = bodyCol + '0.5)';
-        c.lineWidth = Math.max(1, S(1.1));
-        c.stroke();
         if (v > 0.02) {
           c.save();
           c.clip();
-          c.fillStyle = 'rgba(255,180,0,0.80)';
+          const f = Math.min(1, v);
+          c.fillStyle = 'rgba(255,180,0,0.82)';
           c.shadowColor = on;
           c.shadowBlur = gb(S(10));
-          c.fillRect(x0, y0, S(w * Math.min(1, v)), S(h));
+          c.fillRect(x0, y0 + hh * (1 - f), ww, hh * f);
           hRestore(c);
         }
-        c.fillStyle = v > 0.5 ? '#1a0d00' : bodyCol + '0.9)';
-        setFont(c, '900 ' + S(7.5) + 'px "Orbitron", system-ui, sans-serif');
-        c.textAlign = 'center';
-        c.textBaseline = 'middle';
-        c.fillText(lbl, X(x), Y(y - 1));
-      };
-      const bumper = (x, y, lit, lbl) => {
-        const w = 40, h = 11;
-        const x0 = X(x - w / 2), y0 = Y(y - h / 2);
-        c.beginPath();
-        if (c.roundRect) c.roundRect(x0, y0, S(w), S(h), S(5));
-        else c.rect(x0, y0, S(w), S(h));
-        c.fillStyle = lit ? 'rgba(255,180,0,0.85)' : 'rgba(18,8,42,0.96)';
-        c.fill();
-        c.strokeStyle = lit ? on : bodyCol + '0.55)';
+        c.strokeStyle = v > 0.02 ? on : rim + '0.62)';
         c.lineWidth = Math.max(1, S(1.1));
+        c.stroke();
+        // the ribbing across the face, which is what a trigger is to a thumb
+        c.strokeStyle = 'rgba(200,215,255,0.10)';
+        c.lineWidth = Math.max(1, S(0.7));
+        c.beginPath();
+        for (let r = 0; r < 2; r++) {
+          const ry = top + 4 + r * 2.4;
+          c.moveTo(X(x - w * 0.28), Y(ry));
+          c.lineTo(X(x + w * 0.28), Y(ry));
+        }
+        c.stroke();
+        text(lbl, x, top + h * 0.6, 7, v > 0.5 ? '#1a0d00' : rim + '0.95)');
+      };
+      /* The bumper's centre line, riding seven units off the shoulder. A band
+         is a stroked curve: one wide stroke in the rim colour, one a little
+         narrower in the face colour, and the ends come out round for free. */
+      const bumper = (sx, lit, lbl) => {
+        c.beginPath();
+        c.moveTo(X(60 * sx), Y(-51.5));
+        c.bezierCurveTo(X(82 * sx), Y(-56.5), X(107 * sx), Y(-58.5), X(118.5 * sx), Y(-47.5));
+        c.strokeStyle = lit ? on : rim + '0.62)';
+        c.lineWidth = S(10.4);
         if (lit) { c.shadowColor = on; c.shadowBlur = gb(S(10)); }
         c.stroke();
         c.shadowBlur = 0;
-        // the name in the part that stands clear of the shell
-        c.fillStyle = lit ? '#1a0d00' : bodyCol + '0.9)';
-        setFont(c, '900 ' + S(6.5) + 'px "Orbitron", system-ui, sans-serif');
-        c.textAlign = 'center';
-        c.textBaseline = 'middle';
-        c.fillText(lbl, X(x), Y(y - 1.5));
+        c.strokeStyle = lit ? 'rgba(255,190,40,0.95)' : 'rgba(22,10,50,0.98)';
+        c.lineWidth = S(8.2);
+        c.stroke();
+        // a highlight along the top of the band, where the light catches it
+        c.beginPath();
+        c.moveTo(X(66 * sx), Y(-55.2));
+        c.bezierCurveTo(X(84 * sx), Y(-59.4), X(104 * sx), Y(-60.4), X(114 * sx), Y(-54));
+        c.strokeStyle = lit ? 'rgba(255,240,200,0.55)' : 'rgba(210,225,255,0.16)';
+        c.lineWidth = Math.max(1, S(0.9));
+        c.stroke();
+        text(lbl, 93 * sx, -55.2, 6.2, lit ? '#1a0d00' : rim + '0.95)');
       };
-      {
-        const heldB = (i) => !!(pad && pad.held(i));
-        trig(-82, -56, pad ? pad.value(B.LT) : 0, 'LT');
-        trig(82, -56, pad ? pad.value(B.RT) : 0, 'RT');
-        bumper(-82, -44, heldB(B.LB), 'LB');
-        bumper(82, -44, heldB(B.RB), 'RB');
-      }
+      trigger(-1, pad ? pad.value(B.LT) : 0, 'LT');
+      trigger(1, pad ? pad.value(B.RT) : 0, 'RT');
+      bumper(-1, held(B.LB), 'LB');
+      bumper(1, held(B.RB), 'RB');
 
       // ------------------------------------------------------------ body --
-      /* Two grips and a waist, as one closed path. Drawn as a silhouette
-         rather than an outline of parts so the highlights sit INSIDE
-         something, which is most of what makes a line drawing read as an
-         object. */
-      /* THE SILHOUETTE.
-         Wide across the shoulders, a waist that dips between the hands, and
-         two grips that hang DOWN and outward. The first version of this had
-         no grips at all - the outline closed straight across the bottom - and
-         the result read as a bean rather than as a controller. The grips are
-         most of what makes the shape recognisable at a glance, which is the
-         entire job of a diagram. */
-      c.beginPath();
-      c.moveTo(X(-118), Y(-26));
-      c.bezierCurveTo(X(-130), Y(-8), X(-126), Y(18), X(-110), Y(38));   // left flank
-      c.bezierCurveTo(X(-98), Y(62), X(-72), Y(66), X(-60), Y(44));      // left grip
-      c.bezierCurveTo(X(-46), Y(26), X(-26), Y(30), X(0), Y(30));        // waist, left half
-      c.bezierCurveTo(X(26), Y(30), X(46), Y(26), X(60), Y(44));         // waist, right half
-      c.bezierCurveTo(X(72), Y(66), X(98), Y(62), X(110), Y(38));        // right grip
-      c.bezierCurveTo(X(126), Y(18), X(130), Y(-8), X(118), Y(-26));     // right flank
-      c.bezierCurveTo(X(96), Y(-44), X(40), Y(-48), X(0), Y(-48));       // shoulder, right
-      c.bezierCurveTo(X(-40), Y(-48), X(-96), Y(-44), X(-118), Y(-26));  // shoulder, left
-      c.closePath();
-      const grad = c.createLinearGradient(0, Y(66), 0, Y(-48));
-      grad.addColorStop(0, 'rgba(12,4,32,0.92)');
-      grad.addColorStop(1, 'rgba(26,10,58,0.92)');
+      // a shadow under it, offset rather than blurred - depth for free
+      shell(1, 3.5);
+      c.fillStyle = 'rgba(0,0,0,0.34)';
+      c.fill();
+
+      shell(1, 0);
+      const grad = c.createLinearGradient(0, Y(-48), 0, Y(82));
+      grad.addColorStop(0, 'rgba(40,20,86,0.96)');
+      grad.addColorStop(0.45, 'rgba(22,10,54,0.96)');
+      grad.addColorStop(1, 'rgba(10,4,28,0.96)');
       c.fillStyle = grad;
       c.fill();
-      c.strokeStyle = bodyCol + '0.75)';
+      c.strokeStyle = rim + '0.80)';
       c.lineWidth = Math.max(1, S(1.6));
-      c.shadowColor = live ? CYAN : 'transparent';
-      c.shadowBlur = gb(S(10));
+      if (live) { c.shadowColor = CYAN; c.shadowBlur = gb(S(10)); }
       c.stroke();
       c.shadowBlur = 0;
 
-      // ---------------------------------------------------- the elements --
-      /* One helper per shape, so a lit control and an unlit one differ by a
-         value rather than by which branch drew them. */
-      const ring = (x, y, r, lit, label) => {
-        c.beginPath();
-        c.arc(X(x), Y(y), S(r), 0, Math.PI * 2);
-        c.fillStyle = lit ? 'rgba(255,180,0,0.85)' : 'rgba(120,150,210,0.16)';
-        c.fill();
-        c.strokeStyle = lit ? on : bodyCol + '0.55)';
-        c.lineWidth = Math.max(1, S(1.2));
-        if (lit) { c.shadowColor = on; c.shadowBlur = gb(S(12)); }
-        c.stroke();
-        c.shadowBlur = 0;
-        if (label) {
-          c.fillStyle = lit ? '#1a0d00' : bodyCol + '0.85)';
-          setFont(c, '900 ' + S(r * 1.15) + 'px "Orbitron", system-ui, sans-serif');
-          c.textAlign = 'center';
-          c.textBaseline = 'middle';
-          c.fillText(label, X(x), Y(y) + S(0.5));
+      // the faceplate: the same outline, inset, as a moulding line
+      shell(0.9, 2.5);
+      c.strokeStyle = rim + '0.20)';
+      c.lineWidth = Math.max(1, S(0.9));
+      c.stroke();
+
+      /* A sheen across the top of the shell - one soft ellipse clipped to it,
+         the single cheapest thing that turns a filled outline into an object
+         with a surface. */
+      c.save();
+      shell(1, 0);
+      c.clip();
+      const sheen = c.createRadialGradient(X(0), Y(-44), 0, X(0), Y(-44), S(118));
+      sheen.addColorStop(0, 'rgba(190,170,255,0.20)');
+      sheen.addColorStop(1, 'rgba(190,170,255,0)');
+      c.fillStyle = sheen;
+      c.fillRect(X(-140), Y(-52), S(280), S(136));
+      hRestore(c);
+
+      // the grips' texture: a few short arcs where the palms go
+      c.strokeStyle = rim + '0.14)';
+      c.lineWidth = Math.max(1, S(0.8));
+      c.beginPath();
+      for (const sx of [-1, 1]) {
+        for (let i = 0; i < 4; i++) {
+          const gx = (108 + i * 4.2) * sx, gy = 44 + i * 5.5;
+          c.moveTo(X(gx - 7 * sx), Y(gy + 3));
+          c.quadraticCurveTo(X(gx), Y(gy - 1.5), X(gx + 5 * sx), Y(gy - 7));
         }
-      };
+      }
+      c.stroke();
 
-      const box = (x, y, w, h, lit, r) => {
-        const rr = S(r === undefined ? 3 : r);
-        const x0 = X(x - w / 2), y0 = Y(y - h / 2);
-        const ww = S(w), hh = S(h);
-        c.beginPath();
-        if (c.roundRect) c.roundRect(x0, y0, ww, hh, rr);
-        else c.rect(x0, y0, ww, hh);
-        c.fillStyle = lit ? 'rgba(255,180,0,0.80)' : 'rgba(120,150,210,0.14)';
-        c.fill();
-        c.strokeStyle = lit ? on : bodyCol + '0.5)';
-        c.lineWidth = Math.max(1, S(1.1));
-        if (lit) { c.shadowColor = on; c.shadowBlur = gb(S(10)); }
-        c.stroke();
-        c.shadowBlur = 0;
-      };
-
-      /* A stick, with its cap where the player is actually holding it. The
-         travel is exaggerated three times so a small real movement is
-         legible - this is a readout, not a scale drawing, and a stick that
-         moves two pixels tells nobody anything. */
+      // ---------------------------------------------------- the elements --
+      /* A stick: a dark well sunk into the shell, and the cap sitting in it
+         where the player is actually holding it. The travel is exaggerated so
+         a small real movement is legible - this is a readout, not a scale
+         drawing, and a stick that moves two pixels tells nobody anything. */
       const stick = (x, y, ax, ay, pressed) => {
         c.beginPath();
-        c.arc(X(x), Y(y), S(15), 0, Math.PI * 2);
-        c.fillStyle = 'rgba(6,2,18,0.85)';
+        c.arc(X(x), Y(y), S(17), 0, Math.PI * 2);
+        c.fillStyle = 'rgba(3,1,12,0.92)';
         c.fill();
-        c.strokeStyle = bodyCol + '0.42)';
-        c.lineWidth = Math.max(1, S(1));
+        c.strokeStyle = rim + '0.46)';
+        c.lineWidth = Math.max(1, S(1.1));
         c.stroke();
-        const dx = (pad ? pad.axis(ax) : 0) * 8.5;
-        const dy = (pad ? pad.axis(ay) : 0) * 8.5;
-        const moved = Math.hypot(dx, dy) > 1.2;
         c.beginPath();
-        c.arc(X(x + dx), Y(y + dy), S(9.5), 0, Math.PI * 2);
-        c.fillStyle = pressed ? 'rgba(255,180,0,0.85)'
-          : (moved ? 'rgba(57,230,255,0.55)' : 'rgba(120,150,210,0.24)');
-        c.fill();
-        c.strokeStyle = pressed ? on : (moved ? CYAN : bodyCol + '0.6)');
-        c.lineWidth = Math.max(1, S(1.3));
-        if (pressed || moved) {
-          c.shadowColor = pressed ? on : CYAN;
-          c.shadowBlur = gb(S(12));
+        c.arc(X(x), Y(y), S(13.8), 0, Math.PI * 2);
+        c.strokeStyle = 'rgba(160,180,240,0.12)';
+        c.lineWidth = Math.max(1, S(0.8));
+        c.stroke();
+        const dx = (pad ? pad.axis(ax) : 0) * 7.5;
+        const dy = (pad ? pad.axis(ay) : 0) * 7.5;
+        const moved = Math.hypot(dx, dy) > 1.2;
+        const px = X(x + dx), py = Y(y + dy), r = S(10.6);
+        const cap = c.createRadialGradient(px - r * 0.35, py - r * 0.4, r * 0.1, px, py, r);
+        if (pressed) {
+          cap.addColorStop(0, 'rgba(255,220,120,0.98)');
+          cap.addColorStop(1, 'rgba(255,170,0,0.92)');
+        } else if (moved) {
+          cap.addColorStop(0, 'rgba(150,245,255,0.75)');
+          cap.addColorStop(1, 'rgba(40,150,200,0.55)');
+        } else {
+          cap.addColorStop(0, 'rgba(96,84,160,0.95)');
+          cap.addColorStop(1, 'rgba(30,18,70,0.95)');
         }
+        c.beginPath();
+        c.arc(px, py, r, 0, Math.PI * 2);
+        c.fillStyle = cap;
+        c.fill();
+        c.strokeStyle = pressed ? on : (moved ? CYAN : rim + '0.70)');
+        c.lineWidth = Math.max(1, S(1.3));
+        if (pressed || moved) { c.shadowColor = pressed ? on : CYAN; c.shadowBlur = gb(S(12)); }
         c.stroke();
         c.shadowBlur = 0;
+        // the dished top of the cap, the ring a thumb sits in
+        c.beginPath();
+        c.arc(px, py, S(6.6), 0, Math.PI * 2);
+        c.strokeStyle = pressed ? 'rgba(90,40,0,0.5)' : 'rgba(210,225,255,0.22)';
+        c.lineWidth = Math.max(1, S(0.9));
+        c.stroke();
       };
 
-      /* A trigger is the one control that is not a switch: it FILLS, because
-         showing it as pressed or not would throw away the only analogue
-         information on the pad. It is drawn behind the shell - see `trig` at
-         the top of this method. */
+      /* A face button in its own colour - the one piece of every pad a player
+         recognises across the room. It lights in that colour too, so the
+         diagram answers "which one did I press" before the letter is read. */
+      const face = (x, y, lit, label, col) => {
+        const r = 8.2;
+        c.beginPath();
+        c.arc(X(x), Y(y), S(r), 0, Math.PI * 2);
+        c.fillStyle = lit ? col : 'rgba(8,3,22,0.94)';
+        if (lit) { c.shadowColor = col; c.shadowBlur = gb(S(12)); }
+        c.fill();
+        c.shadowBlur = 0;
+        c.strokeStyle = col;
+        c.globalAlpha = alpha * (lit ? 1 : 0.75);
+        c.lineWidth = Math.max(1, S(1.2));
+        c.stroke();
+        c.globalAlpha = alpha;
+        text(label, x, y, 8.2, lit ? '#10061e' : col);
+      };
 
-      const held = (i) => !!(pad && pad.held(i));
+      /* The small round ones - view, menu and the guide - carry the marks a
+         pad prints on them rather than words, because that is how the pad in
+         the player's hands is labelled. */
+      const small = (x, y, r, lit) => {
+        c.beginPath();
+        c.arc(X(x), Y(y), S(r), 0, Math.PI * 2);
+        c.fillStyle = lit ? 'rgba(255,180,0,0.88)' : 'rgba(8,3,22,0.94)';
+        if (lit) { c.shadowColor = on; c.shadowBlur = gb(S(10)); }
+        c.fill();
+        c.shadowBlur = 0;
+        c.strokeStyle = lit ? on : rim + '0.60)';
+        c.lineWidth = Math.max(1, S(1.1));
+        c.stroke();
+        return lit ? '#1a0d00' : rim + '0.85)';
+      };
 
-      /* The triggers and bumpers are drawn before the body now - see the
-         note at the top of this method. */
+      stick(-64, -10, 0, 1, held(B.LS));
+      stick(32, 18, 2, 3, held(B.RS));
 
-      // sticks: left high, right low - the layout the standard mapping assumes
-      stick(-66, -12, 0, 1, held(B.LS));
-      stick(28, 14, 2, 3, held(B.RS));
-
-      // d-pad, as four separate pads so each direction lights on its own
-      const dpx = -28, dpy = 14, dw = 11, dh = 11;
-      box(dpx, dpy - 11, dw, dh, held(B.UP), 2);
-      box(dpx, dpy + 11, dw, dh, held(B.DOWN), 2);
-      box(dpx - 11, dpy, dw, dh, held(B.LEFT), 2);
-      box(dpx + 11, dpy, dw, dh, held(B.RIGHT), 2);
+      /* The d-pad as a cross, in a well of its own. Each arm lights alone, so
+         a diagonal shows as the two arms it is. */
+      {
+        const px = -32, py = 18, a = 4.6, reach = 13;
+        c.beginPath();
+        c.arc(X(px), Y(py), S(16), 0, Math.PI * 2);
+        c.fillStyle = 'rgba(3,1,12,0.92)';
+        c.fill();
+        c.strokeStyle = rim + '0.40)';
+        c.lineWidth = Math.max(1, S(1));
+        c.stroke();
+        const cross = [[-a, -reach], [a, -reach], [a, -a], [reach, -a], [reach, a], [a, a],
+          [a, reach], [-a, reach], [-a, a], [-reach, a], [-reach, -a], [-a, -a]];
+        c.beginPath();
+        cross.forEach(([u, v], i) => (i ? c.lineTo : c.moveTo).call(c, X(px + u), Y(py + v)));
+        c.closePath();
+        c.fillStyle = 'rgba(52,36,104,0.96)';
+        c.fill();
+        c.strokeStyle = rim + '0.62)';
+        c.lineWidth = Math.max(1, S(1.1));
+        c.stroke();
+        const arm = (lit, x0, y0, w, h, tri) => {
+          if (lit) {
+            c.fillStyle = 'rgba(255,180,0,0.92)';
+            c.shadowColor = on;
+            c.shadowBlur = gb(S(10));
+            c.fillRect(X(px + x0), Y(py + y0), S(w), S(h));
+            c.shadowBlur = 0;
+          }
+          // the arrow pressed into each arm
+          c.beginPath();
+          c.moveTo(X(px + tri[0]), Y(py + tri[1]));
+          c.lineTo(X(px + tri[2]), Y(py + tri[3]));
+          c.lineTo(X(px + tri[4]), Y(py + tri[5]));
+          c.closePath();
+          c.fillStyle = lit ? '#1a0d00' : 'rgba(200,215,255,0.30)';
+          c.fill();
+        };
+        // x0/y0 are the arm's top-left in LOCAL units (y down)
+        arm(held(B.UP), -a, -reach, a * 2, reach - a, [0, -reach + 2.6, -2.4, -reach + 6, 2.4, -reach + 6]);
+        arm(held(B.DOWN), -a, a, a * 2, reach - a, [0, reach - 2.6, -2.4, reach - 6, 2.4, reach - 6]);
+        arm(held(B.LEFT), -reach, -a, reach - a, a * 2, [-reach + 2.6, 0, -reach + 6, -2.4, -reach + 6, 2.4]);
+        arm(held(B.RIGHT), a, -a, reach - a, a * 2, [reach - 2.6, 0, reach - 6, -2.4, reach - 6, 2.4]);
+      }
 
       /* Face buttons, in the standard diamond. A IS AT THE BOTTOM and Y at the
          top - local +y points down, so the two were swapped when this was
          first written and the diagram was quietly telling every player that
          boost was the top button. */
-      const fx = 66, fy = -12;
-      ring(fx, fy + 15, 9.5, held(B.A), 'A');
-      ring(fx + 15, fy, 9.5, held(B.B), 'B');
-      ring(fx - 15, fy, 9.5, held(B.X), 'X');
-      ring(fx, fy - 15, 9.5, held(B.Y), 'Y');
+      const fx = 64, fy = -10, sp = 14;
+      face(fx, fy + sp, held(B.A), 'A', '#5affc0');
+      face(fx + sp, fy, held(B.B), 'B', '#ff5a7a');
+      face(fx - sp, fy, held(B.X), 'X', '#4db8ff');
+      face(fx, fy - sp, held(B.Y), 'Y', '#ffd23f');
 
-      // back and start
-      ring(-18, -14, 5.5, held(B.BACK), '');
-      ring(18, -14, 5.5, held(B.START), '');
-      c.fillStyle = bodyCol + '0.7)';
-      setFont(c, '700 ' + S(6) + 'px "Orbitron", system-ui, sans-serif');
-      c.textAlign = 'center';
-      c.fillText('BACK', X(-18), Y(-24));
-      c.fillText('START', X(18), Y(-24));
+      // BACK (view): two overlapping windows
+      {
+        const ink = small(-21, -9, 5.2, held(B.BACK));
+        c.strokeStyle = ink;
+        c.lineWidth = Math.max(1, S(0.8));
+        c.strokeRect(X(-23.6), Y(-11.2), S(3.6), S(2.8));
+        c.strokeRect(X(-21.8), Y(-9.6), S(3.6), S(2.8));
+      }
+      // START (menu): three lines
+      {
+        const ink = small(21, -9, 5.2, held(B.START));
+        c.strokeStyle = ink;
+        c.lineWidth = Math.max(1, S(0.8));
+        c.beginPath();
+        for (let i = -1; i <= 1; i++) {
+          c.moveTo(X(18.8), Y(-9 + i * 1.5));
+          c.lineTo(X(23.2), Y(-9 + i * 1.5));
+        }
+        c.stroke();
+      }
+      // the guide: a ring with the game's mark in it
+      {
+        const ink = small(0, -27, 6.6, held(B.GUIDE));
+        text('X', 0, -27, 6.6, ink);
+      }
+      // ...and what the two small ones are called, above them
+      text('BACK', -21, -18.4, 4.4, rim + '0.72)');
+      text('START', 21, -18.4, 4.4, rim + '0.72)');
 
       hRestore(c);
-
-      // ------------------------------------------------------- the status --
-      /* What the game thinks is plugged in, in the words the player needs. The
-         three states are genuinely different problems and they get genuinely
-         different sentences: nothing attached, attached but switched off, and
-         attached but not recognised - the last of which still drives, and says
-         so, because a pad with a non-standard mapping is not a broken pad. */
     }
 
     /* What the game thinks is plugged in, in the words the player needs.
@@ -3752,9 +4113,13 @@
            full width - is empty, and that is where the controller goes. It
            gets to be nearly twice the size it could have been squeezed in
            beside the rows, which matters: this drawing is the page. The status
-           line takes the gap above it, and the legend the column beside it. */
+           line takes the gap above it, and the legend the column beside it.
+           The pad runs from its trigger tops at local -80 to its grips at 81
+           and 136 either side, so at 1.58 about -207 it occupies -81 to -335
+           and -515 to -85: eleven units under the band, twenty-one above the
+           panel's edge and a hundred and thirty clear of the legend. */
         this.drawPadStatus(g, -300, 168);
-        this.drawPadDiagram(g, -300, -196, 1.72);
+        this.drawPadDiagram(g, -300, -207, 1.58);
         this.drawPadLegend(g, 46, -92, 258);
       }
 

@@ -117,6 +117,7 @@ pub fn apply_env(r: Renderer) {
         match r {
             Renderer::Gpu => {
                 std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "0");
+                prefer_discrete_gpu();
             }
             Renderer::Cpu => {
                 // force the software path all the way down
@@ -129,6 +130,46 @@ pub fn apply_env(r: Renderer) {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = r;
+    }
+}
+
+/// THE FAST GPU, ON A LAPTOP THAT HAS TWO.
+///
+/// The Windows build asks for it on the command line
+/// (`--force_high_performance_gpu`, see [`browser_args`]). Linux had no
+/// equivalent, and on a hybrid laptop - an Intel iGPU driving the panel and an
+/// NVIDIA part beside it, the MX and GTX notebooks - NVIDIA's default
+/// "on-demand" mode renders EVERYTHING on the Intel chip unless a process asks
+/// otherwise. So the game ran on the slower of the two GPUs, while the one
+/// that would have run it sat idle.
+///
+/// PRIME render offload is how a process asks: `__NV_PRIME_RENDER_OFFLOAD=1`
+/// moves its EGL (and Vulkan) rendering to the NVIDIA GPU, and
+/// `__GLX_VENDOR_LIBRARY_NAME=nvidia` does the same for GLX, which older
+/// WebKitGTK compositors on X11 still use. The picture is identical; only the
+/// chip drawing it changes.
+///
+/// ONLY WHERE IT CAN WORK, AND NEVER OVER THE PLAYER. It is applied only when
+/// NVIDIA's own kernel driver is loaded (`/proc/driver/nvidia/version`) -
+/// under nouveau, or with no NVIDIA part at all, there is nothing to offload
+/// to, and pointing GLX at a vendor library that is not there would break the
+/// context. A variable the player has already set is left exactly as it is,
+/// and `SYNX_PRIME=0` turns the whole thing off for a machine where offload is
+/// misconfigured. On a desktop with one NVIDIA card, or a laptop already in
+/// "NVIDIA only" mode, both variables are simply true already.
+#[cfg(target_os = "linux")]
+fn prefer_discrete_gpu() {
+    if std::env::var("SYNX_PRIME").map(|v| v == "0").unwrap_or(false) {
+        return;
+    }
+    if !std::path::Path::new("/proc/driver/nvidia/version").exists() {
+        return;
+    }
+    if std::env::var_os("__NV_PRIME_RENDER_OFFLOAD").is_none() {
+        std::env::set_var("__NV_PRIME_RENDER_OFFLOAD", "1");
+    }
+    if std::env::var_os("__GLX_VENDOR_LIBRARY_NAME").is_none() {
+        std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "nvidia");
     }
 }
 

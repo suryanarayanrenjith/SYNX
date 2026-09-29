@@ -34,6 +34,22 @@
    * `drive` for what that bus is actually for. */
   const ENGINE_TRIM = 0.60;
 
+  /* A TARGET, SCHEDULED ONLY WHEN IT MOVES.
+   *
+   * update() aims thirteen params every frame, and each setTargetAtTime is an
+   * event on the audio thread's timeline. In a menu, a cutscene or at a
+   * standstill nearly all of them are being asked for the value they are
+   * already heading to. setTargetAtTime is a memoryless exponential - aimed
+   * again at the same target from wherever the param has got to, it traces
+   * the same curve - so skipping the repeat changes nothing that can be
+   * heard. Anything else that writes one of these params (silenceCar) has to
+   * forget the aim, so the next frame states it again. */
+  function aim(p, v, t, tc) {
+    if (p._aim === v) return;
+    p._aim = v;
+    p.setTargetAtTime(v, t, tc);
+  }
+
   const ONESHOT = {
     select: 'Game - Select Item.ogg',
     rollover: 'subtle-tech_rollover_01.ogg',
@@ -820,12 +836,14 @@
         l.gain.gain.cancelScheduledValues(t);
         l.gain.gain.setValueAtTime(l.gain.gain.value, t);
         l.gain.gain.linearRampToValueAtTime(0, t + 0.06);
+        l.gain.gain._aim = undefined;       // see aim()
       }
       if (this.wind && this.wind.gain) {
         const g = this.wind.gain.gain;
         g.cancelScheduledValues(t);
         g.setValueAtTime(g.value, t);
         g.linearRampToValueAtTime(0, t + 0.06);
+        g._aim = undefined;
       }
     }
 
@@ -880,21 +898,21 @@
 
       const eng = this.loops.engine;
       if (eng) {
-        eng.src.playbackRate.setTargetAtTime(pitch, t, 0.05);
-        eng.gain.gain.setTargetAtTime(
+        aim(eng.src.playbackRate, pitch, t, 0.05);
+        aim(eng.gain.gain,
           active ? ENGINE_TRIM * (0.18 + load * 0.42) * (moving ? 1 : 0.35) : 0,
           t, 0.08);
       }
       const idle = this.loops.idle;
       if (idle) {
-        idle.src.playbackRate.setTargetAtTime(0.85 + rpm * 0.5, t, 0.08);
-        idle.gain.gain.setTargetAtTime(
+        aim(idle.src.playbackRate, 0.85 + rpm * 0.5, t, 0.08);
+        aim(idle.gain.gain,
           active ? ENGINE_TRIM * (moving ? 0.16 : 0.40) : 0.0, t, 0.1);
       }
       const open = this.loops.open;
       if (open) {
-        open.src.playbackRate.setTargetAtTime(pitch, t, 0.05);
-        open.gain.gain.setTargetAtTime(active ? ENGINE_TRIM * load * 0.30 : 0, t, 0.08);
+        aim(open.src.playbackRate, pitch, t, 0.05);
+        aim(open.gain.gain, active ? ENGINE_TRIM * load * 0.30 : 0, t, 0.08);
       }
       /* Tyres. A drift squeals; a barrier SCREAMS. They were the same sound at
          the same level, which is why braking felt like crashing - and why the
@@ -904,17 +922,17 @@
       const scr = this.loops.screech;
       if (scr) {
         const squeal = Math.max((car.driftAmount || 0) * 0.42, (car.scrape || 0) * 0.85);
-        scr.src.playbackRate.setTargetAtTime(
+        aim(scr.src.playbackRate,
           0.82 + (car.scrape || 0) * 0.55, t, 0.08);
-        scr.gain.gain.setTargetAtTime(active ? squeal : 0, t, 0.05);
+        aim(scr.gain.gain, active ? squeal : 0, t, 0.05);
       }
       const bl = this.loops.boostLoop;
       if (bl) {
         // gated on `active` like everything else: a cut that lands mid-boost
         // used to carry the reheat into the next scene, because `car.boosting`
         // stays true until a frame of physics clears it and a cutscene runs none
-        bl.src.playbackRate.setTargetAtTime(car.boosting ? 1.12 : 1.0, t, .05);
-        bl.gain.gain.setTargetAtTime(
+        aim(bl.src.playbackRate, car.boosting ? 1.12 : 1.0, t, .05);
+        aim(bl.gain.gain,
           active && car.boosting ? ENGINE_TRIM * 0.62 : 0, t, 0.055);
       }
       if (this.wind) {
@@ -923,9 +941,9 @@
         const high = Math.max(0, Math.min(1, (mph - 100) / 32));
         const boost = car.boosting ? 1 : 0;
         const gain = active ? q * .045 + high * .16 + boost * .13 : 0;
-        this.wind.gain.gain.setTargetAtTime(gain, t, .09);
-        this.wind.filter.frequency.setTargetAtTime(720 + q * 1200 + high * 1800 + boost * 950, t, .08);
-        this.wind.filter.Q.setTargetAtTime(.38 + high * .24 + boost * .16, t, .10);
+        aim(this.wind.gain.gain, gain, t, .09);
+        aim(this.wind.filter.frequency, 720 + q * 1200 + high * 1800 + boost * 950, t, .08);
+        aim(this.wind.filter.Q, .38 + high * .24 + boost * .16, t, .10);
       }
     }
 

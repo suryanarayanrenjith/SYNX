@@ -215,6 +215,8 @@ const ENV_OF_INTEREST: &[&str] = &[
     "GALLIUM_DRIVER",
     "MESA_LOADER_DRIVER_OVERRIDE",
     "__NV_PRIME_RENDER_OFFLOAD",
+    "__GLX_VENDOR_LIBRARY_NAME",
+    "SYNX_PRIME",
     "DRI_PRIME",
     "XDG_SESSION_TYPE",
     "WAYLAND_DISPLAY",
@@ -297,7 +299,7 @@ pub fn write_report(
     let _ = writeln!(s, "WHAT WENT WRONG");
     let _ = writeln!(s, "  {reason}");
     let _ = writeln!(s);
-    let _ = writeln!(s, "  build         SYNX {}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(s, "  build         SYNX {}", env!("SYNX_VERSION"));
     let _ = writeln!(s, "  written       unix {when}");
     let _ = writeln!(s);
     let _ = writeln!(s, "THIS MACHINE");

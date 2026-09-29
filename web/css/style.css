@@ -1110,137 +1110,6 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
   #storyExitHint { font-size: 8.5px; letter-spacing: .18em; }
 }
 
-/* ------------------------------------------------------------- weather --
-
-   A downpour that reads as depth: two sheets at different distances, the near
-   one brighter, faster and steeper, both masked off at the horizon.
-
-   WHY THIS IS THREE ELEMENTS AND NOT TWO PSEUDO-ELEMENTS.
-
-   The first version was two pseudo-elements on #storyRoot animating
-   `background-position`. That is the obvious way to make a pattern move and
-   it is the most expensive one there is: background-position is not a
-   composited property, so every frame of Chapter 3 re-rasterised two
-   full-screen elements - each carrying two repeating gradients, two mask
-   layers intersected on top of them, and a blur - on the main thread, in
-   competition with the renderer, the physics and the director. It was, by a
-   wide margin, the single most expensive thing on the screen, and none of it
-   was the game.
-
-   A TRANSFORM IS THE SAME MOVEMENT FOR NONE OF THE COST. The layer is
-   rasterised once, with its mask and its gradients baked in, and then simply
-   moved by the compositor - which is what a compositor is for. The work goes
-   from "repaint the window" to "draw a texture at an offset", and it leaves
-   the main thread entirely.
-
-   To do that the effect has to be split, because two things here move at
-   different rates and one of them must not move at all:
-
-     .rain-sheet   the horizon fade and the tilt. STATIC. If this moved, the
-                   place where the rain fades into the distance would travel
-                   up the screen with it, which is not a thing weather does.
-     .rain-sheet i the streaks, and the column mask that cuts them into drops
-                   rather than ruled lines. TRANSLATED, and by exactly one
-                   period of its own streak pattern (--drop), so the loop has
-                   no seam in it: the pattern after the move is the pattern
-                   before it.
-
-   THE TILT IS A ROTATION, not a gradient angle. A tilted repeating gradient
-   tiles along its own normal, so a vertical translation moves it diagonally
-   by an amount that depends on the angle, and the seamless period stops being
-   a number anybody can write down. Rotating the whole sheet instead keeps the
-   pattern axis-aligned and the arithmetic exact, and it tilts the column mask
-   with it, which is correct - rain leans as one thing.
-
-   The far sheet used to carry `filter: blur(.7px)` for depth. A filter forces
-   a separate rasterisation of the whole layer, which is most of what was
-   being saved here; the same depth reads off thinner, dimmer, slower streaks,
-   which is what distance actually does to rain. */
-#storyRain {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  overflow: hidden;
-  pointer-events: none;
-  display: none;
-  /* Its own containment scope, so nothing inside the weather can invalidate
-     the layout or the paint of the story cards drawn over it. Deliberately
-     NOT `strict`, which also contains SIZE - this element takes its size from
-     its insets and has no business being measured as if it were empty. */
-  contain: layout paint style;
-}
-#storyRoot.rain #storyRain { display: block; }
-
-.rain-sheet {
-  position: absolute;
-  /* Oversized because it is rotated: a sheet the size of the window leaves
-     the corners bare the moment it is turned. */
-  inset: -42%;
-  mix-blend-mode: screen;
-  transform: rotate(var(--tilt));
-  /* The horizon. Rain fades out into the distance rather than lying at full
-     strength across the sky, and it fades again at the very bottom where it
-     would otherwise run into the instruments. */
-  -webkit-mask-image: linear-gradient(180deg, transparent 0, rgba(0, 0, 0, .30) 13%, #000 34%, #000 84%, rgba(0, 0, 0, .35) 100%);
-  mask-image: linear-gradient(180deg, transparent 0, rgba(0, 0, 0, .30) 13%, #000 34%, #000 84%, rgba(0, 0, 0, .35) 100%);
-}
-
-.rain-sheet > i {
-  position: absolute;
-  inset: 0;
-  display: block;
-  /* THE STREAKS. One repeating gradient down the sheet: a gap, then a drop
-     with a soft head and a hard tail. `--drop` is the period, and it is the
-     exact distance the animation travels. */
-  background-image: repeating-linear-gradient(
-    180deg,
-    transparent 0 calc(var(--drop) - var(--len)),
-    rgba(214, 238, 255, 0) calc(var(--drop) - var(--len)),
-    var(--col) calc(var(--drop) - var(--len) * 0.35),
-    rgba(214, 238, 255, 0) var(--drop));
-  /* ...and the columns they fall in. A vertical-stripe pattern is invariant
-     under a vertical translation, which is the whole reason the tilt is a
-     rotation: this mask travels with the streaks without smearing them. */
-  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 var(--thick), transparent var(--thick) var(--col-gap));
-  mask-image: repeating-linear-gradient(90deg, #000 0 var(--thick), transparent var(--thick) var(--col-gap));
-  animation: rain-fall var(--spd) linear infinite;
-  will-change: transform;
-  transform: translate3d(0, 0, 0);
-}
-
-.rain-far {
-  --tilt: 5.5deg;
-  --drop: 96px;
-  --len: 30px;
-  --col: rgba(168, 215, 255, .38);
-  --thick: 1px;
-  --col-gap: 27px;
-  --spd: 1.55s;
-  opacity: .34;
-}
-
-.rain-near {
-  --tilt: 9deg;
-  --drop: 132px;
-  --len: 56px;
-  --col: rgba(226, 244, 255, .72);
-  --thick: 1.6px;
-  --col-gap: 46px;
-  --spd: .62s;
-  opacity: .46;
-}
-
-/* Exactly one period. The pattern at 100% is the pattern at 0%, so the frame
-   the animation restarts on is identical to the one before it. */
-@keyframes rain-fall {
-  from { transform: translate3d(0, 0, 0); }
-  to   { transform: translate3d(0, var(--drop), 0); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .rain-sheet > i { animation: none; }
-}
-
 /* ------------------------------------------------------------ title card -- */
 
 #storyTitleCard {
@@ -5913,19 +5782,10 @@ body[data-gfx="lean"] #freeRoam::before,
 body[data-gfx="lean"] #multiplayer::before,
 body[data-gfx="lean"] #modeSelect::before,
 body[data-gfx="lean"] .battle-grid,
-body[data-gfx="lean"] .rain-sheet > i,
 body[data-gfx="lean"] .mp-bar span,
 body[data-gfx="lean"] #storyPortrait.corrupt {
   animation: none;
 }
-/* The weather stays - a chapter that is ABOUT rain cannot simply stop raining
-   - but only the near sheet, and without the blend it costs a third of what
-   two sheets did. */
-body[data-gfx="lean"] .rain-far { display: none; }
-body[data-gfx="lean"] .rain-sheet { mix-blend-mode: normal; opacity: .30; }
-body[data-gfx="lean"] .rain-sheet > i { animation: rain-fall var(--spd) linear infinite; }
-body[data-gfx="lean"] .rain-far > i { animation: none; }
-
 /* The voice trace under a line of dialogue: a masked gradient re-rasterised
    at 1.1 s per cycle, behind every conversation in the campaign. */
 body[data-gfx="lean"] #storyDialogue.typing .story-wave { animation: none; opacity: .3; }

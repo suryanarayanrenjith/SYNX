@@ -3,7 +3,7 @@
 
     python tools/version.py                      what the tree says today
     python tools/version.py --set 1.0.7          write that everywhere
-    gh release list ... | python tools/version.py --next
+    git ls-remote --tags --refs origin 'v*' | python tools/version.py --next
                                                  the version the next release
                                                  should be, given the ones that
                                                  already exist
@@ -81,11 +81,13 @@ def current():
 def highest(tags):
     """The largest version among some tags, ignoring anything unparseable.
 
-    Tags arrive from `gh release list`, which is a list of whatever anyone has
-    ever published - including, one day, something that is not a version at
-    all. Those are skipped rather than guessed at.
+    Tags arrive from `git ls-remote`, as `<sha>\trefs/tags/v1.0.2`, or as bare
+    names one per line - so each line is read for its last path segment, and
+    both work. It is a list of whatever anyone has ever tagged, including, one
+    day, something that is not a version at all; those are skipped rather than
+    guessed at.
     """
-    seen = [parse(t) for t in tags]
+    seen = [parse(t.strip().rsplit('/', 1)[-1]) for t in tags]
     seen = [v for v in seen if v]
     return max(seen) if seen else None
 

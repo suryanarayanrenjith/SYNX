@@ -97,7 +97,7 @@ pub fn store(app: &tauri::AppHandle, entries: serde_json::Map<String, serde_json
 
     let blob = SaveFile {
         version: 1,
-        app: format!("SYNX {}", env!("CARGO_PKG_VERSION")),
+        app: format!("SYNX {}", env!("SYNX_VERSION")),
         saved: now_iso(),
         entries,
     };

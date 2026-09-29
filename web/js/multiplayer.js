@@ -504,6 +504,10 @@
      * used to sit and watch "waking the grid" count up to half a minute before
      * being told anything at all. */
     offline() {
+      /* The connectivity monitor's answer first (js/connectivity.js): it has
+         PROVEN there is no route, where the system's flag can only say the
+         cable is out. */
+      if (NR.Connectivity && NR.Connectivity.offline) return true;
       try {
         return global.navigator && global.navigator.onLine === false;
       } catch (e) { return false; }
@@ -603,19 +607,37 @@
           this.offline() ? 'This machine is no longer on a network.'
             : 'The server stopped answering.', true);
       };
-      global.addEventListener('offline', () => {
-        if (NR.Net.online || NR.Net.inRoom || this.shown) drop();
-      });
-      global.addEventListener('online', () => {
-        /* Coming back is not a warning, it is an offer. Only made when the
-           player is on the network screen and still unconnected - anywhere
-           else it would be a popup nobody asked for. */
+      /* Coming back is not a warning, it is an offer. Only made when the
+         player is on the network screen and still unconnected - anywhere
+         else it would be a popup nobody asked for. */
+      const back = () => {
         if (this.shown && !NR.Net.online && NR.UI && !NR.UI.busy()) {
           this.warn('info', 'NETWORK IS BACK',
             'This machine is connected again. The grid can be reached from here.',
             null, true);
         }
+      };
+      /* The connectivity monitor when there is one: it already folds in the
+         browser's own events AND proves them, so listening to both would
+         raise the same popup twice for one pulled cable. */
+      if (NR.Connectivity) {
+        let was = NR.Connectivity.state;
+        NR.Connectivity.subscribe((kind, C) => {
+          if (kind !== 'state') return;
+          const before = was;
+          was = C.state;
+          if (C.state === 'offline') {
+            if (NR.Net.online || NR.Net.inRoom || this.shown) drop();
+          } else if (C.state === 'online' && before === 'offline') {
+            back();
+          }
+        });
+        return;
+      }
+      global.addEventListener('offline', () => {
+        if (NR.Net.online || NR.Net.inRoom || this.shown) drop();
       });
+      global.addEventListener('online', back);
     }
 
     setView(v) {

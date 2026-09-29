@@ -101,6 +101,7 @@
       this.ui.root.setAttribute('aria-hidden', 'false');
       doc.body.classList.add('modeselect-open');
       this.build();
+      this.watchNet();
       g.audio.playTrack('menu');
       // ...and the line under the title arrives a character at a time
       if (NR.UI && this.ui.status) NR.UI.type(this.ui.status, this.ui.status.textContent);
@@ -108,6 +109,7 @@
 
     close() {
       this.shown = false;
+      if (this._unwatchNet) { this._unwatchNet(); this._unwatchNet = null; }
       /* Faded rather than cut - see NR.Screen in js/ui.js. The panel inside
          has had an entrance for a long time and no exit, so going into this
          screen was a move and leaving it was a jump. */
@@ -162,12 +164,89 @@
      * the mouse across all three cards sends one request, not thirty. */
     warmGrid() {
       if (!NR.Net || this._warmed) return;
+      if (NR.Connectivity && NR.Connectivity.offline) return;
       this._warmed = true;
       NR.Net.wake(() => {}).catch(() => { /* the lobby says so properly */ });
     }
 
-    chooseMultiplayer() {
+    /* MULTIPLAYER NEEDS AN INTERNET, AND THE CARD SAYS SO.
+     *
+     * Read off the connectivity monitor (js/connectivity.js), which PROVES a
+     * connection rather than taking the system's word for it. While there is
+     * none, the card is locked the way FREE ROAM is and says why - before the
+     * click, rather than after half a minute of "waking the grid" - and it
+     * unlocks by itself the moment the network comes back: the monitor keeps
+     * asking while it is offline, and this screen listens while it is up.
+     *
+     * An answer the monitor is still working out ('unknown') locks nothing. A
+     * guess should never block a mode, and the lobby reports a real failure
+     * properly. */
+    watchNet() {
+      const C = NR.Connectivity;
+      if (!C) return;
+      if (!this._unwatchNet) {
+        this._unwatchNet = C.subscribe((kind) => { if (kind === 'state' && this.shown) this.paintNet(); });
+      }
+      // an answer from before the player went to the title and came back is not an answer
+      C.fresh(30000);
+    }
+
+    paintNet() {
+      const b = this.netCard;
+      if (!b) return;
+      const C = NR.Connectivity;
+      const off = !!(C && C.offline);
+      b.classList.toggle('locked', off);
+      b.classList.toggle('no-signal', off);
+      if (off) b.setAttribute('aria-disabled', 'true');
+      else b.removeAttribute('aria-disabled');
+      let lock = b.querySelector('.mode-lock');
+      if (off && !lock) {
+        lock = doc.createElement('i');
+        lock.className = 'mode-lock';
+        lock.setAttribute('aria-hidden', 'true');
+        b.insertBefore(lock, b.querySelector(':scope > small'));
+      } else if (!off && lock) {
+        lock.remove();
+      }
+      /* The card's OWN lines, by :scope. The multiplayer art is built out of
+         <u> layers (see netArt below), so a plain querySelector('u') finds
+         the sky of the picture, not the state line - and writes over it. */
+      const kicker = b.querySelector(':scope > small');
+      const state = b.querySelector(':scope > u');
+      if (kicker) kicker.textContent = off ? 'NETWORK LINK // NO SIGNAL' : 'NETWORK LINK // THE GRID';
+      if (state && !this._rechecking) {
+        state.textContent = off ? 'OFFLINE - NO INTERNET CONNECTION' : 'OPEN A ROOM, OR JOIN ONE WITH A CODE';
+      }
+      this.resyncHover();
+    }
+
+    chooseMultiplayer(card) {
       const g = this.g;
+      const C = NR.Connectivity;
+      if (C && C.offline) {
+        /* Refused, the way FREE ROAM refuses - and asked again, because a
+           player pressing it is a player who thinks the network is back. If
+           it is, this press counts. */
+        g.audio.crash(0.2);
+        if (card) {
+          card.classList.remove('shake');
+          void card.offsetWidth;
+          card.classList.add('shake');
+        }
+        if (!this._rechecking) {
+          this._rechecking = true;
+          const state = card && card.querySelector(':scope > u');
+          if (state) state.textContent = 'CHECKING THE CONNECTION...';
+          C.check().then((s) => {
+            this._rechecking = false;
+            if (!this.shown) return;
+            this.paintNet();
+            if (s === 'online') this.chooseMultiplayer(card);
+          });
+        }
+        return;
+      }
       g.audio.select();
       this.close();
       const go = () => { if (g.multiplayer) g.multiplayer.open('modes'); else g.toMenu(); };
@@ -396,8 +475,10 @@
         title: 'MULTIPLAYER',
         note: 'UP TO FOUR CARS  //  ANY OF THE ' + (levelsOf.length || 7) + ' ROUTES  //  ONE ROAD',
         state: 'OPEN A ROOM, OR JOIN ONE WITH A CODE',
-        act: () => this.chooseMultiplayer(),
+        act: (b) => this.chooseMultiplayer(b),
       });
+      this.netCard = netCard;
+      this.paintNet();
       // Woken on sight rather than on click. See warmGrid.
       netCard.addEventListener('focus', () => this.warmGrid());
       netCard.addEventListener('pointerenter', () => this.warmGrid());
@@ -502,6 +583,10 @@
   GP.load = async function () {
     await oldLoad.call(this);
     if (!this.modeSelect) this.modeSelect = new ModeSelect(this);
+    /* The network is watched from the moment the game is up, so the answer is
+       ready by the time anybody reaches the MULTIPLAYER card: one small
+       request now, and nothing after unless something changes. */
+    if (NR.Connectivity) NR.Connectivity.start();
     /* Last word on the START row. js/story.js binds it to the campaign in
        attach(); the terminal is what the campaign is now reached through, so
        this rebinds it after that has happened. */

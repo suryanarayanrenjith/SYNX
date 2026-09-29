@@ -1,78 +1,116 @@
 /* SYNX // THE ENGINE, ON THE AUDIO THREAD.
  *
- * A cross-plane V8, synthesised sample by sample, for the cold open in front
- * of the photosensitivity notice. See js/ignition.js, which drives it.
+ * A carburetted, cross-plane American V8 of the late sixties - big cam, dual
+ * exhaust, glasspacks - synthesised sample by sample for the cold open in
+ * front of the photosensitivity notice. See js/ignition.js, which drives it.
  *
- * ============================================================ WHY A REWRITE
+ * ======================================================== WHY IT CRACKLED
  *
- * The first version of this was three oscillators on the main graph: two
- * detuned sawtooths at the firing frequency, a square an octave under them,
- * and a lowpass that opened with the revs. It was reported as sounding like a
- * motorcycle, and that is exactly what it was.
+ * The version this replaces struck a bank of two-pole resonators with a unit
+ * IMPULSE on every firing. A resonator seventy hertz wide at seventy hertz
+ * rings at about a hundred times the size of what hits it, and those rings
+ * piled up faster than they decayed - so what reached the output stage was a
+ * signal a hundred and fifty times louder than the stage was built for, and
+ * `tanh` turned it into a square wave. Every zero crossing was a step from
+ * one rail to the other inside a single sample: a click, forty times a
+ * second at idle and six hundred at the limiter, with the aliases of every
+ * one of them folded back across the spectrum. That is the crackle. It was
+ * not a filter setting and no filter setting fixes it; the engine was being
+ * clipped by forty-five decibels.
  *
- * A sawtooth is a perfectly even harmonic series. Run one at the firing rate,
- * open a filter over it and you get a smooth, bright, evenly-spaced tone that
- * rises in pitch - which is a small, high-revving single or twin with an open
- * pipe. Every part of the description is wrong for a large V8, and none of it
- * can be fixed by tuning the filter, because the problem is not the spectrum.
- * It is that an engine is not a waveform at all.
+ * So nothing in here is an impulse any more, nothing rings at more than a
+ * few times its input, and the level is set BEFORE the one nonlinearity,
+ * where it belongs.
  *
  * ======================================================= WHAT AN ENGINE IS
  *
- * It is a PULSE TRAIN THROUGH A PIPE. Each cylinder fires, an exhaust valve
- * opens, and a pressure pulse leaves into an exhaust system that rings. What
- * the ear gets is the rate of those pulses, and the resonances they excite.
- * Three consequences, and they are the whole of the difference:
+ * A PULSE TRAIN THROUGH A PIPE. Each cylinder fires, its exhaust valve cracks
+ * open, and a slug of hot gas leaves into a pipe that rings. Three things
+ * about that are the whole character:
  *
- *   THE PULSES ARE DISCRETE. At idle a V8 fires about thirty times a second,
- *   which is slow enough to hear as separate events - the lumpiness of an
- *   idling engine IS the individual pulses. A continuous oscillator has no
- *   such thing at any rpm, which is why it reads as a machine spinning rather
- *   than an engine running.
+ *   THE PULSES ARE SHAPES, NOT CLICKS. A blowdown rises in about a
+ *   millisecond - the gas goes sonic at the valve - and then empties over a
+ *   hundred-odd degrees of crank. Built that way, the pulse is band-limited
+ *   by construction: it gets sharper and brighter as the revs climb, because
+ *   a hundred degrees of crank IS less time at seven thousand, and it never
+ *   gets sharp enough to click.
  *
- *   AND THEY ARE UNEVEN. This is the single most identifiable thing about an
- *   American V8 and the reason it is a rumble rather than a drone. A
- *   CROSS-PLANE crank puts its throws at ninety degrees to each other, and
- *   with two cylinder banks that means each bank's own exhaust sees an uneven
- *   pattern - on one bank, two cylinders fire back to back and then it waits.
- *   The two banks are separate pipes, so what arrives is two lopsided trains
- *   beating against each other. A flat-plane V8 (a Ferrari) is even, and
- *   sounds like a pair of four-cylinder engines: much higher, much flatter,
- *   much more like the thing this used to sound like.
+ *   THEY ARE UNEVEN. A cross-plane crank fires the eight cylinders every
+ *   ninety degrees, but it alternates between the banks unevenly - 1-8-4-3-
+ *   6-5-7-2, odd cylinders on the left - so each bank's own exhaust sees two
+ *   pulses back to back and then a wait. Two lopsided trains, one per pipe,
+ *   is the rumble. Sum them into one pipe and they interleave into a perfectly
+ *   even one, which is a motorcycle: so they get different pipes, and they
+ *   come out of different ends of the car.
  *
- *   AND THE PIPE COLOURS THEM. The exhaust is a resonator with fixed
- *   frequencies that do NOT move with the revs. That is what makes a rev
- *   sound like effort: the pulse rate climbs through a set of standing
- *   formants, so the timbre changes as it goes. Pitch-shifting a whole
- *   waveform moves the formants with it, which is the chipmunk effect, and is
- *   the other half of why the old one sounded small.
+ *   THE PIPE HAS RESONANCES THAT DO NOT MOVE. Header, pipe and tailpipe are a
+ *   tube closed at the valve and open at the back, and a tube like that rings
+ *   at fixed frequencies - here a waveguide per bank, 1.75 and 2.05 metres of
+ *   hot gas. The firing rate climbs THROUGH those, so a rev changes character
+ *   as it rises instead of just going up in pitch; pitch-shifting a sound
+ *   moves its resonances with it, which is the chipmunk the old oscillator
+ *   stack was.
  *
- * ========================================================== WHAT IS IN HERE
+ * ========================================= AND WHAT MAKES IT A SIXTIES V8
  *
- *   a crank angle, advanced sample by sample from the rpm;
- *   eight firing events per two revolutions, at the cross-plane offsets, split
- *   across two banks;
- *   a bank of damped two-pole resonators per side, struck by each pulse -
- *   this is the exhaust, and it is where the bark comes from;
- *   a short noise burst on each pulse, which is the chuff of the valve;
- *   a low resonator pair for the chest of it;
- *   a light mechanical layer, high and quiet, so it is not purely tonal;
- *   a soft clip, and a one-pole lowpass that opens with the throttle rather
- *   than with the revs.
+ *   THE CAM. A long-duration cam idles badly on purpose - a lot of overlap,
+ *   so each cylinder burns a slightly different charge every cycle. That
+ *   cycle-to-cycle wobble, plus each cylinder's own fixed personality, is the
+ *   lope: the lumpy "blub-blub-BLUB" at nine hundred. It fades out with revs
+ *   and with throttle, exactly as it does on a car.
+ *
+ *   THE CARBURETTOR. Four barrels open to the air: a hoarse induction roar
+ *   that tracks the throttle rather than the revs.
+ *
+ *   SOLID LIFTERS. A faint tick, one per firing, well under everything.
+ *
+ *   OVERRUN. Lift off at high revs and a little fuel goes on burning in a
+ *   hot pipe: the burble and the occasional pop on the way down.
+ *
+ *   THE STARTER. The solenoid's clunk, the ring gear's whine, and the engine
+ *   chuffing through its compression strokes before it catches.
  *
  * ============================================== WHY IT IS A WORKLET AT ALL
  *
  * Because the pulses have to land in the right places. A firing event at nine
  * thousand rpm is one every 1.6 milliseconds; scheduling those from the main
- * thread means scheduling them in blocks, in advance, against a clock that a
- * busy main thread does not get to read - and this runs WHILE THE GAME IS
- * LOADING, which is the busiest the main thread ever gets. On the audio
- * thread the crank angle advances one sample at a time and cannot drift,
- * whatever the page is doing.
+ * thread means scheduling them in blocks, in advance, against a clock a busy
+ * main thread does not get to read. On the audio thread the crank advances
+ * one sample at a time and cannot drift, whatever the page is doing - and
+ * because everything, starter and intake included, is generated here, the
+ * main graph is one node and one gain, with nothing on it that can glitch.
  *
- * It is also the reason the cold open can cover a load at all: the picture may
- * stutter while a texture is being inflated, and the engine will not.
+ * NOTHING IN process() ALLOCATES. It runs three hundred and seventy-five
+ * times a second on a thread whose deadline is absolute; a garbage
+ * collection on it is a gap in the sound. Every piece of state is a number
+ * or a preallocated typed array, and every loop is indexed.
  */
+
+const PI = Math.PI;
+
+/* The firing order, 1-8-4-3-6-5-7-2, as crank degree, bank, and each
+   cylinder's own personality: a fixed difference in how hard it burns and a
+   degree or so of where, because no two cylinders on a real engine are the
+   same and eight identical pulses is exactly what reads as synthetic. Odd
+   cylinders are the left bank. Offsets are small and keep the order. */
+const FIRE_DEG = [0, 90, 180, 270, 360, 450, 540, 630];
+const FIRE_BANK = [0, 1, 1, 0, 1, 0, 0, 1];
+const FIRE_AMP = [1.00, 0.92, 1.07, 0.95, 1.03, 0.89, 1.09, 0.96];
+const FIRE_LAG = [0.0, 1.6, -1.1, 0.9, 0.2, -1.5, 0.7, -0.6];
+
+/* The exhaust. Round-trip time of each bank's pipe, in milliseconds - a tube
+   closed at the valve and open at the tail rings at odd multiples of one over
+   twice this: 63, 190, 316 Hz on the left and 54, 161, 269 Hz on the right.
+   The reflection at the open end is inverted and lossy. */
+const PIPE_MS = [7.9, 9.3];
+const PIPE_REFLECT = -0.5;
+const PIPE_LOSS_HZ = 1400;
+// The tailpipes, shorter and after the mufflers: a second, fainter set of rings.
+const TAIL_MS = [3.4, 3.9];
+const TAIL_REFLECT = -0.35;
+
+// Most pulses that can be in flight on one bank at once; eight is generous.
+const SLOTS = 8;
 
 class SynxEngine extends AudioWorkletProcessor {
   static get parameterDescriptors() {
@@ -87,116 +125,133 @@ class SynxEngine extends AudioWorkletProcessor {
       { name: 'load', defaultValue: 0, minValue: 0, maxValue: 1, automationRate: 'a-rate' },
       { name: 'gain', defaultValue: 0, minValue: 0, maxValue: 1, automationRate: 'a-rate' },
       /* Fuel cut, 0..1: the share of firing events that are thrown away. A
-         rev limiter does not hold a needle still, it stops lighting cylinders,
-         and the stutter of that is unmistakable. */
+         rev limiter does not hold a needle still, it stops lighting
+         cylinders, and the stutter of that is unmistakable. */
       { name: 'cut', defaultValue: 0, minValue: 0, maxValue: 1, automationRate: 'k-rate' },
+      /* Is it running on its own. Zero while the starter is turning it over:
+         the cylinders still pump air through the pipes, they just do not
+         burn anything. Defaults to running, so a caller that only knows
+         about rpm and load gets an engine. */
+      { name: 'fire', defaultValue: 1, minValue: 0, maxValue: 1, automationRate: 'k-rate' },
+      // the starter motor, 0 (off) .. 1 (engaged and turning hard)
+      { name: 'crank', defaultValue: 0, minValue: 0, maxValue: 1, automationRate: 'k-rate' },
     ];
   }
 
   constructor() {
     super();
     const sr = sampleRate;
+    this.sr = sr;
 
-    /* THE FIRING PATTERN, in degrees of crank over one full 720-degree cycle.
-     *
-     * A cross-plane V8 in the usual 1-8-4-3-6-5-7-2 order fires evenly every
-     * ninety degrees at the crank - but the cylinders alternate between the
-     * banks UNEVENLY, and each bank has its own exhaust. Split out, one bank
-     * gets 0, 270, 450, 540 and the other 90, 180, 360, 630.
-     *
-     * Look at the gaps rather than the numbers, because the gaps are what is
-     * audible. Bank one: 270, 180, 90, 180. Bank two: 90, 180, 270, 180. Two
-     * lopsided patterns, mirror images of each other, running at the same
-     * time. That is the rumble - and setting both banks to an even 180 here,
-     * which is what a flat-plane crank does, turns this into a European V8
-     * and is a good way to hear exactly how much of the character is in these
-     * eight numbers.
-     */
-    this.banks = [
-      { fire: [0, 270, 450, 540], res: null, lp: 0 },
-      { fire: [90, 180, 360, 630], res: null, lp: 0 },
-    ];
-
-    /* THE EXHAUST, as damped resonators.
-     *
-     * Struck by a pulse, a two-pole resonator rings at its own frequency and
-     * dies away - which is what a length of pipe does. These frequencies do
-     * not move with the revs, and that is the entire point: the pulse rate
-     * climbs through them, so the note changes character as it rises instead
-     * of merely getting higher.
-     *
-     * Chosen low and close together. A big V8's exhaust note lives under 400
-     * Hz; everything above that is the valvetrain and the induction, and both
-     * of those are quieter than people expect.
-     *
-     * THE TWO BANKS GET DIFFERENT PIPES, AND THAT IS NOT A DETAIL.
-     *
-     * Measured, with both banks on identical pipes summed to mono: energy at
-     * half the firing rate was eighteen per cent of the energy at the firing
-     * rate, where a cross-plane V8 should be at least a third. The reason is
-     * arithmetic rather than taste. The two banks fire at 0, 270, 450, 540 and
-     * at 90, 180, 360, 630 - and INTERLEAVED those are 0, 90, 180, 270, 360,
-     * 450, 540, 630, which is perfectly even every ninety degrees. Add two
-     * identical uneven trains together and the unevenness cancels exactly;
-     * what is left is a smooth pulse train at four per revolution, which is
-     * the motorcycle this whole file exists to stop being.
-     *
-     * A real engine does not cancel because the two banks do not share a pipe.
-     * They are different lengths, they ring at different frequencies, and they
-     * come out of the back of the car in different places - so each ear hears
-     * one lopsided train more than the other and the pattern never closes up.
-     * Hence: a bank detuned thirteen per cent against its partner, different
-     * damping on each, and the two panned apart. Put them back on the same
-     * pipe and the rumble goes, which is the check in --probe engine.
-     */
-    const PIPE = [
-      // f     bandwidth  level
-      [72, 26, 1.00],   // the chest of it, felt more than heard
-      [118, 34, 0.86],  // the fundamental bark
-      [196, 62, 0.52],
-      [318, 120, 0.30],
-      [505, 210, 0.16],
-    ];
-    const mkres = (list, detune, damp) => list.map(([f, bw, g]) => {
-      const w = 2 * Math.PI * (f * detune) / sr;
-      const r = Math.exp(-Math.PI * (bw * (damp || 1)) / sr);
-      return { a1: 2 * r * Math.cos(w), a2: -r * r, g, y1: 0, y2: 0 };
-    });
-    /* The left bank is the shorter pipe: higher, harder, and it decays
-       quicker. The right is longer and rounder. Thirteen per cent apart is
-       about what a real pair of headers differ by once the collectors are
-       included, and it is well past the point where the two stop cancelling. */
-    this.banks[0].res = mkres(PIPE, 1.0, 1.0);
-    this.banks[1].res = mkres(PIPE, 0.87, 0.78);
-    /* ...and they are not the same loudness either. Nothing is symmetrical on
-       a car: the exhaust runs down one side, the listener is on the other. */
-    this.banks[0].level = 0.56;
-    this.banks[1].level = 0.44;
-
-    /* The valvetrain: high, short, quiet. Without something up here the engine
-       is a pure tone stack and reads as a synthesiser doing an impression;
-       with too much of it, it reads as a diesel. */
-    this.mech = mkres([[1650, 700, 0.09], [2950, 1300, 0.05]], 1.0);
-
-    // crank angle in degrees, and where each bank's pattern has got to
+    // ---- the crank
     this.deg = 0;
-    this.idx = [0, 0];
-    // how many samples of noise burst each bank still owes
-    this.burst = [0, 0];
-    this.burstAmp = [0, 0];
+    this.idx = 0;
+    this.thr = new Float64Array(8);
+    for (let i = 0; i < 8; i++) this.thr[i] = FIRE_DEG[i] + FIRE_LAG[i];
 
-    // one-pole lowpass state, and a DC blocker so the pulses cannot walk off
-    this.lp = 0;
-    this.lpR = 0;
-    this.dcx = 0;
-    this.dcy = 0;
-    this.dcxR = 0;
-    this.dcyR = 0;
+    // ---- pulses in flight, per bank (flattened [bank * SLOTS + slot])
+    this.pT = new Float64Array(2 * SLOTS);     // samples since it started (may be < 0: delayed)
+    this.pNa = new Float64Array(2 * SLOTS);    // attack length, samples
+    this.pNd = new Float64Array(2 * SLOTS);    // decay length, samples
+    this.pAmp = new Float64Array(2 * SLOTS);   // 0 = slot free
+    this.pNz = new Float64Array(2 * SLOTS);    // how much of it is turbulent air
+
+    // ---- the pipes: a delay line and a lossy inverted reflection per bank
+    this.pipeLen = new Int32Array(2);
+    this.tailLen = new Int32Array(2);
+    this.pipeBuf = [];
+    this.tailBuf = [];
+    for (let b = 0; b < 2; b++) {
+      this.pipeLen[b] = Math.max(8, Math.round(PIPE_MS[b] * sr / 1000));
+      this.tailLen[b] = Math.max(8, Math.round(TAIL_MS[b] * sr / 1000));
+      this.pipeBuf.push(new Float64Array(this.pipeLen[b]));
+      this.tailBuf.push(new Float64Array(this.tailLen[b]));
+    }
+    this.pipeW = new Int32Array(2);
+    this.tailW = new Int32Array(2);
+    this.pipeLp = new Float64Array(2);
+    this.tailLp = new Float64Array(2);
+    this.lossK = 1 - Math.exp(-2 * PI * PIPE_LOSS_HZ / sr);
+
+    // ---- mufflers: a state-variable low-pass per bank, opened by throttle
+    this.mS1 = new Float64Array(2);
+    this.mS2 = new Float64Array(2);
+    // the chest: a fixed peaking bump at ~105 Hz per bank (RBJ, direct form 1)
+    this.chest = this.peaking(105, 0.9, 5.5);
+    this.cX1 = new Float64Array(2); this.cX2 = new Float64Array(2);
+    this.cY1 = new Float64Array(2); this.cY2 = new Float64Array(2);
+
+    // ---- air: white noise, lightly low-passed per bank
+    this.seed = 0x9e3779b1 | 0;
+    this.nLp = new Float64Array(2);
+    this.nK = 1 - Math.exp(-2 * PI * 1900 / sr);
+
+    // ---- induction: band-passed noise, pulsed by the intake strokes
+    this.iS1 = 0; this.iS2 = 0;
+    // ---- valvetrain tick: a short burst through a fixed band-pass
+    this.tickT = 1e9; this.tickLen = Math.max(4, Math.round(0.0006 * sr));
+    this.kS1 = 0; this.kS2 = 0;
+    this.tickG = Math.tan(PI * 3200 / sr);
+
+    // ---- starter: ring-gear whine, brush buzz, and the solenoid's clunk
+    this.whPh = 0;
+    this.bzS1 = 0; this.bzS2 = 0;
+    this.bzG = Math.tan(PI * 1900 / sr);
+    this.crankWas = 0;
+    this.clunkT = 1e9;
+    this.clunkLen = Math.round(0.07 * sr);
+    this.clunkPh = 0;
+
+    // ---- output: high-pass, a gentle saturation, a low-pass and a limiter
+    this.hpX = new Float64Array(2); this.hpY = new Float64Array(2);
+    this.hpA = Math.exp(-2 * PI * 32 / sr);
+    this.oLp = new Float64Array(2);
+    this.oK = 1 - Math.exp(-2 * PI * 9000 / sr);
+    this.env = 0;
+    this.envRel = Math.exp(-1 / (0.12 * sr));
 
     this.alive = true;
     this.port.onmessage = (e) => {
       if (e.data === 'stop') this.alive = false;
     };
+  }
+
+  /* An RBJ peaking filter, normalised. Used once, for a fixed bump. */
+  peaking(f, q, db) {
+    const A = Math.pow(10, db / 40), w = 2 * PI * f / this.sr;
+    const al = Math.sin(w) / (2 * q), c = Math.cos(w);
+    const a0 = 1 + al / A;
+    return {
+      b0: (1 + al * A) / a0, b1: (-2 * c) / a0, b2: (1 - al * A) / a0,
+      a1: (-2 * c) / a0, a2: (1 - al / A) / a0,
+    };
+  }
+
+  /** White noise, -1..1, from a xorshift - cheaper than Math.random and it
+      never allocates. */
+  noise() {
+    let x = this.seed;
+    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+    this.seed = x;
+    return (x | 0) / 2147483648;
+  }
+
+  /* Put a pulse in flight on one bank. `delay` in samples lets a pulse start
+     a little later than the event that caused it - which is what an
+     afterfire in the pipe is. */
+  launch(bank, amp, nz, rise, fall, delay) {
+    const o = bank * SLOTS;
+    let slot = -1, oldest = -1, oldestT = -1e9;
+    for (let k = 0; k < SLOTS; k++) {
+      if (this.pAmp[o + k] <= 0) { slot = k; break; }
+      if (this.pT[o + k] > oldestT) { oldestT = this.pT[o + k]; oldest = k; }
+    }
+    if (slot < 0) slot = oldest;
+    this.pT[o + slot] = -delay;
+    this.pNa[o + slot] = Math.max(2, rise);
+    this.pNd[o + slot] = Math.max(4, fall);
+    this.pAmp[o + slot] = amp;
+    this.pNz[o + slot] = nz;
   }
 
   process(_inputs, outputs, params) {
@@ -205,112 +260,259 @@ class SynxEngine extends AudioWorkletProcessor {
     const L = out[0];
     const R = out.length > 1 ? out[1] : null;
     const n = L.length;
-    const sr = sampleRate;
+    const sr = this.sr;
 
     const rpmP = params.rpm, loadP = params.load, gainP = params.gain;
     const cut = params.cut[0];
+    const fire = params.fire[0] >= 0.5;
+    const crank = params.crank[0];
+
+    /* Per-block values for the parts that do not need to move faster than
+       every 2.7 ms: the muffler opening, the intake's pitch, the lope. */
+    const rpm0 = rpmP[0], load0 = loadP[0];
+    const rpmB = rpmP.length > 1 ? 0.5 * (rpmP[0] + rpmP[n - 1]) : rpm0;
+    const loadB = loadP.length > 1 ? 0.5 * (loadP[0] + loadP[n - 1]) : load0;
+    /* The muffler: closed, only the chest gets out; open, the top of the pulse
+       comes with it. Tied to throttle first and revs second. */
+    const mFc = Math.min(sr * 0.2, 520 + loadB * 2300 + rpmB * 0.16);
+    const mG = Math.tan(PI * mFc / sr), mR = 1 / 0.72;   // SVF, Q 0.72
+    const mA1 = 1 / (1 + mG * (mG + mR));
+    // the induction's pitch: the plenum and runners, rising a little with revs
+    const iFc = Math.min(sr * 0.2, 170 + rpmB * 0.055);
+    const iG = Math.tan(PI * iFc / sr), iR = 1 / 1.35;
+    const iA1 = 1 / (1 + iG * (iG + iR));
+    // how hard it is breathing, which follows the throttle more than the revs
+    const iLvl = Math.pow(loadB, 1.3) * (0.25 + 0.75 * Math.min(1, rpmB / 6000)) * 0.55;
+    /* How much the cam shows: all of it at a closed-throttle idle, none of it
+       by three thousand or with the throttle open. */
+    const lope = Math.max(0, Math.min(1, 1 - (rpmB - 650) / 1700)) * (1 - 0.8 * loadB);
+    // the starter's solenoid, on its rising edge
+    if (crank > 0.05 && this.crankWas <= 0.05) { this.clunkT = 0; this.clunkPh = 0; }
+    this.crankWas = crank;
+
+    const C = this.chest;
+    const tickG = this.tickG, tickA1 = 1 / (1 + tickG * (tickG + 1 / 2.2));
+    const bzG = this.bzG, bzA1 = 1 / (1 + bzG * (bzG + 1 / 1.6));
 
     for (let i = 0; i < n; i++) {
-      const rpm = (rpmP.length > 1 ? rpmP[i] : rpmP[0]);
-      const load = (loadP.length > 1 ? loadP[i] : loadP[0]);
-      const gain = (gainP.length > 1 ? gainP[i] : gainP[0]);
+      const rpm = rpmP.length > 1 ? rpmP[i] : rpm0;
+      const load = loadP.length > 1 ? loadP[i] : load0;
+      const gain = gainP.length > 1 ? gainP[i] : gainP[0];
 
       /* THE CRANK. Degrees per sample: rpm revolutions a minute is rpm/60 a
-         second, times 360 degrees, divided by the sample rate. */
+         second, times 360 degrees, over the sample rate. */
       const step = (rpm * 6) / sr;
       this.deg += step;
-      let wrapped = false;
-      if (this.deg >= 720) { this.deg -= 720; wrapped = true; }
+      /* Degrees in samples at this speed - every pulse length below is set
+         in crank angle, so the engine's sound scales with it. */
+      const perDeg = step > 1e-9 ? 1 / step : 1e9;
 
-      let left = 0, right = 0;
+      while (this.idx < 8 && this.deg >= this.thr[this.idx]) {
+        const c = this.idx;
+        this.idx++;
+        this.event(c, rpm, load, fire, cut, lope, perDeg);
+      }
+      if (this.deg >= 720) {
+        this.deg -= 720;
+        this.idx = 0;
+      }
 
+      // ---- the two banks: pulses, into their pipes
+      let bank0 = 0, bank1 = 0;
       for (let b = 0; b < 2; b++) {
-        const bank = this.banks[b];
-        /* A new cycle: the pattern starts again. Each bank walks its own
-           sorted list once per 720 degrees and never looks back, so an event
-           cannot fire twice however small the step gets, and cannot be
-           missed however large - at nine thousand rpm the crank moves about
-           a degree a sample and the closest pair of events is ninety apart. */
-        if (wrapped) this.idx[b] = 0;
-        while (this.idx[b] < bank.fire.length && this.deg >= bank.fire[this.idx[b]]) {
-          this.idx[b]++;
-          /* THE FIRING ITSELF. Skipped outright when the limiter is cutting
-             fuel - a rev limiter does not hold the revs, it stops lighting
-             cylinders - and never quite the same size twice, because real
-             combustion varies a few per cent cylinder to cylinder and a
-             train of identical pulses is what reads as synthetic. */
-          if (cut > 0 && Math.random() < cut) continue;
-          const vary = 0.86 + Math.random() * 0.28;
-          const amp = (0.30 + load * 0.70) * vary;
-          for (const r of bank.res) r.y1 += amp * r.g;
-          for (const r of this.mech) r.y1 += amp * r.g * 0.7;
-          // ...and the chuff of the valve, a couple of milliseconds of air
-          this.burst[b] = (sr * 0.0022) | 0;
-          this.burstAmp[b] = amp * (0.18 + load * 0.34);
+        const o = b * SLOTS;
+        let s = 0, air = 0;
+        for (let k = 0; k < SLOTS; k++) {
+          const a = this.pAmp[o + k];
+          if (a <= 0) continue;
+          const t = this.pT[o + k];
+          this.pT[o + k] = t + 1;
+          if (t < 0) continue;
+          const na = this.pNa[o + k];
+          let e;
+          if (t < na) {
+            e = 0.5 - 0.5 * Math.cos(PI * t / na);
+          } else {
+            const x = (t - na) / this.pNd[o + k];
+            if (x >= 1) { this.pAmp[o + k] = 0; continue; }
+            e = 1 - x * x * (3 - 2 * x);
+          }
+          s += e * a;
+          air += e * a * this.pNz[o + k];
         }
+        // turbulent flow riding the pulse: noise, lightly softened
+        this.nLp[b] += (this.noise() - this.nLp[b]) * this.nK;
+        const x = s + air * this.nLp[b] * 1.8;
 
-        // the pipes ringing
-        let bankSig = 0;
-        for (const r of bank.res) {
-          const y = r.a1 * r.y1 + r.a2 * r.y2;
-          r.y2 = r.y1;
-          r.y1 = y;
-          bankSig += y;
-        }
-        // ...and the air still leaving
-        if (this.burst[b] > 0) {
-          this.burst[b]--;
-          bankSig += (Math.random() * 2 - 1) * this.burstAmp[b]
-            * (this.burst[b] / (sr * 0.0022));
-        }
-        /* PANNED, because that is the only place the unevenness survives. Two
-           uneven trains that interleave to an even one cancel when they are
-           summed; kept apart, each side keeps its own lopsided pattern and
-           the ear gets the rumble from both. Seventy-thirty rather than hard
-           left and right - the two pipes are a metre apart on a car, not in
-           different rooms - and it still reads on a mono speaker because the
-           banks are not the same loudness or the same pipe. */
-        const lvl = bankSig * bank.level;
-        if (b === 0) { left += lvl * 0.72; right += lvl * 0.28; }
-        else { left += lvl * 0.28; right += lvl * 0.72; }
+        // the pipe: a round trip, an inverted lossy reflection
+        const pb = this.pipeBuf[b], pl = this.pipeLen[b];
+        const w = this.pipeW[b];
+        this.pipeLp[b] += (pb[w] - this.pipeLp[b]) * this.lossK;
+        const y = x + PIPE_REFLECT * this.pipeLp[b];
+        pb[w] = y;
+        this.pipeW[b] = w + 1 >= pl ? 0 : w + 1;
+        if (b === 0) bank0 = y; else bank1 = y;
       }
 
-      // the valvetrain, well under everything else, and up the middle
-      let mech = 0;
-      for (const r of this.mech) {
-        const y = r.a1 * r.y1 + r.a2 * r.y2;
-        r.y2 = r.y1;
-        r.y1 = y;
-        mech += y * 0.35;
+      // ---- an H-pipe between them, then the mufflers, the chest and the tails
+      const h0 = bank0 + 0.07 * bank1, h1 = bank1 + 0.07 * bank0;
+      let m0 = 0, m1 = 0;
+      for (let b = 0; b < 2; b++) {
+        const v = b === 0 ? h0 : h1;
+        // TPT state-variable low-pass (Zavalishin): stable under modulation
+        const hp = (v - (mR + mG) * this.mS1[b] - this.mS2[b]) * mA1;
+        const bp = mG * hp + this.mS1[b];
+        this.mS1[b] = mG * hp + bp;
+        const lp = mG * bp + this.mS2[b];
+        this.mS2[b] = mG * bp + lp;
+        // the chest
+        const cy = C.b0 * lp + C.b1 * this.cX1[b] + C.b2 * this.cX2[b]
+          - C.a1 * this.cY1[b] - C.a2 * this.cY2[b];
+        this.cX2[b] = this.cX1[b]; this.cX1[b] = lp;
+        this.cY2[b] = this.cY1[b]; this.cY1[b] = cy;
+        // the tailpipe
+        const tb = this.tailBuf[b], tl = this.tailLen[b], tw = this.tailW[b];
+        this.tailLp[b] += (tb[tw] - this.tailLp[b]) * this.lossK;
+        const ty = cy + TAIL_REFLECT * this.tailLp[b];
+        tb[tw] = ty;
+        this.tailW[b] = tw + 1 >= tl ? 0 : tw + 1;
+        if (b === 0) m0 = ty; else m1 = ty;
       }
-      left += mech;
-      right += mech;
 
-      /* THE THROTTLE, as a filter rather than as a volume. Closed, the pipe is
-         muffled and only the low resonators get out; open, the top of the
-         pulse comes with it. Tied to load and only weakly to rpm, which is
-         what stops a rev sounding like a pitch bend. */
-      const fc = 260 + load * 2600 + rpm * 0.06;
-      const k = 1 - Math.exp(-2 * Math.PI * Math.min(fc, sr * 0.45) / sr);
-      this.lp += (left - this.lp) * k;
-      this.lpR += (right - this.lpR) * k;
+      // ---- the carburettor, breathing on every intake stroke
+      let mid = 0;
+      if (load > 0.01 && rpm > 60) {
+        const ph = (this.deg % 90) / 90;
+        const breath = 0.35 + 0.65 * (0.5 - 0.5 * Math.cos(2 * PI * ph));
+        const v = this.noise();
+        const hp = (v - (iR + iG) * this.iS1 - this.iS2) * iA1;
+        const bp = iG * hp + this.iS1;
+        this.iS1 = iG * hp + bp;
+        this.iS2 = iG * bp + (iG * bp + this.iS2);
+        mid += bp * breath * iLvl;
+      }
 
-      // compression, not distortion: an engine is squashed, not fuzzy
-      const yl = Math.tanh(this.lp * 1.9) * 0.86;
-      const yr = Math.tanh(this.lpR * 1.9) * 0.86;
+      // ---- the lifters: one tiny tick per firing
+      if (this.tickT < this.tickLen) {
+        const e = 0.5 - 0.5 * Math.cos(2 * PI * this.tickT / this.tickLen);
+        this.tickT++;
+        const v = this.noise() * e;
+        const hp = (v - (1 / 2.2 + tickG) * this.kS1 - this.kS2) * tickA1;
+        const bp = tickG * hp + this.kS1;
+        this.kS1 = tickG * hp + bp;
+        this.kS2 = tickG * bp + (tickG * bp + this.kS2);
+        mid += bp * Math.min(1, Math.sqrt(rpm / 3000)) * 0.05;
+      }
 
-      // and nothing may walk away from zero over a long hold
-      const dl = yl - this.dcx + 0.9985 * this.dcy;
-      this.dcx = yl; this.dcy = dl;
-      const dr = yr - this.dcxR + 0.9985 * this.dcyR;
-      this.dcxR = yr; this.dcyR = dr;
+      // ---- the starter
+      if (crank > 0.001) {
+        // ring gear: 168 teeth on the flywheel, so this whines at 168 x crank
+        this.whPh += (rpm / 60) * 168 / sr;
+        if (this.whPh > 1) this.whPh -= Math.floor(this.whPh);
+        const p = 2 * PI * this.whPh;
+        const whine = 0.55 * Math.sin(p) + 0.22 * Math.sin(2 * p + 0.4) + 0.1 * Math.sin(3 * p + 1.1);
+        const v = this.noise();
+        const hp = (v - (1 / 1.6 + bzG) * this.bzS1 - this.bzS2) * bzA1;
+        const bp = bzG * hp + this.bzS1;
+        this.bzS1 = bzG * hp + bp;
+        this.bzS2 = bzG * bp + (bzG * bp + this.bzS2);
+        mid += crank * (whine * 0.16 + bp * 0.09);
+      }
+      if (this.clunkT < this.clunkLen) {
+        // the solenoid throwing the pinion in: a thud and a little rattle
+        const x = this.clunkT / this.clunkLen;
+        const e = (1 - x) * (1 - x) * Math.min(1, this.clunkT / (0.0015 * sr));
+        this.clunkPh += 88 / sr;
+        mid += e * (Math.sin(2 * PI * this.clunkPh) * 0.45 + this.noise() * 0.08);
+        this.clunkT++;
+      }
 
-      L[i] = dl * gain;
-      if (R) R[i] = dr * gain;
+      // ---- out: left pipe mostly on the left, right mostly on the right
+      let l = m0 * 0.78 + m1 * 0.22 + mid;
+      let r = m0 * 0.22 + m1 * 0.78 + mid;
+
+      // below the chest there is only rumble the speaker cannot make
+      let y = l - this.hpX[0] + this.hpA * this.hpY[0];
+      this.hpX[0] = l; this.hpY[0] = y; l = y;
+      y = r - this.hpX[1] + this.hpA * this.hpY[1];
+      this.hpX[1] = r; this.hpY[1] = y; r = y;
+
+      /* ONE NONLINEARITY, AND IT IS GENTLE: a rational tanh, driven so that
+         a wide-open pull sits at the knee rather than through it. Squashed,
+         not fuzzy - the character of an exhaust is compression. */
+      l *= 0.55; r *= 0.55;
+      l = l < -3 ? -1 : l > 3 ? 1 : l * (27 + l * l) / (27 + 9 * l * l);
+      r = r < -3 ? -1 : r > 3 ? 1 : r * (27 + r * r) / (27 + 9 * r * r);
+      // the top octave is hash, not engine
+      this.oLp[0] += (l - this.oLp[0]) * this.oK; l = this.oLp[0];
+      this.oLp[1] += (r - this.oLp[1]) * this.oK; r = this.oLp[1];
+
+      /* AND NOTHING LEAVES HERE HOTTER THAN IT SHOULD. A peak limiter with an
+         instant attack and a slow release: in normal running it never acts,
+         and if anything ever stacks up it is turned down, never clipped. */
+      const pk = Math.max(Math.abs(l), Math.abs(r));
+      this.env = pk > this.env ? pk : this.env * this.envRel + pk * (1 - this.envRel);
+      const lim = this.env > 0.9 ? 0.9 / this.env : 1;
+
+      L[i] = l * lim * gain;
+      if (R) R[i] = r * lim * gain;
     }
 
     for (let c = 2; c < out.length; c++) out[c].set(L);
     return this.alive;
+  }
+
+  /* ONE CYLINDER'S TURN. Called from the crank loop as it passes the
+     cylinder's mark. */
+  event(c, rpm, load, fire, cut, lope, perDeg) {
+    const bank = FIRE_BANK[c];
+    const sr = this.sr;
+    // the next time round, this cylinder lands a little differently
+    const jitter = (Math.random() * 2 - 1) * (0.4 + 2.6 * lope);
+    this.thr[c] = FIRE_DEG[c] + FIRE_LAG[c] + jitter;
+    if (this.thr[c] < 0) this.thr[c] = 0;
+
+    /* Pulse length in crank angle, held inside what the gas can actually do:
+       a blowdown cannot rise faster than about 0.7 ms or empty slower than
+       about 30 ms, whatever the crank is doing. */
+    const rise = Math.min(0.006 * sr, Math.max(0.0007 * sr, 22 * perDeg));
+    const fall = Math.min(0.030 * sr, Math.max(0.0025 * sr, 118 * perDeg));
+
+    if (!fire) {
+      /* Turning over on the starter: every cylinder still pumps its air out
+         through the pipes - a soft chuff with nothing burning in it. */
+      if (rpm > 30) this.launch(bank, 0.30, 0.9, rise * 1.4, fall * 0.8, 0);
+      this.tickT = 0;
+      return;
+    }
+    if (cut > 0 && Math.random() < cut) {
+      /* The limiter has taken this one. Unburnt charge goes into a hot pipe,
+         and now and then it lights there instead. */
+      if (Math.random() < 0.18) {
+        this.launch(bank, 0.35 + Math.random() * 0.3, 0.8, rise * 0.8, fall * 0.55,
+          Math.round((25 + Math.random() * 40) * perDeg));
+      }
+      return;
+    }
+    /* How hard it burns: the throttle first, then this cylinder's own
+       character, then this cycle's luck - which is large at a lumpy idle and
+       small at full song. Now and then at idle a cylinder barely lights. */
+    const vary = 1 + (Math.random() * 2 - 1) * (0.05 + 0.28 * lope);
+    const weak = (lope > 0.5 && Math.random() < 0.06 * lope) ? 0.45 : 1;
+    const amp = (0.40 + 0.60 * Math.pow(load, 0.8)) * FIRE_AMP[c] * vary * weak;
+    const nz = 0.10 + 0.32 * load;
+    this.launch(bank, amp, nz, rise, fall, 0);
+    this.tickT = 0;
+
+    /* OVERRUN. Off the throttle with the revs up, the odd charge finishes
+       burning in the pipe a few degrees late: the burble on the way down. */
+    if (load < 0.15 && rpm > 1900) {
+      const p = 0.16 * (1 - load / 0.15) * Math.min(1, (rpm - 1900) / 2600);
+      if (Math.random() < p) {
+        this.launch(bank, 0.30 + Math.random() * 0.4, 0.75, rise * 0.8, fall * 0.6,
+          Math.round((20 + Math.random() * 45) * perDeg));
+      }
+    }
   }
 }
 

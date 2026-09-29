@@ -486,27 +486,6 @@
   </div>
 
   <div id="storyRoot" aria-live="polite" aria-hidden="true">
-    <!-- WEATHER. Two sheets of rain at different depths, shown only while
-         #storyRoot carries .rain - which today is Chapter 3 and nothing else.
-
-         It used to be two pseudo-elements animating `background-position`,
-         which is a full-screen REPAINT on every frame: two repeating
-         gradients, two masks intersected on top of them and a blur, all
-         re-rasterised sixty times a second for the whole chapter. It was the
-         single most expensive thing on screen in the game and none of it was
-         the game.
-
-         These are real elements because the effect needs two layers that move
-         independently: the sheet holds the horizon fade and does not move, and
-         the <i> inside it carries the streaks and is TRANSLATED. A transform
-         is compositor work on a texture that never changes, so the whole
-         thing costs one blend instead of one repaint - and because the <i> is
-         translated by exactly one period of its own streak pattern, it loops
-         without a seam. See #storyRain in css/style.css. -->
-    <div id="storyRain" aria-hidden="true">
-      <div class="rain-sheet rain-far"><i></i></div>
-      <div class="rain-sheet rain-near"><i></i></div>
-    </div>
 
     <div id="storyLetterbox" aria-hidden="true">
       <i class="story-bar story-bar-top"></i>
@@ -953,6 +932,7 @@
 <script defer src="js/autosave.js?v=rust-1"></script>
 <script defer src="js/damage.js?v=rust-1"></script>
 <script defer src="js/glass.js?v=rust-1"></script>
+<script defer src="js/weather.js?v=rust-1"></script>
 <script defer src="js/fx.js?v=rust-1"></script>
 <script defer src="js/audio.js?v=rust-1"></script>
 <script defer src="js/hud.js?v=rust-1"></script>
@@ -960,6 +940,7 @@
 <script defer src="js/story.js?v=rust-1"></script>
 <script defer src="js/chapters.js?v=rust-1"></script>
 <script defer src="js/freeroam.js?v=rust-1"></script>
+<script defer src="js/connectivity.js?v=rust-1"></script>
 <script defer src="js/modeselect.js?v=rust-1"></script>
 <script defer src="js/net.js?v=rust-1"></script>
 <script defer src="js/multiplayer.js?v=rust-1"></script>

@@ -86,6 +86,12 @@
      in the seat, on the core side, so that the two cannot disagree. See
      povCamera and crates/synx-core/src/driver.rs. */
   const POV_PITCH = -0.045;
+  /* The room the driver's head has in the cabin, in metres - across, up and
+     fore and aft. See povHead. */
+  const HEAD_ROOM = [0.040, 0.030, 0.030];
+  /* The fog inside a tunnel: cold, whatever the route outside is tinted.
+     Scene.bind keeps a reference to it, so it is never written to. */
+  const TUNNEL_FOG = [0.35, 0.5, 0.7];
   /* HOW CLOSE TO THE CAR COUNTS AS BEING IN IT, measured on the flat and
      from the car's centre. The cabin runs from about eight tenths of a unit
      behind that point to a little over one in front of it, so this is the
@@ -175,8 +181,9 @@
   const GRADE_SAT = 1.22;
   /* The highest texture unit any pass binds to. 0 albedo, 1 environment,
      2 normal, 3 headlight cookie, 4 emissive, 5-7 the shadow cascades,
-     8 the reflection probe. */
-  const MAX_TEX_UNIT = 8;
+     8 the reflection probe, 9 and 10 the rain's ripple sheet and puddle map
+     (see js/weather.js). */
+  const MAX_TEX_UNIT = 10;
   // The sunset key light, in linear HDR. Everything downstream - the tyre
   // specular, the volumetric inscattering and the god rays - reads this.
   const SUN_COL = [1.00, 0.36, 0.30];
@@ -649,16 +656,50 @@
      at the car coming up it - and the car then leaves along that same line,
      toward the lens. */
   const ATTRACT_LIP_SHELF = 16;
+  /* ...and then it lets go GENTLY. The shelf used to end in a cliff: the
+     frame the lens passed its end, the floor fell to the road and the lens,
+     which had been rising with it, reversed and dived three units in a
+     third of a second - a lurch on every jump in the reel. It now eases
+     back down to the road over this many units, leaving the shelf at the
+     shelf's own slope and arriving flat, so the lens is carried down rather
+     than dropped. */
+  const ATTRACT_LIP_FADE = 34;
+  /* How quickly the attract camera's height catches a change in the car's
+     vertical speed, in radians a second - see attractCamera. About a
+     fifteenth of a second: quick enough that nothing reads as lag, slow
+     enough that a kink in a ramp is a bump the lens rides, not a jolt. */
+  const ATTRACT_CAM_RIDE = 15;
+  /* One step of that follower: `o` is its state ({y, v}), `y` where the thing
+     it follows is now and `rate` how fast that is moving. Critically damped,
+     integrated implicitly (unconditionally stable at any frame length), and
+     never allowed further than 0.6 from what it follows. Returns the height. */
+  function attractRide(o, y, rate, dt, snap) {
+    if (snap || !(dt > 0) || !(Math.abs(o.y - y) < 2)) {
+      o.y = y; o.v = rate || 0;
+      return y;
+    }
+    const W = ATTRACT_CAM_RIDE;
+    o.v = (o.v + dt * (W * W * (y - o.y) + 2 * W * rate)) / (1 + 2 * W * dt + W * W * dt * dt);
+    o.y = M.clamp(o.y + o.v * dt, y - 0.6, y + 0.6);
+    return o.y;
+  }
   function attractCamFloor(s) {
     for (const r of COURSE_RAMPS) {
       const drop = r.drop || 0, crest = r.crest || 0;
       const s0 = r.s - crest - r.len;
       if (s < s0) continue;
       if (s <= r.s + drop) return attractRampHeight(r, s) || 0;
-      if (!drop && s <= r.s + ATTRACT_LIP_SHELF) {
+      if (!drop && s <= r.s + ATTRACT_LIP_SHELF + ATTRACT_LIP_FADE) {
         const lip = r.lip === undefined ? r.h : r.lip;
         const rise = crest > 0 ? (lip - r.h) / crest : 2 * r.h / r.len;
-        return lip + (s - r.s) * rise;
+        if (s <= r.s + ATTRACT_LIP_SHELF) return lip + (s - r.s) * rise;
+        /* A cubic Hermite from the end of the shelf - its height, its slope -
+           to the road with no slope at all. Continuous in height and in rate,
+           which is what a lens riding it needs. */
+        const t = (s - r.s - ATTRACT_LIP_SHELF) / ATTRACT_LIP_FADE;
+        const top = lip + ATTRACT_LIP_SHELF * rise;
+        const h00 = (2 * t - 3) * t * t + 1, h10 = ((t - 2) * t + 1) * t;
+        return Math.max(0, top * h00 + rise * ATTRACT_LIP_FADE * h10);
       }
     }
     return 0;
@@ -892,8 +933,10 @@
    * cinematic pose, a menu flyby - simply gets the shipped placement back.
    */
   const WHEEL_RADIUS = 0.45;          // matches Vehicle's, in world units
-  function wheelsOf(car) {
-    if (!car) return null;
+  /* Written into `out` - the draw call's own options, one object per call
+     site, rewritten in place every frame - and returned. */
+  function wheelsOf(car, out) {
+    if (!car) return out;
     let spin = car.wheelSpin || 0;
     let spinFront = car.wheelSpinFront || 0;
     /* A CAR THE SIMULATION DOES NOT STEP STILL HAS TO HAVE WHEELS THAT TURN.
@@ -944,7 +987,8 @@
       v.own = (v.own + along / WHEEL_RADIUS) % (Math.PI * 2);
       spin = spinFront = v.own;
     }
-    return { spin, spinFront, wheelSteer: car.steer || 0 };
+    out.spin = spin; out.spinFront = spinFront; out.wheelSteer = car.steer || 0;
+    return out;
   }
 
   /* Every vector a route's palette can carry. A blend has to move all of them
@@ -1727,6 +1771,8 @@
   float depthNotFar(float d) { return min(d, 0.99999); }
   #endif
   `;
+  // ...and shared, so js/weather.js reads depth exactly as every pass here does
+  global.NR.DEPTH_GLSL = DEPTH_GLSL;
 
   // --- screen-space reflections -------------------------------------------
   // Marched in world space and tested against the depth buffer, which keeps the
@@ -3227,12 +3273,93 @@
      only ever contributes where the star's own halo says there is damage. */
   uniform sampler2D uShards;
 
+  /* --- the rain ----------------------------------------------------------
+     The streaks and splashes, drawn after the temporal resolve into a layer
+     of their own so it cannot average them away; and, from the driver's seat,
+     the water on the windscreen. See js/weather.js. At zero
+     rain every block below is one compare. */
+  uniform sampler2D uRainLayer;
+  uniform float uRainOn;
+  uniform sampler2D uDrops;        // the simulated drops: lens normal, thickness, cover
+  uniform sampler2D uSceneDepth;   // to tell glass from cabin
+  uniform sampler2D uWipe;         // how much water each part of the glass is holding
+  uniform float uGlass;
+  uniform float uWipeCap;
+  uniform mat4 uGlassM;            // this frame's clip space to the car's body space
+  uniform vec3 uGlassEye;          // the eye, in body space
+  uniform vec2 uNearFar;
+  ` + DEPTH_GLSL + `
 
   float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
   float hash21(vec2 p) {
     p = fract(p * vec2(233.34, 851.73));
     p += dot(p, p + 23.45);
     return fract(p.x * p.y);
+  }
+
+  /* A BEAD. The fine water on a windscreen is not simulated drop by drop -
+     there are thousands of it - but laid out one bead to a cell of a grid on
+     the glass, each with its own size, its own place in the cell and the
+     amount of rain it takes to form. The swept area starts bare after every
+     pass and fills in again bead by bead, which is exactly what it does -
+     and when the rain is over and the count runs back down, they dry off the
+     same way, one at a time. Each one grows from a speck over the last
+     stretch of its own threshold, so none of them pops in. dens thins the
+     field out (the side glass). Returns the bead's lens normal in xy and its
+     cover in z. */
+  vec3 bead(vec2 p, float cells, float age, float salt, float dens) {
+    vec2 g = p * cells;
+    vec2 id = floor(g);
+    vec2 f = fract(g) - 0.5;
+    // water on glass beads up and leaves bare glass between: not every cell
+    // ever holds one, or the screen reads as bubble wrap
+    if (hash21(id + salt + 9.71) > 0.58 * dens) return vec3(0.0);
+    float grow = clamp((age - hash21(id + salt + 5.13) * 12.0) / 1.5, 0.0, 1.0);
+    if (grow <= 0.0) return vec3(0.0);
+    float h = hash21(id + salt);
+    float r = mix(0.10, 0.36, h * h);
+    vec2 c = (vec2(hash21(id + salt + 1.37), hash21(id + salt + 2.91)) - 0.5) * (1.0 - 2.0 * r);
+    r *= 0.45 + 0.55 * grow;
+    vec2 d = (f - c) / r;
+    float l2 = dot(d, d);
+    if (l2 >= 1.0) return vec3(0.0);
+    float cov = (1.0 - smoothstep(0.65, 1.0, l2)) * grow;
+    return vec3(d * cov, cov);
+  }
+
+  /* HOW MUCH RAIN THIS PIXEL'S GLASS TAKES: all of it on the windscreen, a
+     fraction on the side windows. The side glass stands upright under the
+     roof's edge with the air running along it, so it catches a scatter of
+     drops where the raked screen in front is running with water - and a
+     cabin beaded all the way round reads as a car sitting in a car wash.
+     Worked out from the ray itself, in the car's own space, so it holds
+     wherever the head turns: where the pixel's ray meets the windscreen, and
+     whether that is inside the ends of its lower edge.
+
+     The screen WRAPS: its lower edge sweeps forty centimetres back at the
+     corners to meet the pillars (cabScreenBase in js/scene.js). One flat
+     plane through the middle
+     puts the corners far too wide and calls the bottom of the screen side
+     glass, so the ray is walked onto the curve - intersect the raked plane
+     through the edge at the current |x|, take the new x, three times. */
+  vec2 screenBaseZY(float ax) {
+    if (ax <= 0.5) { float t = (ax / 0.5) * (ax / 0.5); return vec2(1.807 - 0.016 * t, -0.015 - 0.011 * t); }
+    if (ax <= 0.53) { float t = (ax - 0.5) / 0.03; return vec2(mix(1.791, 1.766, t), -0.026 + 0.008 * t); }
+    float t = min(1.0, (ax - 0.53) / 0.367);
+    return vec2(mix(1.766, 1.404, t), -0.018 + 0.086 * t);
+  }
+  float glassShare(vec2 uv) {
+    vec4 q = uGlassM * vec4(uv * 2.0 - 1.0, 0.5, 1.0);
+    vec3 d = q.xyz / q.w - uGlassEye;
+    const vec3 N = vec3(0.0, 0.8844, 0.4667);   // across the car, and up the rake
+    float dn = dot(d, N);
+    if (dn <= 1e-5) return 0.0;
+    float x = 0.0;
+    for (int i = 0; i < 3; i++) {
+      vec2 b = screenBaseZY(abs(x));
+      x = uGlassEye.x + d.x * (dot(vec3(0.0, b.y, b.x) - uGlassEye, N) / dn);
+    }
+    return 1.0 - smoothstep(0.90, 0.99, abs(x));
   }
 
   vec3 fxaa(vec2 uv, vec2 px, vec3 rgbM) {
@@ -3259,6 +3386,36 @@
   void main() {
     vec2 px = 1.0 / uRes;
     vec2 uv = vUv;
+
+    /* WATER ON THE WINDSCREEN, BEFORE ANYTHING SAMPLES THE FRAME - a drop is a
+     * lens, so it moves what the pixel sees rather than the colour it ends up.
+     *
+     * The glass is wherever the view runs further than about a metre: the
+     * dash, the pillars, the wheel and the hands are all nearer than that and
+     * stay dry, and everything seen through the screen and the side windows
+     * gets the rain on it. */
+    float glassT = 0.0;
+    vec3 wetN = vec3(0.0);
+    if (uGlass > 0.001) {
+      float sd = texture(uSceneDepth, vUv).r;
+      float z = depthIsSky(sd) ? 1e5 : depthLinear(sd, uNearFar.x, uNearFar.y);
+      glassT = smoothstep(0.95, 1.45, z) * uGlass;
+      if (glassT > 0.001) {
+        float asp = uRes.x / max(uRes.y, 1.0);
+        vec2 p = vec2(vUv.x * asp, vUv.y);
+        float share = glassShare(vUv);
+        vec4 dr = texture(uDrops, vUv);
+        wetN = vec3((dr.rg - 0.5) * 2.0, dr.a) * mix(0.30, 1.0, share);
+        float age = texture(uWipe, vUv).r * uWipeCap;
+        float dens = mix(0.28, 1.0, share);
+        vec3 b1 = bead(p, 58.0, age, 0.0, dens);
+        vec3 b2 = bead(p, 31.0, age * 0.75, 17.0, dens);
+        wetN.xy += b1.xy * 0.8 + b2.xy;
+        wetN.z = max(wetN.z, max(b1.z, b2.z));
+        // what is behind a drop, seen through it upside down
+        uv -= wetN.xy * 0.022 * glassT;
+      }
+    }
 
     /* BROKEN GLASS, BEFORE ANYTHING SAMPLES THE FRAME.
      *
@@ -3333,6 +3490,23 @@
       vec3 amp = clamp(min(mn, 1.0 - mx) / max(mx, 1e-4), 0.0, 1.0);
       amp = sqrt(amp) * uSharpen;
       c = clamp(c + (c * 4.0 - n - s - w - e) * amp * 0.25, 0.0, 1.0);
+    }
+
+    // the rain in the air, bent by the same water on the glass as the world is
+    if (uRainOn > 0.5) c += texture(uRainLayer, uv).rgb;
+
+    /* ...and the water itself. The rim of a drop is dark - light at that
+       angle is reflected back inside it - and its crown catches the brightest
+       thing in front of it. */
+    if (glassT > 0.001) {
+      float w = clamp(wetN.z, 0.0, 1.0) * glassT;
+      float l = lum(c);
+      float edge = clamp(length(wetN.xy), 0.0, 1.0);
+      c *= 1.0 - 0.32 * edge * w;
+      vec3 nn = normalize(vec3(wetN.xy, 0.55));
+      // a crown catches what is bright in front of it, and nothing when nothing is
+      float glint = pow(clamp(dot(nn, normalize(vec3(-0.35, 0.55, 0.76))), 0.0, 1.0), 28.0);
+      c += vec3(0.85, 0.92, 1.0) * glint * w * l * 0.7;
     }
 
     /* ...and then the glass itself, over the top of the refracted image.
@@ -3689,7 +3863,12 @@
       this.pPost = G.program(gl, G.FS_VERT, POST_FRAG, 'post', zDefs);
       this.pTaa = G.program(gl, G.FS_VERT, TAA_FRAG, 'taa', zDefs);
       this.pUpscale = G.program(gl, G.FS_VERT, UPSCALE_FRAG, 'upscale');
-      this.pFinal = G.program(gl, G.FS_VERT, FINAL_FRAG, 'final');
+      // with the depth definitions: the windscreen reads depth to find the glass
+      this.pFinal = G.program(gl, G.FS_VERT, FINAL_FRAG, 'final', zDefs);
+      /* The weather, and its shaders with the rest - a pass compiled the first
+         time it rains would be a hitch the first time it rains. */
+      this.weather = global.NR.Weather ? new global.NR.Weather(this) : null;
+      if (this.weather) this.weather.initGL(gl, zDefs);
 
       // linear HDR scene with a sampleable depth buffer for the volumetrics
       // and a packed normal/roughness buffer for the reflections
@@ -4304,6 +4483,8 @@
       };
       this.confirmIndex = 0;
       this.confirmFrom = this.state;
+      // what is on screen behind the card - kept after the answer; see update
+      this.confirmBehind = this.state;
       this.state = 'confirm';
       this.hud.selY = null;         // the bar re-seeks rather than sliding in
       this.audio.uiMove();
@@ -4820,6 +5001,12 @@
       this.particleDensity = [0.45, 1, 1.6][
         st.particles === undefined ? 1 : st.particles] || 1;
       if (this.fx) this.fx.density = this.particleDensity;
+      /* How much rain, when it rains: the preset and PARTICLE DENSITY, the
+         same two rows that decide how much of everything else is in the air.
+         It thins the drops and splashes; it never takes the puddles, the
+         ripples or the glass away. See js/weather.js. */
+      this.weatherScale = (name === 'LOW' ? 0.5 : name === 'MEDIUM' ? 0.75 : 1)
+        * Math.min(1.3, this.particleDensity);
 
       /* THE ROAD'S OWN LIGHTS. A scale on whatever the route's palette asked
          for rather than a replacement of it, for the same reason DRAW
@@ -5591,6 +5778,7 @@
     exitFreeRoam() {
       if (!this.freeRoam) return;
       this.freeRoam = false;
+      if (this.weather && this.weather.mode === 'roam') this.weather.clear();
       this.soloRun = false;
       this.storyHideRival = false;
       this.freeRoamBanner = null;
@@ -5622,6 +5810,10 @@
     beginFreeRoamRun() {
       this.freeRoamClock = 0;
       this.freeRoamRegionShown = -1;
+      /* THE SKY ON THIS TOUR. Showers come and go on a schedule of the tour's
+         own, on routes 1, 2, 3, 4 and 7 - see RAIN_ROUTES in js/weather.js.
+         (The one other place it rains is Chapter 3, which is set in a storm.) */
+      if (this.weather) this.weather.roam((Math.random() * 4294967296) >>> 0);
       /* Where this tour got on, which is what decides whether the ascension
          gate has anything to announce. Recorded here rather than read from
          the region, because a resumed tour gets on wherever it left off.
@@ -6178,6 +6370,8 @@
 
     toMenu() {
       this.exitFreeRoam();
+      // the title screen is always dry, whatever the last run was out in
+      if (this.weather) this.weather.clear();
       /* ...and cut the car off at the moment the screen changes, rather than
          waiting for the ramp. Leaving a race with the throttle still held is
          the common case, not the odd one. */
@@ -6799,10 +6993,33 @@
           this.activateConfirm();
         } else if (inp.hit('enter', ' ')) this.activateConfirm();
         else if (inp.hit('escape')) this.closeConfirm();
-        this.updateCamera(dt);
-        this.updateAtmosphere(dt);
+        /* THE WORLD BEHIND THE QUESTION KEEPS DOING WHAT IT WAS DOING.
+         *
+         * Asked from the title screen or the options, what is behind this card
+         * is the attract reel - and this branch handed the camera to the RACE
+         * camera instead. That rig reads the boost buffet, the speed rush and
+         * `shake`, which the reel's reheat light-up sets and nothing on a menu
+         * ever decays; the car it was pointed at was frozen mid-drift with its
+         * boost still lit. So pressing QUIT cut from a composed shot to a chase
+         * view vibrating at thirty hertz for as long as the question was up.
+         *
+         * The reel just carries on under the card, exactly as it does under
+         * every other menu. A question asked mid-race still holds the race
+         * camera, which is the camera that race was being driven on. */
+        /* Read off `confirmBehind` rather than `confirmFrom`: answering the
+           question clears the latter on this very frame, and YES leaves the
+           state here for the length of the quit fade - either way the race
+           camera would get one last say exactly as the card goes. */
+        const behind = this.confirmBehind;
+        const fromTitle = behind === 'menu' || behind === 'controls';
+        if (fromTitle && !this.benchDriving && (this.state === 'confirm' || MENUS[this.state])) {
+          this.idleFlyby(dt);
+        } else {
+          this.updateCamera(dt);
+          this.updateAtmosphere(dt);
+          this.settleFx(dt);
+        }
         this.audio.update(this.car, dt, false);
-        this.settleFx(dt);
         return;
       }
       if (this.state === 'paused') {
@@ -7273,7 +7490,16 @@
       this.speedFx = M.damp(this.speedFx, speedTarget, 4.8, dt);
       // the road is damp all night and wetter under the tunnels, which is what
       // gives the reflections something to work with
-      const baseWet = this.levelWet === undefined ? 0.32 : this.levelWet;
+      let baseWet = this.levelWet === undefined ? 0.32 : this.levelWet;
+      /* ...and wetter still when it has been raining on it: the weather lays
+         water down and takes a long time to dry it again. Up to about the
+         wettest a route already is, and no further: the standing water is the
+         road shader's, see uPuddle, and the rest of this gloss is on every
+         surface outdoors. Not in a tunnel, where the tunnel's own term already
+         stands in. */
+      if (this.weather && this.weather.wet > 0) {
+        baseWet += Math.max(0, 0.70 - baseWet) * this.weather.wet * (1 - this.tunnel);
+      }
       this.scene.wet = M.damp(this.scene.wet, baseWet + this.tunnel * 0.34, 2, dt);
       this.scene.brakeLight = lampOf(this.car);
       /* The boost button follows the pedal over about a tenth of a second in
@@ -7617,6 +7843,12 @@
          nothing coming off it. */
       if (this.fx) this.fx.update(dt, this.car, true);
       this.updateAtmosphere(dt);
+      /* The reheat lighting is an impact() - updateAtmosphere fires one on
+         every light-up - and that sets `shake` for a camera this drive never
+         uses. Only the race path ever decayed it, so behind the menus it sat
+         at its peak waiting for the first camera that DOES read it: the quit
+         card's, and the opening frames of a chapter. Let it go here too. */
+      this.shake = Math.max(0, (this.shake || 0) - dt * 3.2);
       this.attractCamera(dt, shot, air.flying || air.height > 0.05);
     }
 
@@ -7670,6 +7902,30 @@
       const target = [car.x + fx * S.tf, car.y + S.th, car.z + fz * S.tf];
       const fov = S.fov - k * 2.0;
 
+      /* ------------------------------ THE HEIGHT THE SHOT HANGS FROM --
+       *
+       * The marks are the car's, so the lens used to take every change in the
+       * car's vertical speed in the same frame the car did: the corner where
+       * the blocked bore's incline meets its crest, the touchdown after every
+       * jump. A camera operator's hands do not do that - they carry through
+       * a bump and catch up.
+       *
+       * So the shot hangs from a point that FOLLOWS the car's height through
+       * a critically damped spring fed the car's own vertical speed. Tracking
+       * velocity as well as position means a steady climb is followed with
+       * no lag at all - the framing up a ramp is exactly what the mark says -
+       * and only a CHANGE of rate is rounded off, over a few hundredths of a
+       * second. Integrated implicitly, so a long frame cannot make it ring.
+       * A cut, or a car that has been moved by something else, snaps it -
+       * and snaps it MOVING at the car's own vertical speed, because a cut
+       * mid-flight otherwise starts the shot a beat behind a falling car. */
+      const Y = this.attractAnchor || (this.attractAnchor = { y: car.y, v: 0, last: car.y });
+      const moved = !(Math.abs(car.y - Y.last) <= 2 + 40 * dt) || !(Math.abs(car.y - Y.y) < 2);
+      const carRate = (moved || !(dt > 0)) ? 0 : (car.y - Y.last) / dt;
+      const snap = !!this.attractCut || !this.attractEye || moved || !(dt > 0);
+      const cy = attractRide(Y, car.y, carRate, dt, snap);
+      Y.last = car.y;
+
       /* --------------------------------------------- HOLDING THE SHOT --
        *
        * WHAT A HELD SHOT IS DAMPING, AND WHAT IT IS NOT.
@@ -7717,9 +7973,9 @@
         }
         this.attractFov = M.damp(this.attractFov, fov, 5, dt);
       }
-      V3.set(this.eye, car.x + this.attractEye[0], car.y + this.attractEye[1],
+      V3.set(this.eye, car.x + this.attractEye[0], cy + this.attractEye[1],
         car.z + this.attractEye[2]);
-      V3.set(this.target, car.x + this.attractTarget[0], car.y + this.attractTarget[1],
+      V3.set(this.target, car.x + this.attractTarget[0], cy + this.attractTarget[1],
         car.z + this.attractTarget[2]);
 
       /* NEVER FILM FROM UNDER THE ROAD, and the road under the LENS is not the
@@ -7735,15 +7991,39 @@
 
          AFTER the damp, not before it: a clamp applied to the mark is a clamp
          the smoothing can then undo, and a lens that dips under a deck for a
-         quarter of a second is a lens that was never clamped at all. */
+         quarter of a second is a lens that was never clamped at all.
+
+         AT THE EXACT ARC LENGTH, NOT THE SAMPLE. `pr.s` is the nearest
+         centreline sample, six units apart - so on an incline the floor under
+         a lens pinned to it climbed as a staircase, a step of up to one and a
+         half units every sixth frame, and the camera shook all the way up
+         every ramp in the reel. `sExact` is continuous. */
       const pr = this.track.project(this.eye[0], this.eye[2], s);
-      const cp = this.track.at(pr.s, this._attractProbe || (this._attractProbe = {}));
+      const ps = M.clamp(pr.sExact, 0, this.track.length - 2);
+      const cp = this.track.at(ps, this._attractProbe || (this._attractProbe = {}));
       // ...and a ramp is floor too; see attractCamFloor
-      const floor = (cp.y || 0) + attractCamFloor(pr.s) + 0.55;
+      const floor = (cp.y || 0) + attractCamFloor(ps) + 0.55;
       if (this.eye[1] < floor) {
         this.eye[1] = floor;
-        this.attractEye[1] = floor - car.y;
+        this.attractEye[1] = floor - cy;
       }
+      /* ...and the lens height itself rides the same spring, because a floor
+         the lens is PINNED to hands it every corner in that floor: the crease
+         where the bore's incline meets its crest, the moment the clamp takes
+         hold or lets go. Fed the pinned height's own rate, so a lens gliding
+         up a ramp is not held back, only carried round the corners. It may
+         sit a fraction under the floor while it does, never more - the floor
+         keeps a little over half a unit of air under the glass for that. */
+      const E = this.attractEyeRide || (this.attractEyeRide = { y: this.eye[1], v: 0, last: this.eye[1] });
+      const eyeRate = (snap || !(Math.abs(this.eye[1] - E.last) <= 2 + 40 * dt))
+        ? carRate : (this.eye[1] - E.last) / dt;
+      E.last = this.eye[1];
+      attractRide(E, this.eye[1], eyeRate, dt, snap);
+      /* The give is a floor for the SPRING, not only for the picture: a lens
+         that reaches it stops there and comes back up from rest, rather than
+         being held flat while the spring's own state sinks on underneath. */
+      if (E.y < floor - 0.25) { E.y = floor - 0.25; E.v = Math.max(0, E.v); }
+      this.eye[1] = E.y;
 
       V3.set(this.up, 0, 1, 0);
       this.fov = this.attractFov;
@@ -8545,7 +8825,8 @@
        *   it LOOKS INTO the corner - the eyes go to the apex before the car
        *   gets there, a few degrees ahead of the yaw rate;
        *   it LEANS against the corner, pushed toward the outside door by the
-       *   lateral load, a centimetre or two;
+       *   lateral load, a centimetre or two, and is thrown about by the
+       *   brakes, the landings and the hits - see povHead;
        *   and it NODS under braking and settles back under power.
        *
        * Every term is damped, so none of it is a twitch, and all of it is
@@ -8555,15 +8836,14 @@
       const step = Math.max(1e-3, dt);
       const accel = this._povV === undefined ? 0 : (v - this._povV) / step;
       this._povV = v;
-      const lat = M.clamp(v * yr / 26, -1.4, 1.4);
-      this._povLat = M.damp(this._povLat || 0, lat, 3.2, dt);
+      const head = this.povHead(car, dt, accel);
       this._povLon = M.damp(this._povLon || 0, M.clamp(accel / 28, -1, 1), 2.6, dt);
       this._povLook = M.damp(this._povLook || 0,
         M.clamp(yr * 0.13 + (car.steer || 0) * 0.22, -0.11, 0.11), 2.2, dt);
       /* The free-look turns the head, and the car turns the body under it.
          Composed here because the input belongs to this side; the core is
          given the answer rather than the parts. */
-      const yaw = car.yaw + (this.lookYaw || 0) + this._povLook;
+      const yaw = car.yaw + (this.lookYaw || 0) + this._povLook + head.yaw;
       /* THE LOOK PITCHES WITH THE CABIN IT IS BOLTED INTO. The core's look
          pitch is UP-positive (see POV_PITCH, and `rise` in Rig::pov) while
          the body is drawn NOSE-DOWN positive (M4.trs), so adding the body's
@@ -8572,28 +8852,22 @@
          up into the headliner. Negated, the dash holds still in the frame
          whatever the road does - which is what sitting in a car looks like. */
       const pitch = -Game.bodyPitch(car)
-        + (this.lookPitch || 0) * 0.9 + POV_PITCH + this._povLon * 0.022;
+        + (this.lookPitch || 0) * 0.9 + POV_PITCH + this._povLon * 0.022 + head.pitch;
       const cam = NR.camPov ? NR.camPov(this.model, yaw, pitch) : null;
       /* No core, no eye. Rather than invent one, say so and let the chase
          rig below run: a first-person view that cannot be computed should
          degrade to a camera that works, not to a camera at the origin. */
       if (!cam) return false;
 
-      /* Two centimetres of head shake at speed, and none at a standstill. A
-         fixed camera is the one that most needs it: with no boom to absorb
-         anything, a perfectly still eye at two hundred is what makes a fixed
-         view read as a still image with a road texture scrolling past it. */
-      const rush = this.speedRush || 0, boost = this.boostFx || 0;
-      const j = (this.shake || 0) * 0.9 + rush * 0.004 + boost * 0.010
-        + (car.offroad ? Math.min(0.05, car.speed * 0.0009) : 0);
-      const t = this.time;
-      // the lean: toward the outside door, along the car's own right axis
-      const m = this.model, lean = -this._povLat * 0.013;
-      V3.set(this.eye,
-        cam[0] + Math.sin(t * 33.0) * j + (this.jerkX || 0) * 0.5 + m[0] * lean,
-        cam[1] + Math.sin(t * 41.0 + 1.1) * j * 0.7 + (this.jerkY || 0) * 0.5 + m[1] * lean,
-        cam[2] + Math.cos(t * 29.0) * j + m[2] * lean);
-      V3.set(this.target, cam[3], cam[4], cam[5]);
+      /* The head's place in the cabin - see povHead - along the car's own
+         axes, and the eye AND the point it looks at move together: a head
+         that shifts sideways does not also swivel. */
+      const m = this.model, o = head.p;
+      const hx = m[0] * o[0] + m[4] * o[1] + m[8] * o[2];
+      const hy = m[1] * o[0] + m[5] * o[1] + m[9] * o[2];
+      const hz = m[2] * o[0] + m[6] * o[1] + m[10] * o[2];
+      V3.set(this.eye, cam[0] + hx, cam[1] + hy, cam[2] + hz);
+      V3.set(this.target, cam[3] + hx, cam[4] + hy, cam[5] + hz);
       /* ...and the view leans with the body. See the note in driver.rs: an
          interior is bolted to the car, so a camera inside one that stays
          level makes the whole cabin rotate about the frame. */
@@ -8610,12 +8884,111 @@
       /* ...and it opens less than it did. Seven degrees of boost punch from
          inside a cabin swings the pillars and the roof into the frame; five
          is still a kick and keeps the cockpit composed. */
+      const rush = this.speedRush || 0, boost = this.boostFx || 0;
       this.fov = M.damp(this.fov,
         Math.min(80, 62 + this.speedFx * 2.2 + rush * 1.4 + boost * 5.0
           + (this.raceModeFx || 0) * 3.0), 4.8, dt);
-      this.fov += (this.shake || 0) * 2.0 + (this.jerkFov || 0) * 0.7;
+      /* A lens that pumps on a hit swings the pillars and the roof across
+         the frame, so from the seat it is a flicker of it, no more. */
+      this.fov += Math.min(1, this.shake || 0) * 0.6 + (this.jerkFov || 0) * 0.25;
       this.fov -= (this.slowFov || 0) * 9.0;
       return true;
+    }
+
+    /* THE HEAD IN THE CABIN.
+     *
+     * Everything the car does reaches the driver through the seat, and the
+     * head is a weight on a neck: a damped spring, a little over two cycles
+     * a second, driven by the car's own acceleration in its own axes. So a
+     * corner carries it toward the outside door, the brakes carry it
+     * forward, a landing presses it down, and a hit throws it - and the neck
+     * brings it back each time.
+     *
+     * WHAT THIS REPLACED. The shake and the race-mode jerk were thrown at the
+     * eye as world-space offsets sized for the chase camera, and a hard hit
+     * moved it most of a metre: through the pillar, into the door, out of
+     * the car, and the frame went to a smear of the inside of the body
+     * panels. The same inputs still drive the head, but as forces on the
+     * neck, and however hard they push, the head stops at the edge of the
+     * room it has - four centimetres across, three fore and aft and up and
+     * down, the hole map in the cockpit notes - by a soft limit, so it slows
+     * into the edge rather than hitting it.
+     *
+     * The rest of a hit is a TURN of the head, a degree or so, which cannot
+     * take the eye anywhere. Returns the offset in metres (right, up,
+     * forward) and the extra yaw and pitch. */
+    povHead(car, dt, accel) {
+      /* (HEAD_ROOM and the scratch above live outside the frame: this runs
+         every frame the driver's seat is on screen, and allocates nothing.) */
+      const H = this._povHead || (this._povHead = {
+        p: [0, 0, 0], v: [0, 0, 0], y: null, vy: 0, shake: 0,
+        res: { p: [0, 0, 0], yaw: 0, pitch: 0 },
+      });
+      const step = Math.min(0.1, Math.max(0, dt));
+      if (step <= 0) return H.res;          // paused: hold where it is
+      const v = car.speed || 0;
+      // the car's acceleration in its own axes, metres per second squared
+      const aLat = M.clamp(v * (car.yawRate || 0), -30, 30);
+      const aLon = M.clamp(accel, -40, 40);
+      let aUp = 0;
+      if (H.y !== null) {
+        const vy = (car.y - H.y) / step;
+        aUp = M.clamp((vy - H.vy) / step, -60, 60);
+        H.vy = vy;
+      }
+      H.y = car.y;
+      if (Math.abs(aUp) > 59 && Math.abs(H.vy) > 40) { aUp = 0; H.vy = 0; }   // a respawn, not a bump
+      // the race mode's buzz, felt through the seat rather than cut into the frame
+      const jx = (this.jerkX || 0) * 28, jy = (this.jerkY || 0) * 28;
+
+      /* A hit is a kick to the head, as big as the jump in the shake it set,
+         mostly sideways and forward. */
+      const sh = this.shake || 0;
+      if (sh > H.shake + 0.04) {
+        const kick = Math.min(1.2, sh - H.shake) * 0.8;
+        const sx = Math.random() < 0.5 ? -1 : 1;
+        H.v[0] += sx * kick * (0.6 + Math.random() * 0.4);
+        H.v[1] += kick * (Math.random() - 0.3) * 0.5;
+        H.v[2] += kick * (0.3 + Math.random() * 0.5);
+      }
+      H.shake = sh;
+
+      // the neck: 2.2 Hz, a little under critically damped
+      const w = 2 * Math.PI * 2.2, z = 0.72, gain = 0.43;
+      const drive = H.drive || (H.drive = [0, 0, 0]);
+      drive[0] = -(aLat + jx) * gain; drive[1] = -(aUp + jy) * gain * 0.7; drive[2] = -aLon * gain;
+      const n = Math.max(1, Math.ceil(step / (1 / 120)));
+      const h = step / n;
+      for (let s = 0; s < n; s++) {
+        for (let i = 0; i < 3; i++) {
+          H.v[i] += (drive[i] - w * w * H.p[i] - 2 * z * w * H.v[i]) * h;
+          H.p[i] += H.v[i] * h;
+        }
+      }
+      // the room the head has, and a soft edge to it
+      const R = HEAD_ROOM;
+      let e = 0;
+      for (let i = 0; i < 3; i++) e += (H.p[i] / R[i]) * (H.p[i] / R[i]);
+      e = Math.sqrt(e);
+      if (e > 2) { for (let i = 0; i < 3; i++) { H.p[i] *= 2 / e; H.v[i] *= 0.5; } e = 2; }
+      const k = e > 0.6 ? (0.6 + 0.4 * Math.tanh((e - 0.6) / 0.4)) / e : 1;
+
+      /* The buzz of speed, the boost and the rough: six millimetres at the
+         most, in the car's axes, so it is the head that trembles and not the
+         world - and a tremor, never a jolt. */
+      const rush = this.speedRush || 0, boost = this.boostFx || 0;
+      const j = Math.min(0.006, rush * 0.002 + boost * 0.004
+        + (car.offroad ? Math.min(0.004, v * 0.00015) : 0));
+      const t = this.time, out = H.res;
+      out.p[0] = H.p[0] * k + Math.sin(t * 33.0) * j;
+      out.p[1] = H.p[1] * k + Math.sin(t * 41.0 + 1.1) * j * 0.7;
+      out.p[2] = H.p[2] * k + Math.cos(t * 29.0) * j * 0.5;
+
+      // ...and a hit turns the head: a degree or so, fading with the shake
+      const turn = Math.min(0.018, sh * 0.012);
+      out.yaw = Math.sin(t * 11.3) * turn;
+      out.pitch = Math.sin(t * 13.7 + 1.3) * turn * 0.8;
+      return out;
     }
 
     /* THE DRONE.
@@ -8904,6 +9277,10 @@
          resolve it is a frame that shimmers for nothing, which is what a
          covered frame would otherwise do. */
       const doTaa = !!this.useTaa && !covered;
+      /* The projection before the jitter, for what is drawn AFTER the
+         temporal resolve - the rain - which must not shimmer by a sub-pixel
+         every frame. */
+      const projClean = M4.copy(this._projClean || (this._projClean = M4.make()), this.proj);
       if (doTaa) {
         this.frameIndex = (this.frameIndex + 1) & 7;
         const jx = (M4.halton(this.frameIndex + 1, 2) - 0.5) * 2 / this.w;
@@ -8913,6 +9290,9 @@
       M4.lookAt(this.view, this.eye, this.target, this.up);
       M4.mul(this.vp, this.proj, this.view);
       M4.invert(this.invVP, this.vp);
+      this.vpClean = M4.mul(this.vpClean || M4.make(), projClean, this.view);
+      this.invVPClean = M4.invert(this.invVPClean || M4.make(), this.vpClean);
+      this.camFar = CAM.far;
 
       /* THE SHADOW PASS.
        *
@@ -8948,8 +9328,8 @@
         gl.viewport(0, 0, this.w, this.h);
       }
 
-      const MRT = [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1];
-      const COLOR_ONLY = [gl.COLOR_ATTACHMENT0, gl.NONE];
+      const MRT = this._mrt || (this._mrt = [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+      const COLOR_ONLY = this._colorOnly || (this._colorOnly = [gl.COLOR_ATTACHMENT0, gl.NONE]);
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.rtScene.fb);
       if (gl.drawBuffers) gl.drawBuffers(MRT);
@@ -8968,15 +9348,27 @@
       this.scene.drawSky(this.invVP, this.tunnel, this.eye);
 
       const lf = this.levelFog || [1, 1, 1];
-      const fogTint = this.tunnel > 0.5 ? [0.35, 0.5, 0.7] : lf;
-      this.scene.bind(this.vp, this.eye, {
-        tunnel: this.tunnel,
-        fogDensity: this.fogDensity === undefined ? FX.fogDensity : this.fogDensity,
-        fogTint,
-        // which stretch of road the camera is on, so the dressing can draw the
-        // chunks it can see instead of all eighty kilometres of them
-        camS: this.distance,
-      });
+      const fogTint = this.tunnel > 0.5 ? TUNNEL_FOG : lf;
+      /* The sky's say in the surface shader: wetness, puddles and ripples.
+         See js/weather.js; all of it is zero when it is dry. Rain also closes
+         the distance in: countless drops too small to draw one by one are, in
+         aggregate, a veil - a downpour is a few hundred metres of visibility,
+         not a clear night with lines on it. An absolute term rather than a
+         multiple of the route's own fog, which on a clear route is so thin
+         that any multiple of it is still nothing. None of it in a tunnel,
+         where vis is zero. */
+      const W = this.weather;
+      this.scene.weatherSurface = W ? W.surface() : null;
+      const vis = W ? W.vis : 0;
+      const baseFog = this.fogDensity === undefined ? FX.fogDensity : this.fogDensity;
+      const bindOpts = this._bindOpts || (this._bindOpts = {});
+      bindOpts.tunnel = this.tunnel;
+      bindOpts.fogDensity = baseFog * (1 + 0.45 * vis) + vis * (1 / 1100);
+      bindOpts.fogTint = fogTint;
+      // which stretch of road the camera is on, so the dressing can draw the
+      // chunks it can see instead of all eighty kilometres of them
+      bindOpts.camS = this.distance;
+      this.scene.bind(this.vp, this.eye, bindOpts);
       this.scene.drawWorld(this.eye, CAM.far);
 
       /* The cars carry their own key light. The fill is tinted toward the
@@ -8984,9 +9376,9 @@
          are lit by the places they are in rather than by the same studio. */
       const lp = this.runtimePalette || (this.level && this.level.palette) || {};
       const fc = lp.edge || [0.30, 0.60, 0.85];
-      this.scene.fillCol = this.scene.level5BossLight || [
-        0.40 + fc[0] * 0.55, 0.48 + fc[1] * 0.55, 0.62 + fc[2] * 0.45,
-      ];
+      const fill = this._fillCol || (this._fillCol = [0, 0, 0]);
+      fill[0] = 0.40 + fc[0] * 0.55; fill[1] = 0.48 + fc[1] * 0.55; fill[2] = 0.62 + fc[2] * 0.45;
+      this.scene.fillCol = this.scene.level5BossLight || fill;
       this.scene.setBodyLight(this.eye, this.target, 1);
 
       // the rival first, so the player's own car composites over it
@@ -9009,9 +9401,10 @@
             this.scene.driverFigure.draw(this.rivalModel, 'raptor', this.rival.steer || 0);
           }
         } else {
-            this.scene.drawCar(this.rivalModel, true,
-            { livery: 'rival', steer: this.rival.steer || 0, damage: this.rivalDamage,
-              brake: lampOf(this.rival), ...wheelsOf(this.rival) });
+          const who = this._rivalWho || (this._rivalWho = { livery: 'rival' });
+          who.steer = this.rival.steer || 0; who.damage = this.rivalDamage;
+          who.brake = lampOf(this.rival);
+          this.scene.drawCar(this.rivalModel, true, wheelsOf(this.rival, who));
         }
       }
       /* Story Chapter 4 fields Nova and Kael beside the normal Player/Ryker
@@ -9024,9 +9417,9 @@
           e._model = e._model || M4.make();
           M4.trs(e._model, e.car.x, e.car.y, e.car.z,
             e.car.yaw, Game.bodyPitch(e.car), e.car.roll);
-          this.scene.drawCar(e._model, true,
-            { livery: 'rival', steer: e.car.steer || 0, brake: lampOf(e.car),
-              ...wheelsOf(e.car) });
+          const who = e._who || (e._who = { livery: 'rival' });
+          who.steer = e.car.steer || 0; who.brake = lampOf(e.car);
+          this.scene.drawCar(e._model, true, wheelsOf(e.car, who));
         }
       }
       /* Chapter 5's prize prototype is a separate vehicle, not a repaint of
@@ -9065,33 +9458,33 @@
          exists: the eye is in the seat now, so there IS something to hide,
          and the switch between the two is a move rather than a cut - see
          frameCam. */
-      this.scene.drawCar(this.model, false,
-        { livery: 'player', steer: this.car.steer || 0, damage: this.damage,
-          brake: lampOf(this.car),
-          // nobody sees the flare of their own lamps from the driving seat
-          // from inside, neither the beam flares nor the head this eye is in
-          // ...and "from inside" is where the eye IS, not which view was
-          // asked for, which is the whole of frameCam
-          noFlare: pov,
-          inside: pov,
-          /* How hard the boost is being asked for, which is what moves the
-             button on the wheel. Damped rather than the raw flag: a control
-             that snaps to its stop and back in one frame is a control that
-             was never pressed by a hand. */
-          press: this.boostPress || 0,
-          /* ...and which pedal the driver's feet are on. See PEDAL_GO in
-             crates/synx-core/src/driver.rs. */
-          go: this.pedalGo || 0,
-          stop: this.pedalStop || 0,
-          /* What the dash cluster shows - from the seat, and through the side
-             glass on the title screen, where the camera comes in close. */
-          gauges: this.cabinGauges(),
-          /* The menu's drive rolls and pitches the body on its springs over
-             four tyres that stay on the road - see idleFlyby. Its wheel
-             matrix is only good for the pose it was built with, so it is
-             only used while the car is still exactly there. */
-          wheelModel: this.attractWheelsFor(this.car),
-          ...wheelsOf(this.car) });
+      const who = this._playerWho || (this._playerWho = { livery: 'player' });
+      who.steer = this.car.steer || 0; who.damage = this.damage;
+      who.brake = lampOf(this.car);
+      // nobody sees the flare of their own lamps from the driving seat
+      // from inside, neither the beam flares nor the head this eye is in
+      // ...and "from inside" is where the eye IS, not which view was
+      // asked for, which is the whole of frameCam
+      who.noFlare = pov;
+      who.inside = pov;
+      /* How hard the boost is being asked for, which is what moves the
+         button on the wheel. Damped rather than the raw flag: a control
+         that snaps to its stop and back in one frame is a control that
+         was never pressed by a hand. */
+      who.press = this.boostPress || 0;
+      /* ...and which pedal the driver's feet are on. See PEDAL_GO in
+         crates/synx-core/src/driver.rs. */
+      who.go = this.pedalGo || 0;
+      who.stop = this.pedalStop || 0;
+      /* What the dash cluster shows - from the seat, and through the side
+         glass on the title screen, where the camera comes in close. */
+      who.gauges = this.cabinGauges();
+      /* The menu's drive rolls and pitches the body on its springs over
+         four tyres that stay on the road - see idleFlyby. Its wheel
+         matrix is only good for the pose it was built with, so it is
+         only used while the car is still exactly there. */
+      who.wheelModel = this.attractWheelsFor(this.car);
+      this.scene.drawCar(this.model, false, wheelsOf(this.car, who));
 
       /* Trails and particles are additive light and must not disturb the
          normal buffer - a smoke puff writing a normal makes the reflection
@@ -9463,10 +9856,12 @@
            now that the push is headroom-limited and cannot clip a channel to
            black; see the note beside it in POST_FRAG. */
         U.f(gl, u.uGradeSat, GRADE_SAT * (ls / 1.22) * (1 - raceModeGrade * .10));
-        U.f(gl, u.uGodAmt, doGod ? FX.godrayAmount : 0);
+        // the sun's shafts and its flare go behind the rain's cloud with it
+        const veil = this.scene.sunVeil === undefined ? 1 : this.scene.sunVeil;
+        U.f(gl, u.uGodAmt, doGod ? FX.godrayAmount * veil : 0);
         U.f(gl, u.uSsrAmt, doSsr ? 1 : 0);
         U.f(gl, u.uDofAmt, doDof ? 1 : 0);
-        U.f(gl, u.uFlareAmt, (this.flareAmount === undefined ? FX.flareAmount : this.flareAmount) * onScreen);
+        U.f(gl, u.uFlareAmt, (this.flareAmount === undefined ? FX.flareAmount : this.flareAmount) * onScreen * veil);
         U.f(gl, u.uAoAmt, doAo ? FX.aoAmount : 0);
         U.v2(gl, u.uSunUv, sunU, sunV);
         U.v2(gl, u.uRes, this.w, this.h);
@@ -9552,6 +9947,20 @@
         outRes = [this.outW, this.outH];
       }
 
+      /* 7b. THE RAIN, after the resolve and at the size of the screen: the
+         streaks and splashes into a layer of their own, and from the driver's
+         seat the water on the glass. Nothing at all when it is
+         dry, and nothing behind a full-frame panel. See js/weather.js. */
+      if (this.weather && this.weather.gfx) {
+        const ow = this.outW || this.w, oh = this.outH || this.h;
+        if (!covered) {
+          this.weather.drawLayer(this, ow, oh);
+          this.weather.drawGlass(this, ow, oh, pov, dt);
+        } else {
+          this.weather.layerOn = 0;
+        }
+      }
+
       // 8. sharpen, grain and scanlines, straight to the screen
       this.blit(this.pFinal, null, (u) => {
         gl.activeTexture(gl.TEXTURE0);
@@ -9581,6 +9990,7 @@
         U.i(gl, u.uShards, 2);
         U.f(gl, u.uCrackAmt, crack ? this.glass.amount : 0);
         gl.activeTexture(gl.TEXTURE0);
+        if (this.weather) this.weather.bindFinal(this, u, this.scene.white);
       });
 
       /* Release every unit the scene pass samples from. A render target left
@@ -9964,6 +10374,10 @@
              take the frame with it. */
           this.pumpPad(dt);
           this.update(dt * this.timeScale);
+          /* The sky, once a frame whatever state the game is in, and on the
+             same dilated clock as the world: a slow-motion beat slows the
+             rain with it. See js/weather.js. */
+          if (this.weather) this.weather.tick(dt * this.timeScale);
           const tDraw = performance.now();
           // ...and the interface animates on the wall clock, because a menu
           // that eases in at quarter speed reads as the game having hung

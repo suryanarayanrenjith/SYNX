@@ -2738,7 +2738,7 @@
         if (!OAC) { note('PROBLEM: no OfflineAudioContext to render the engine into'); PROBE = ''; return; }
         var SR = 48000, SECS = 2, RPM = 3000;
         var oc = new OAC(2, SR * SECS, SR);
-        oc.audioWorklet.addModule('js/engine-worklet.js?v=rust-1').then(function () {
+        oc.audioWorklet.addModule('js/engine-worklet.js?v=v8-2').then(function () {
           var nd = new AudioWorkletNode(oc, 'synx-engine', {
             numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
           });
@@ -2764,11 +2764,23 @@
             }
             return Math.sqrt(s1 * s1 + s2 * s2 - c * s1 * s2) / n;
           };
+          /* WHERE THE RUMBLE ACTUALLY IS. Each bank fires at 0, 270, 450, 540
+             (and the mirror), a pattern that repeats every 720 degrees - so
+             its energy sits at the ODD multiples of rpm/120: crank orders
+             1.5 and 2.5, 75 and 125 Hz at 3000 rpm. Exactly half the firing
+             rate (order 2, 100 Hz) is where those uneven pulses CANCEL: four
+             unit phasors at 0, 3pi, 5pi and 6pi sum to zero. This used to
+             measure 100 Hz, and passed only because the old engine clipped
+             so hard that 25 + 75 came back as an intermodulation product.
+             Two banks on one identical pipe score about 3% here; a real
+             cross-plane pair scores well over 100. */
           var fire = (RPM / 60) * 4;            // 200 Hz: the firing rate
-          var half = fire / 2;                  // 100 Hz: the cross-plane rumble
+          var o15 = (RPM / 60) * 1.5, o25 = (RPM / 60) * 2.5;
+          var half = power(o15) > power(o25) ? o15 : o25;
           var ratio = power(fire) > 0 ? power(half) / power(fire) : 0;
           note('engine: rendered ' + SECS + 's at ' + RPM + ' rpm, rms ' + rms.toFixed(4));
-          note('engine: ' + half + ' Hz (cross-plane rumble) is ' + (ratio * 100).toFixed(0) +
+          note('engine: ' + half + ' Hz (cross-plane rumble, crank order ' +
+               (half === o15 ? '1.5' : '2.5') + ') is ' + (ratio * 100).toFixed(0) +
                '% of ' + fire + ' Hz (firing rate)');
           if (!(rms > 0.01)) note('PROBLEM: the engine rendered silence');
           else if (ratio < 0.25) {

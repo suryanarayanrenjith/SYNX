@@ -72,7 +72,15 @@
         diag: doc.getElementById('diag'),
         version: doc.getElementById('version'),
         graphics: doc.getElementById('graphics'),
+        network: doc.getElementById('network'),
+        update: doc.getElementById('update'),
+        updateFrom: doc.getElementById('updateFrom'),
+        updateTo: doc.getElementById('updateTo'),
+        updateGet: doc.getElementById('updateGet'),
+        updateClose: doc.getElementById('updateClose'),
       };
+      /** The version the host was built as, for the update check. */
+      this.version = null;
       this.tab = 0;
       this.monitors = [];
       this.sizes = [];
@@ -95,7 +103,10 @@
           this.monitors = view.monitors || [];
           this.sizes = view.sizes || [];
           this.startedGpu = !!view.started_gpu;
-          this.ui.version.textContent = 'v' + (view.version || '1.0.0');
+          /* The version the host was built as - the release this code line
+             is on, however it was built (see src-tauri/build.rs). */
+          this.version = view.version || null;
+          this.ui.version.textContent = view.version ? 'v' + view.version : '-';
           this.ui.graphics.textContent = view.graphics || '-';
         } catch (e) {
           this.bootDone();
@@ -114,7 +125,8 @@
         this.game = this.readLocal(S.KEY, {});
         this.monitors = [{ name: 'DISPLAY (BROWSER)', width: 1920, height: 1080, scale: 1, primary: true }];
         this.sizes = [[1280, 720], [1600, 900], [1920, 1080]];
-        this.ui.version.textContent = 'dev';
+        // no host, so no build to name - the row's own "unknown"
+        this.ui.version.textContent = '-';
         this.ui.graphics.textContent = 'browser';
       }
 
@@ -198,6 +210,10 @@
       // ...and only now, once there is something on screen, the diagnostics:
       // they cost a subprocess or two and must never delay the first paint.
       this.loadDiagnostics();
+
+      // ...and the network, for the same reason: whether there is one, and
+      // whether this build is the newest. See watchNetwork.
+      this.watchNetwork();
 
       // Focus PLAY, because it is what almost everyone is here to press.
       global.setTimeout(() => this.ui.play.focus(), 60);
@@ -661,6 +677,17 @@
         if (native) { try { await invoke('diag_clear'); } catch (e) { /* already gone */ } }
         this.ui.alert.hidden = true;
       });
+      if (this.ui.updateGet) this.ui.updateGet.addEventListener('click', () => this.openSite());
+      if (this.ui.updateClose) {
+        this.ui.updateClose.addEventListener('click', () => {
+          /* For this launch only. The next one says it again if the build is
+             still behind: a notice that stays dismissed for good is one the
+             player forgets they ever saw. */
+          this.updateDismissed = true;
+          this.ui.update.hidden = true;
+          this.ui.play.focus();
+        });
+      }
       global.addEventListener('keydown', (e) => {
         const k = (e.key || '').toLowerCase();
         if (k === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); this.saveNow(); }
@@ -901,6 +928,61 @@
     quit() {
       if (native) invoke('quit_app').catch(() => {});
       else global.close();
+    }
+
+    // ----------------------------------------------------------- network --
+
+    /* THE NETWORK ROW AND THE UPDATE NOTICE.
+     *
+     * Both are the connectivity monitor's (js/connectivity.js): the row says
+     * what it last proved, and the notice comes from the same probe - the
+     * first thing it asks is the SYNX site's /api/version, which answers with
+     * the newest release - so knowing whether this build is behind costs
+     * nothing on top of knowing whether there is an internet. Offline, the row
+     * says so and there is simply no notice. */
+    watchNetwork() {
+      const C = global.NR && global.NR.Connectivity;
+      if (!C) return;
+      const paint = () => {
+        const el = this.ui.network;
+        if (!el) return;
+        el.textContent = C.online ? 'ONLINE' : (C.offline ? 'OFFLINE' : 'CHECKING');
+        el.setAttribute('data-state', C.state);
+        el.title = C.why || '';
+      };
+      C.subscribe((kind) => { if (kind === 'state') paint(); });
+      paint();
+      C.start();
+      if (this.version && global.NR.Updater) {
+        global.NR.Updater.watch(this.version, (u) => this.showUpdate(u));
+      }
+    }
+
+    showUpdate(u) {
+      const el = this.ui.update;
+      if (!el) return;
+      if (!u.behind || this.updateDismissed) { el.hidden = true; return; }
+      this.ui.updateFrom.textContent = 'v' + u.current;
+      this.ui.updateTo.textContent = 'v' + u.latest;
+      el.title = 'SYNX ' + u.latest + ' is out' + (u.release && u.release.publishedAt
+        ? ', published ' + u.release.publishedAt.slice(0, 10) : '') + '. You are running ' + u.current + '.';
+      el.hidden = false;
+    }
+
+    /* The SYNX site's download section, in a window of the host's own: it
+       knows this build's version, platform and architecture, and passes them
+       along so the site picks the right file (see open_site in src-tauri/src/
+       main.rs). In a plain browser, a tab does the same job. */
+    openSite() {
+      if (native) {
+        invoke('open_site', { section: 'download' }).catch((e) => {
+          this.note('Could not open the SYNX site: ' + msgOf(e), true);
+        });
+        return;
+      }
+      const C = global.NR && global.NR.Connectivity;
+      const site = (C && C.SITE) || 'https://synx-racing.vercel.app';
+      try { global.open(site + '/#download', '_blank', 'noopener'); } catch (e) { /* popups blocked */ }
     }
   }
 

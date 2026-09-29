@@ -1826,7 +1826,7 @@
       this.setLayer(this.ui.letterbox, false);
       this.ui.fade.style.opacity = '0';
       this.setRoot(false);
-      this.ui.root.classList.remove('rain');
+      if (this.g.weather && this.g.weather.mode === 'story') this.g.weather.clear();
       global.document.body.classList.remove('story-hub', 'story-cinematic', 'story-dialogue');
     }
 
@@ -2209,10 +2209,18 @@
       const arrival = !!opts.fromPrologue;
       const arrivalS = opts.arrivalS || this.g.car.sTrack;
       this.g.applyLevel();
-      this.ui.root.classList.toggle('rain', id === 3);
+      /* MIRAGE CIRCUIT IS SET IN A STORM, and the storm is in the world:
+         streaks lit by the lamps, splashes, standing water with rings on it,
+         and water on the glass from the seat. It is already pouring when the chapter
+         opens. The one chapter with weather - see js/weather.js. */
+      if (this.g.weather) this.g.weather.story(id === 3 ? 0.9 : 0);
       if (id === 3) {
-        this.g.levelWet = .86;
-        this.g.scene.wet = .86;
+        /* The gloss every outdoor surface takes, at the ceiling the weather
+           itself raises a route to; the standing water, the darkened asphalt
+           and the ripples are the rain's, on top of it. Any higher and the
+           two together turn the road into a mirror of the sky. */
+        this.g.levelWet = .70;
+        this.g.scene.wet = .70;
       } else if (id === 4) {
         this.g.scene.sunColor = [1.0, .43, .16];
         this.g.scene.ambInt = 1.42;
