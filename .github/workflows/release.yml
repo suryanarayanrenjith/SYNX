@@ -347,3 +347,47 @@ jobs:
           # repository should be pointing people at.
           prerelease: false
           make_latest: true
+
+      # THE SITE FOLLOWS THE RELEASE.
+      #
+      # synx-racing.vercel.app reads the newest release at runtime and catches
+      # up by itself within a couple of minutes. What only a BUILD can change
+      # is what is baked into it: the release it paints first and falls back
+      # on, and the version in its search-engine data and link previews. A new
+      # deployment also starts with an empty edge cache, so the page, the
+      # installers' /api/release and the game's /api/version all have this
+      # release the moment it is up.
+      #
+      # SITE_DEPLOY_HOOK is a Vercel deploy hook for the synx-landing project
+      # (Vercel: the project's Settings -> Git -> Deploy Hooks, branch main),
+      # kept as a repository secret. Without it this step says so and stops.
+      #
+      # It waits for GitHub's API to list the release first, because that is
+      # what the site's build reads and the list can lag the publish by a few
+      # seconds: a deploy that started too early would bake the old release in
+      # all over again. Nothing here can fail the run - the release is out.
+      - name: Redeploy the site
+        continue-on-error: true
+        env:
+          SITE_DEPLOY_HOOK: ${{ secrets.SITE_DEPLOY_HOOK }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          if [ -z "$SITE_DEPLOY_HOOK" ]; then
+            echo "::notice::SITE_DEPLOY_HOOK is not set, so the site was not redeployed; it picks up ${TAG} by itself within a few minutes."
+            exit 0
+          fi
+          list="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=10"
+          for i in $(seq 1 30); do
+            seen=$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "$list" \
+                   | jq -r --arg t "$TAG" 'any(.[]; .tag_name == $t and (.draft | not) and (.prerelease | not) and (.assets | length) > 0)' \
+                   || true)
+            [ "$seen" = "true" ] && break
+            echo "GitHub's release list does not show ${TAG} yet, asking again in 10 s"
+            sleep 10
+          done
+          if curl -fsS -X POST "$SITE_DEPLOY_HOOK" -o /dev/null; then
+            echo "Asked Vercel to redeploy the site for ${TAG}."
+          else
+            echo "::warning::The site's deploy hook did not answer; the site still picks up ${TAG} by itself within a few minutes."
+          fi
