@@ -1148,6 +1148,7 @@
         choiceQuestion: id('storyChoiceQuestion'), choiceDetail: id('storyChoiceDetail'),
         choiceEdge: id('storyChoiceEdge'), choiceOpen: id('storyChoiceOpen'),
         tutorial: id('storyTutorial'), tutorialText: id('storyTutorialText'), tutorialFill: id('storyTutorialFill'),
+        tutorialKicker: id('storyTutorialKicker'),
         waypoint: id('storyWaypoint'), waypointKicker: id('storyWaypointKicker'), waypointTitle: id('storyWaypointTitle'), waypointDistance: id('storyWaypointDistance'),
         raceMeta: id('storyRaceMeta'), raceChapter: id('storyRaceChapter'), raceTrack: id('storyRaceTrack'), raceRival: id('storyRaceRival'), standings: id('storyStandings'),
         raceObjective: id('storyRaceObjective'),
@@ -1160,7 +1161,7 @@
         this.g.menuItems[0].act = () => this.enterStory();
       }
       this.g.storySave = this.save;
-      global.__SYNX_STORY__ = {
+      if ((global.NR || {}).DEV !== false) global.__SYNX_STORY__ = {
         manager: this,
         chapters: CHAPTERS.slice(1).map(c => ({ id: c.id, title: c.title, track: c.track, rival: c.rival })),
         saveKey: SAVE_KEY,
@@ -2014,15 +2015,26 @@
 
          `bind` names the ACTION, so the row and the test cannot drift apart
          - the thing the card asks for is the thing `test` is watching. */
+      /* FOCUS is the sixth lesson, and the one the card cannot teach by the
+         input alone: what it asks for is the slowdown actually taking hold,
+         read off the game rather than off the key, so a press that FOCUS
+         refuses (still charging) does not tick it. Its label comes through
+         `tutorialLabel` like every other step - the key the player has
+         FOCUS on, never a typed one - and its kicker says the half of it a
+         key name cannot: that the car is sharper while it holds. */
       this.tutorialSteps = [
         { id: 'accelerate', bind: 'throttle', what: 'ACCELERATE', test: i => i.throttle > 0.25 },
         { id: 'steer', bind: 'left', also: 'right', what: 'STEER', test: i => Math.abs(i.steer) > 0.25 },
         { id: 'brake', bind: 'brake', what: 'BRAKE', test: i => i.brake > 0.25 },
         { id: 'boost', bind: 'boost', what: 'BOOST', test: i => i.boost },
         { id: 'drift', bind: 'ebrake', also: 'left', what: 'DRIFT', test: i => i.ebrake && Math.abs(i.steer) > 0.25, join: ' + ' },
+        { id: 'focus', bind: 'focus', what: 'FOCUS', kicker: 'DRIVER LINK  //  TIME SLOWS, THE CAR ANSWERS SHARPER',
+          test: () => !!(this.g.focus && this.g.focus.on && this.g.focus.k > 0.5) },
       ];
       this.tutorialIndex = 0;
       this.tutorialHold = 0;
+      // the lesson starts with the reserve full, whatever the menu left in it
+      if (this.g.resetFocus) this.g.resetFocus();
       this.updateTutorialCard();
       this.setLayer(this.ui.tutorial, true);
     }
@@ -2055,6 +2067,7 @@
 
     updateTutorialCard() {
       const step = this.tutorialSteps[this.tutorialIndex];
+      if (this.ui.tutorialKicker) this.ui.tutorialKicker.textContent = (step && step.kicker) || 'DRIVER LINK';
       if (!step) {
         this.ui.tutorialText.textContent = 'VECTOR RUN - KEEP MOVING';
         this.ui.tutorialFill.style.transform = 'scaleX(1)';
@@ -2110,8 +2123,24 @@
       const g = this.g;
       g.time += dt; g.scene.time = g.time;
       g.fade += (g.fadeTarget - g.fade) * Math.min(1, dt * 3);
+      /* THE SEAWALL LAUNCH IS ON THIS ROAD, AND IT IS SOLID.
+         The tutorial steps the car itself rather than through Game.update,
+         and arming the stunt course is something Game.update does - so on the
+         one drive in the game that runs here, SEAWALL LAUNCH (1,120 units in,
+         squarely inside the 60..1800 approach) was a ramp that could be seen
+         and not hit: the car drove straight through the wedge as if it were
+         painted on. Armed the same way and at the same moment the race loop
+         arms it, before the car is stepped, so the incline is under the wheels
+         on the frame they reach it - and the landing pays out as it does in a
+         race. See Game.updateRamps. */
+      g.updateRamps();
       const wasBoost = g.car.boosting;
+      if (g.unpresentCar) g.unpresentCar(g.car);
+      if (g.focusAssistUndo) g.focusAssistUndo();
       g.car.update(dt, input, true);
+      if (g.focusAssist) g.focusAssist(dt, input);
+      // at this frame's instant, as in a race - see Game.presentCar
+      if (g.presentCar) g.presentCar(g.car);
       if (g.car.boosting && !wasBoost) g.audio.boostHit();
       if (g.car.lastHit) {
         g.car.lastHit = false;
@@ -3642,12 +3671,14 @@
         const err = want - e.car.sTrack;          // positive: it is behind station
         // behind: race for it. The pace lever only ever adds, never subtracts.
         e.driver.paceScale = clamp(1 + err / 340, 1, 1.26);
+        if (g.unpresentCar) g.unpresentCar(e.car);
         const cmd = e.driver.drive(dt, e.car, {
           raceOn: g.state === 'racing', rivalS: ahead.sTrack,
           rivalX: ahead.x, rivalZ: ahead.z, finishAt: g.finishAt,
         });
         // Race for position. Only the driver may brake for traffic or corners.
         e.car.update(dt, cmd, g.state === 'racing');
+        if (g.presentCar) g.presentCar(e.car);
         front = e.car;
       }
       this.resolveInvitationalCollisions();
@@ -3830,6 +3861,8 @@
 
     setVehicle(car, s, lateral, speed) {
       if (!car || !this.g.track) return;
+      // a placed car is exactly where it was put - see Game.presentCar
+      if (car._pose) car._pose.on = false;
       s = clamp(s, 0, this.g.track.length - 2);
       const p = this.g.track.at(s, {});
       const rx = Math.cos(p.yaw), rz = -Math.sin(p.yaw);

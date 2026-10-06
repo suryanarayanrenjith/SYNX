@@ -176,9 +176,49 @@
   /* THE GRADE'S OWN CHROMA PUSH, after the split tone and the S-curve.
      Separate from FX.saturation, which is the AgX look's - the transform's
      inset pulls chroma in on the way through and that number puts it back,
-     while this one is the colourist's pass on top of a finished picture. Both
-     ride the COLOUR row together. */
+     while this one is the colourist's pass on top of a finished picture. */
   const GRADE_SAT = 1.22;
+  /* THE ONE LOOK. There used to be a COLOUR row with three of these on it;
+     the game has a single grade now, a vintage one - eighties print stock
+     rather than a modern digital pop - and these are its two numbers against
+     the shipped FX.saturation and FX.contrast. Chroma comes in a little from
+     the old SYNTHWAVE setting (print film never reached the saturation a
+     sensor does) and the transform's contrast with it, because the toe and
+     shoulder of a print are gentler than a punchy digital curve. The rest of
+     the look - halation, the film's colour response, the grain - is in
+     POST_FRAG and FINAL_FRAG. */
+  const VINTAGE = { sat: 1.16, punch: 1.03 };
+  /* FOCUS - time slowed for the whole road at once. `scale` is how fast the
+     world runs inside it; `span` is how many REAL seconds a full reserve
+     lasts (so about three times that in race time) and `refill` how many it
+     takes to come back from empty; `min` is how much reserve it takes to
+     engage, and `lockout` how long after leaving before it starts refilling.
+     `in` and `out` are how quickly the world slows and recovers, per second,
+     and `ring` is how long the entry shockwave takes to cross the frame. */
+  const FOCUS = { scale: 0.32, span: 4.6, refill: 22, min: 0.24, lockout: 1.1, in: 5.6, out: 3.6, ring: 0.62 };
+  /* ...and what it hands the driver while it holds (see Game.focusAssist):
+     `lat` is extra cornering, in units/s^2 of lateral acceleration on top of
+     the solver's own ~27 (STEER_TARGET_G); `yawCap` bounds that turn at low
+     speed, where lat/speed would pivot the car on the spot; `settle` is how
+     fast a slide is drawn back onto the heading, per second of race time;
+     `grip` the tyres' extra bite; `hands` how fast the assist follows the
+     stick, per REAL second, so it answers at the speed of the player rather
+     than of the slowed world. */
+  const FOCUS_DRIVE = { lat: 26, yawCap: 1.2, settle: 3.5, grip: 0.35, hands: 14 };
+  /* THE ROAD, FELT - see Game.updateFeel.
+     LAUNCH: on the throttle with no more than `window` seconds of the count
+     left is a launch, worth `accel` units/s/s over `kick` seconds; held any
+     longer is wheelspin, bleeding `bog` of the speed per second for `spin`.
+     DRAFT: the wake is `near`..`far` units behind a car and `width` either
+     side of its line, from `minSpeed` up; full tow is `accel` units/s/s at the
+     car's top speed (less below it - drag is quadratic), `build` seconds in it
+     arm a slingshot worth `slingshot` units/s when the car pulls out.
+     NEAR_MISS: drawing level within `width` of another car's line at least
+     `rel` units/s faster, untouched, pays `boost` of the reserve, at most once
+     every `cool` seconds - small, so the chapters' boost tuning holds. */
+  const LAUNCH = { window: 1.05, kick: 0.85, accel: 11, spin: 0.6, bog: 2.4 };
+  const DRAFT = { near: 6, far: 60, width: 3.2, minSpeed: 30, accel: 4.2, build: 1.6, slingshot: 4.5 };
+  const NEAR_MISS = { width: 3.4, rel: 4, boost: 0.05, cool: 3 };
   /* The highest texture unit any pass binds to. 0 albedo, 1 environment,
      2 normal, 3 headlight cookie, 4 emissive, 5-7 the shadow cascades,
      8 the reflection probe, 9 and 10 the rain's ripple sheet and puddle map
@@ -1126,7 +1166,13 @@
      quantised so the render targets are only reallocated when the step
      actually changes rather than on every frame the measurement moves. See
      Game.adaptResolution. */
-  const DYN_STEPS = [1.0, 0.94, 0.88, 0.82, 0.76, 0.70, 0.645, 0.59, 0.54, 0.495, 0.45];
+  /* ...and on past 0.45, because the factor now multiplies RENDER SCALE before
+     the frame is laid out (see onResize): from a 200% ceiling, 0.32 of it is
+     the same 64% of native the ON floor has always meant. Which steps a
+     machine may take is decided by the floor in adaptResolution, so the
+     extra rungs are only ever reached from above native. */
+  const DYN_STEPS = [1.0, 0.94, 0.88, 0.82, 0.76, 0.70, 0.645, 0.59, 0.54, 0.495, 0.45,
+    0.41, 0.375, 0.345, 0.315, 0.29, 0.265, 0.24, 0.225];
   /* Everything the CONTROLS screen shows that is a setting rather than a key
      binding: the gamepad rows on tab 1 and the mouse rows on tab 2. The
      keyboard's own rows are bindings and are built from ACTIONS below. */
@@ -1426,6 +1472,11 @@
       hint: 'Locks the rear axle. Held into a corner with steering, this is the drift.' },
     { key: 'boost', label: 'BOOST', def: ['b'],
       hint: 'Spends the blue reserve. It refills off the throttle, not on a timer.' },
+    /* FOCUS. The whole road slowed at once - the car, the rival, the field
+       and the weather - so a decision that has to be made at two hundred
+       kilometres an hour can be made at seventy. See Game.updateFocus. */
+    { key: 'focus', label: 'FOCUS / SLOW TIME', def: ['v'],
+      hint: 'Slows the whole race - you, every rival and the world - to a third of its speed, in black and white, for as long as the reserve lasts. Press again to drop out early. It refills on its own, and it is offline only: an online race cannot slow down for one driver.' },
     { key: 'raceMode', label: 'RACE MODE / RESTART', def: ['r'],
       hint: 'Fires raceMode where a chapter has awarded it. Outside the campaign it restarts the run instead - but never inside a chapter, where a mis-hit would throw away a run that can be thirty kilometres long. Use RESTART on the pause menu for that.' },
     { key: 'camera', label: 'CAMERA VIEW', def: ['c'],
@@ -2541,6 +2592,8 @@
   uniform float uSat;          // AgX look: saturation past the inset
   uniform float uPunch;        // ...and its contrast power
   uniform float uGradeSat;     // ...and the grade's own, after the split tone
+  uniform float uFocus;        // FOCUS: 0 the world in colour, 1 the monochrome print
+  uniform float uFocusRing;    // ...its entry shockwave, 0..1 across the frame, <0 none
 
   float hash21(vec2 p) {
     p = fract(p * vec2(233.34, 851.73));
@@ -2646,6 +2699,24 @@
     vec2 c = uv - 0.5;
     float r2 = dot(c, c);
 
+    /* FOCUS ARRIVES AS A SHOCKWAVE. One ring, from the centre to past the
+       corners in about two thirds of a second, bending the picture outward
+       where it passes and fading as it goes - the moment time is caught.
+       Measured in a square space so it is a circle on any window, and applied
+       to the coordinate before anything reads the frame, so everything below
+       is bent with it. Nothing at all happens when there is no ring. */
+    float ring = 0.0;
+    if (uFocusRing >= 0.0) {
+      float asp = uRes.x / max(uRes.y, 1.0);
+      vec2 q = vec2(c.x * asp, c.y);
+      float rq = length(q);
+      float R = uFocusRing * 1.15;
+      ring = exp(-pow((rq - R) / 0.05, 2.0)) * (1.0 - uFocusRing);
+      uv -= (q / max(rq, 1e-4)) * vec2(1.0 / asp, 1.0) * ring * 0.024;
+      c = uv - 0.5;
+      r2 = dot(c, c);
+    }
+
     /* Restrained peripheral shutter blur and chromatic dispersion, in one loop.
 
        These used to be two passes, and the second undid the first: the blur
@@ -2712,7 +2783,18 @@
     vec4 vol = texture(uVol, uv);
     vec3 col = scene * vol.a + vol.rgb;
 
-    col += texture(uBloom, uv).rgb * uBloomAmt;
+    vec3 glow = texture(uBloom, uv).rgb;
+    col += glow * uBloomAmt;
+    /* HALATION, which is what a vintage print does to a bright light and a
+       digital sensor does not. Light that passes through the emulsion bounces
+       off the film base and comes back to expose the red layer again around
+       the source, so every tube and lamp on an old print wears a warm red-
+       orange skirt whatever colour it is. The bloom already says where the
+       light is and how far it has spread; this adds its luminance back in
+       that skirt's colour. It is on the light, before the display transform,
+       so it rolls off with everything else rather than sitting on top. */
+    const vec3 HALATION = vec3(0.44, 0.11, 0.032);
+    col += dot(glow, vec3(0.2126, 0.7152, 0.0722)) * HALATION * uBloomAmt;
     col += texture(uGod, uv).rgb * (1.0 - uTunnel) * uGodAmt;
 
     /* Bright roadside sources carry a very short exposure tail. It stays in
@@ -2774,12 +2856,17 @@
      *
      * Dividing by its own luminance makes each tint pure chroma: it moves the
      * hue and cannot move the exposure, on any route, at any weight. */
+    /* THE VINTAGE SPLIT. The print stock this game is graded as - an eighties
+       slide film, pushed - holds a cool indigo in its shadows and a warm
+       cream in its highlights: the neon sits in a violet night and every lamp
+       and sunset leans amber. Both tints are pure chroma (normalised below),
+       so they move hue and never exposure. */
     const vec3 LW = vec3(0.2126, 0.7152, 0.0722);
     float lum = dot(col, LW);
     float shW = 1.0 - smoothstep(0.0, 0.42, lum);        // low mids, not blacks
     float hiW = smoothstep(0.34, 1.05, lum);
-    vec3 shTint = vec3(0.970, 0.940, 1.080);             // violet
-    vec3 hiTint = vec3(0.985, 1.005, 1.045);             // cyan-ward
+    vec3 shTint = vec3(0.950, 0.955, 1.100);             // indigo night
+    vec3 hiTint = vec3(1.075, 1.000, 0.880);             // warm cream
     shTint /= dot(shTint, LW);
     hiTint /= dot(hiTint, LW);
     col *= mix(vec3(1.0), shTint, shW);
@@ -2797,9 +2884,16 @@
        the storm route, which lives entirely below the hinge, lost a quarter of
        its highlight range. Measured, not guessed - see tools/check.py colour
        for what the frame is supposed to look like afterwards. */
+    /* A print's curve is gentler than a punchy digital one - 1.10 against the
+       old 1.12 - and the pivot stays where the blacks are seated. */
     const float PIVOT = 0.30;
     col = max(col, 0.0);
-    col = PIVOT * pow(col / PIVOT, vec3(1.12));
+    col = PIVOT * pow(col / PIVOT, vec3(1.10));
+    /* ...AND A PRINT NEVER REACHES PAPER WHITE. The top of the range rolls
+       into a cream shoulder instead of clipping: nothing below three quarters
+       is touched, and a clipped highlight ends about a twelfth under white,
+       which is the creaminess an old slide has and a sensor does not. */
+    col = col / (1.0 + max(col - 0.74, 0.0) * 0.42);
 
     /* SATURATION THAT CANNOT PUNCH A HOLE.
      *
@@ -2821,11 +2915,45 @@
     float room = lowest < -1e-4 ? lum / -lowest : 1e9;
     col = lum + d * min(uGradeSat, max(1.0, room));
 
+    /* THE FILM'S OWN COLOUR RESPONSE. Print stock never rendered green the way
+       it rendered red: foliage, signage and the odd green lamp came out muted
+       and a little olive, while magentas and reds kept everything. So a pixel
+       whose green leads its other two channels gives back a share of that lead
+       to grey - by how far it leads, in proportion to its own brightness - and
+       nothing else is touched. Pure chroma again: it moves toward its own
+       luminance, never away from it. */
+    lum = dot(col, LW);
+    float gLead = clamp((col.g - max(col.r, col.b)) / max(lum, 1e-3), 0.0, 1.0);
+    col = mix(col, vec3(lum), gLead * 0.32);
+
+    /* ======================================== FOCUS: THE MONOCHROME PRINT ==
+     *
+     * Not a desaturate - a black-and-white PRINT. The mix is red-weighted the
+     * way a photographer's filter weights it, so the magenta tubes and the
+     * tail lamps stay the hottest things in the frame instead of greying out
+     * into the sky; an S runs through the mids so the blacks seat and the
+     * whites hold their edge; and the whole of it takes the faintest cool
+     * selenium tone. The colour drains from the EDGES IN as it engages - the
+     * centre of the road, where the eye is, goes last - and comes back from
+     * the centre out as it releases, so the transition reads as the eye
+     * narrowing rather than as a cut. The shockwave's ring is lit as it
+     * passes. Nothing here runs outside FOCUS. */
+    if (uFocus > 0.001) {
+      float rr = sqrt(r2);
+      float reach = clamp((uFocus - (0.55 - rr) * 0.8) * 2.2, 0.0, 1.0);
+      float m = clamp(dot(col, vec3(0.38, 0.52, 0.10)), 0.0, 1.0);
+      m = mix(m, m * m * (3.0 - 2.0 * m), 0.55);
+      vec3 print = m * vec3(0.975, 0.995, 1.04);
+      col = mix(col, print, reach);
+      // ...and the lens closes in on it
+      col *= 1.0 - 0.30 * uFocus * smoothstep(0.10, 0.62, r2);
+    }
+    col += ring * 0.26 * uFocus;
+
     /* The vignette is optical, so it belongs on the LIGHT rather than on the
        picture: a lens falls off toward the corner, it does not desaturate what
-       it is looking at. Eased from the old curve, which took the corners to
-       seventy per cent and took the frame's colour down with them. */
-    col *= smoothstep(1.35, 0.13, r2);
+       it is looking at. A touch deeper than it was, the way an older lens is. */
+    col *= smoothstep(1.24, 0.11, r2);
 
     col = pow(max(col, 0.0), vec3(1.0 / 2.2));
 
@@ -3239,12 +3367,23 @@
 
 
   void main() {
+    /* EASU ONLY. RCAS used to run here as well, and it is the most expensive
+       thing this pass ever did: a sharpen needs the upscaled image's four
+       neighbours, and in a single pass the only way to have them is to run
+       the whole twelve-tap reconstruction again for each one - sixty texture
+       reads per output pixel, at the output's resolution. Measured on
+       integrated graphics at the adaptive scaler's 64%, that one function was
+       six milliseconds a frame: a third of the budget, spent exactly when the
+       scaler had just bought frames back by drawing fewer pixels.
+       And it was doing a job the final pass already does. FINAL_FRAG's
+       sharpen is the same contrast-adaptive operation - a cross of
+       neighbours, limited by their min and max so nothing is pushed past what
+       its neighbourhood spans - run on this pass's output, where the
+       neighbours are four ordinary reads. SHARP now hands it the extra amount
+       RCAS used to apply (see the final pass in Game.draw), so the setting
+       still means what it says, for four reads instead of forty-eight.
+       rcas() is kept for reference and for a future two-pass version. */
     vec3 c = easu(vUv);
-    /* RCAS is what FSR is designed to be followed by, and it is the reason
-       the SHARP setting exists as something other than "more sharpening":
-       the amount is derived per pixel from the local range, so it cannot
-       push a pixel past what its neighbourhood already spans. */
-    if (uMode > 1.5) c = rcas(c, vUv, 0.25);
     outColor = vec4(max(c, 0.0), 1.0);
   }`;
 
@@ -3261,6 +3400,7 @@
   uniform float uSharpen;
   uniform float uGrain;
   uniform float uTime;
+  uniform float uFocus;        // FOCUS: the monochrome print takes a heavier grain
 
   /* --- the windscreen ----------------------------------------------------
      One sheet built on the CPU the moment something hits hard enough; see
@@ -3551,7 +3691,14 @@
 
     // the CRT pass goes last so nothing downstream averages it away
     c *= 1.0 - 0.030 * uGrain * step(0.5, fract(gl_FragCoord.y * 0.5));
-    c += (hash21(vUv * uRes + fract(uTime) * 91.0) - 0.5) * 0.014 * uGrain;
+    /* FILM GRAIN, shaped the way film's is: densest in the midtones, where a
+       silver halide crystal is as likely to have been struck as not, and
+       thinner in the deep shadows and the clipped whites, where nearly all of
+       them were or were not. Flat white noise reads as a sensor; this reads
+       as stock. FOCUS's monochrome print is a faster, grainier film. */
+    float gL = lum(c);
+    float gAmt = (0.55 + 1.9 * gL * (1.0 - gL)) * (0.020 * uGrain + 0.032 * uFocus);
+    c += (hash21(vUv * uRes + fract(uTime) * 91.0) - 0.5) * gAmt;
 
     /* ...and one more least-significant bit of dither, which is NOT part of
        the grain and is not optional.
@@ -3680,6 +3827,8 @@
         case 'boost': return q(B.A) || q(B.RB);
         case 'ebrake': return q(B.B) || q(B.LB);
         case 'raceMode': return q(B.X);
+        // the left stick's click: under the thumb that is already steering
+        case 'focus': return q(B.LS);
         case 'pause': return q(B.START);
         default: return false;
       }
@@ -3754,8 +3903,7 @@
       memoiseVao(this.gl);
       this.watchContext();
 
-      this.gameData = opts.gameData || {};
-      this.hud = new global.NR.Hud(opts.hudCanvas, this.gameData);
+      this.hud = new global.NR.Hud(opts.hudCanvas);
       /* The interface can see the picture behind it.
          Both canvases are drawn in the same animation frame - the 3D first,
          the interface over it - so the modal screens can sample the finished
@@ -3833,7 +3981,11 @@
        * It is in force for the scene pass only - see depthMode - because the
        * shadow cascades and the reflection probe keep their own projections
        * and their own fixed-point buffers, and the post passes only read. */
+      /* `?revz=0` turns it off, for an A/B against the old depth - and only
+         in a development session (see js/guard.js). A shipped build takes no
+         instructions from its address. */
       const params = (() => {
+        if (NR.DEV === false) return null;
         try { return new URLSearchParams(global.location ? global.location.search : ''); }
         catch (e) { return null; }
       })();
@@ -4682,7 +4834,7 @@
        * us. The frame is drawn smaller and the reconstruction pass that
        * already exists for sub-native RENDER SCALE fits it to the window -
        * which is exactly what that pass is for. */
-      const dyn = Math.max(0.30, Math.min(1, this.dynScale === undefined ? 1 : this.dynScale));
+      const dyn = Math.max(0.20, Math.min(1, this.dynScale === undefined ? 1 : this.dynScale));
       const dprBase = Math.min(global.devicePixelRatio || 1, 2.0);
       const ow = Math.max(2, Math.round(w * dprBase));
       const oh = Math.max(2, Math.round(h * dprBase));
@@ -4696,17 +4848,41 @@
         if (this.canvas.width !== cw) this.canvas.width = cw;
         if (this.canvas.height !== chh) this.canvas.height = chh;
       };
-      if (rs >= 1) {
+      /* THE EFFECTIVE SCALE, which is the only number the buffers care about.
+       *
+       * The adaptive factor used to multiply the render targets INSIDE a
+       * canvas that was already sized to the supersampled RENDER SCALE. That
+       * put a floor under it that had nothing to do with the machine: at 200%
+       * the canvas was twice native in each axis, the scaler could take the
+       * targets down to 64% of THAT - still 129% of native, still more than
+       * half again the pixels of a native frame - and every frame it did so
+       * was then reconstructed back UP to the oversized canvas by the
+       * twelve-tap upscaler and handed to the browser to shrink again. On the
+       * integrated graphics a supersampled setting is most often chosen on,
+       * by somebody who wanted it to look its best, that is a game that can
+       * never get back to sixty frames a second however long the scaler
+       * works at it.
+       *
+       * So the two are multiplied first and the frame is laid out from the
+       * product. Above native the CANVAS tracks it - the browser's box
+       * downsample is still what reduces a supersampled frame, but the canvas
+       * is only as large as the frame the machine can afford. At or below
+       * native the canvas is native and the targets are smaller, and the
+       * reconstruction pass fits them, exactly as before. RENDER SCALE is
+       * still the ceiling: `dyn` never exceeds 1, so `eff` never exceeds
+       * what the player asked for. */
+      const eff = rs * dyn;
+      if (eff >= 1) {
         // supersample: the canvas itself is bigger and the display reduces it
-        const dpr = Math.min(dprBase * rs, 2.0);
+        const dpr = Math.min(dprBase * eff, 2.0);
         sizeCanvas(Math.max(2, Math.round(w * dpr)), Math.max(2, Math.round(h * dpr)));
         this.outW = this.canvas.width; this.outH = this.canvas.height;
-        bw = Math.max(2, Math.round(this.outW * dyn));
-        bh = Math.max(2, Math.round(this.outH * dyn));
+        bw = this.outW;
+        bh = this.outH;
       } else {
         // reconstruct: the canvas is native and the frame is drawn smaller
-        bw = Math.max(2, Math.round(ow * rs * dyn));
-        bh = Math.max(2, Math.round(oh * rs * dyn));
+        bw = Math.max(2, Math.round(ow * eff));
+        bh = Math.max(2, Math.round(oh * eff));
         sizeCanvas(ow, oh);
         this.outW = ow; this.outH = oh;
       }
@@ -4819,6 +4995,10 @@
       if (this.rivalDamage) this.rivalDamage.reset();
       if (this.glass) this.glass.reset();
       this.timeScale = 1; this.slowHold = 0; this.slowFov = 0;
+      // every run starts with a full FOCUS reserve and the world at speed
+      this.resetFocus();
+      // ...a fresh grid launch, no tow and no near-miss on the clock
+      this.resetFeel();
       this.rivalGap = 0;
       this.place = 1;
       this.won = false;
@@ -5082,17 +5262,9 @@
       this.aoQuality = q.ao ? (st.ao === undefined ? 2 : st.ao) : 0;
       this.useAo = q.ao && this.aoQuality > 0;
 
-      /* THE GRADE, on top of the AgX display transform. AgX is deliberately
-         neutral - it is a transform, not a look - so this is where the picture
-         is put back. See the note by agxLook in the composite shader. */
-      const LOOKS = [
-        { sat: 1.00, punch: 1.00 },   // NEUTRAL: the transform on its own
-        { sat: 1.22, punch: 1.06 },   // SYNTHWAVE: how the game is meant to look
-        { sat: 1.40, punch: 1.14 },   // PUNCHY
-      ];
-      const look = LOOKS[st.look === undefined ? 1 : st.look] || LOOKS[1];
-      this.lookSat = look.sat;
-      this.lookPunch = look.punch;
+      /* THE GRADE is no longer a setting. There was a COLOUR row with three
+         looks on it; the game has one, VINTAGE, and it lives in the composite
+         pass and the constants it is fed - see VINTAGE and POST_FRAG. */
 
       /* Contrast-adaptive sharpening. A temporal resolve costs bite and this
          is what buys it back, so the default is higher when TAA is running -
@@ -5175,6 +5347,17 @@
         | (this.useAo ? 16 : 0) | (this.useDof ? 32 : 0)
         | ((this.bloomLevels | 0) << 6);
       if (this.renderScale !== wanted || this._rtSig !== sig) {
+        /* A NEW CEILING OR A NEW SET OF PASSES IS A NEW MACHINE, as far as
+           the adaptive factor is concerned. It is a fraction of RENDER SCALE,
+           measured against what the passes cost - so carried across a change
+           to either it is a measurement of something that no longer exists:
+           a factor found for 200% applied to NATIVE drops the game to a third
+           of the resolution it can actually hold, and climbs back one slow
+           rung at a time. It starts over at 1 and is found again. */
+        if (this._rtSig !== undefined) {
+          this.dynScale = 1;
+          this._dyn = null;
+        }
         this.renderScale = wanted;
         this._rtSig = sig;
         this.onResize();
@@ -7063,7 +7246,10 @@
           this.activateFinish();
         } else if (inp.hit('enter', ' ') || pointer) this.activateFinish();
         if (inp.actHit('raceMode')) this.beginRace();
+        this.unpresentCar(this.car);
+        this.focusAssistUndo();
         this.car.update(dt, this.input.sample(), false);
+        this.presentCar(this.car);
         this.updateCamera(dt);
         this.updateAtmosphere(dt);
         this.audio.update(this.car, dt, false);
@@ -7076,12 +7262,14 @@
 
       if (this.state === 'countdown') {
         this.countdown -= dt;
+        // the grid: who is on the throttle, and when - see watchLaunch
+        this.watchLaunch(dt);
         const n = Math.ceil(this.countdown);
         if (n !== this.lastBeep && n >= 0) {
           this.lastBeep = n;
           if (n > 0) this.audio.countBeep(); else this.audio.goBeep();
         }
-        if (this.countdown <= 0) { this.state = 'racing'; this.raceTime = 0; }
+        if (this.countdown <= 0) { this.state = 'racing'; this.raceTime = 0; this.judgeLaunch(); }
       }
 
       const active = this.state === 'racing';
@@ -7098,6 +7286,9 @@
          A solo Free Roam tour has nobody out there at all, so it is not
          simulated, not drawn and not lit. */
       if (this.rival && this.driver && !this.soloRun) {
+        // the driver reads, and the solver steps, the rival's own state -
+        // see presentCar
+        this.unpresentCar(this.rival);
         const cmd = this.driver.drive(dt, this.rival, {
           raceOn: active,
           rivalS: this.car.sTrack,
@@ -7106,10 +7297,13 @@
           finishAt: this.finishAt,
         });
         this.rival.update(dt, cmd, active);
+        this.presentCar(this.rival);
         /* Car against car. Resolved after both have moved, so the impulse acts
            on where they actually ended up rather than on where one of them was
            a frame ago. */
         const bump = global.NR.collideCars(this.car, this.rival);
+        // any contact at all: a pass that touched is not a near miss
+        if (bump > 0.5) this._touchAt = this.time;
         if (bump > 2.2) {
           const f = Math.min(1, bump / 14);
           this.audio.crash(f);
@@ -7187,7 +7381,14 @@
       const toPedal = (was, want) => M.damp(was || 0, want, want > (was || 0) ? 22 : 11, dt);
       this.pedalGo = toPedal(this.pedalGo, cmd.throttle || 0);
       this.pedalStop = toPedal(this.pedalStop, cmd.brake || 0);
+      // taken back off in the reverse of the order they went on
+      this.unpresentCar(this.car);
+      this.focusAssistUndo();
       this.car.update(dt, cmd, active);
+      // FOCUS's hands on the wheel, after the solver's - see focusAssist
+      this.focusAssist(dt, active ? cmd : null);
+      // ...and the car carried on to this frame's instant - see presentCar
+      this.presentCar(this.car);
       if (this.car.boosting && !wasBoost) this.audio.boostHit();
       if (this.car.lastHit) {
         const hitType = this.car.lastHitType;
@@ -7252,6 +7453,8 @@
         this.rivalDamage.scrape(this.rival, this.rival.scrape, dt);
       }
       if (this.glass) this.glass.update(dt);
+      // the launch, the tow, the near miss and the shift - see updateFeel
+      this.updateFeel(dt, active);
       /* WHAT A WRECKED BODY COSTS.
        *
        * The solver's `damage` is aerodynamic drag and nothing else (see
@@ -8288,12 +8491,34 @@
       const floor = (cp.y || 0) + 1.15;
       if (this.eye[1] < floor) this.eye[1] = floor;
 
+      /* FOCUS narrows the view a little - the eye closes in on what it is
+         deciding - and it does it in the TARGET. `fov` is its own damped
+         state, so anything taken off after the damp is taken off again next
+         frame and builds: a sustained 5.5 settled near seventy degrees under
+         the target, past zero, and the projection turned the world over. */
+      const focusK = this.focus ? this.focus.k : 0;
       this.fov = M.damp(this.fov,
         Math.min(94, CAM.baseFov + this.speedFx * 2.5
-          + rush * 1.6 + limit * 2.0 + boost * 8.0 + kick * 1.4 + mode * 3.2), 4.8, dt);
-      this.fov += (this.shake || 0) * 2.0 + (this.jerkFov || 0);
+          + rush * 1.6 + limit * 2.0 + boost * 8.0 + kick * 1.4 + mode * 3.2) - focusK * 5.5, 4.8, dt);
+      /* The kicks below DO build, and that is their shape - a punch that
+         swells and is let go - but they were tuned per frame at sixty, so
+         they are counted in sixtieths of a REAL second. Per raw frame, a
+         144 Hz screen took the hardest hit-stop past zero degrees; and FOCUS,
+         which slows the damp above, let them pile three times as high. At
+         sixty, outside FOCUS, this is exactly what it always was. */
+      const frames = this.fovFrames(dt);
+      this.fov += ((this.shake || 0) * 2.0 + (this.jerkFov || 0)) * frames;
       // a slow-motion beat pinches in, which is what says "look at this"
-      this.fov -= (this.slowFov || 0) * 9.0;
+      this.fov -= (this.slowFov || 0) * 9.0 * frames;
+      this.fov = M.clamp(this.fov, 8, 140);
+    }
+
+    /* How many sixtieths of a real second `dt` - a SIMULATION step, slowed
+       by the hit-stop and by FOCUS - stands for, with FOCUS's share kept in:
+       a kick paced by real time inside FOCUS would outrun the damp FOCUS
+       has slowed. See the chase camera's lens. */
+    fovFrames(dt) {
+      return dt * 60 / Math.max(1e-3, this.timeScale === undefined ? 1 : this.timeScale);
     }
 
 
@@ -8885,13 +9110,18 @@
          inside a cabin swings the pillars and the roof into the frame; five
          is still a kick and keeps the cockpit composed. */
       const rush = this.speedRush || 0, boost = this.boostFx || 0;
+      // FOCUS's narrowing in the target, for the chase lens's reason
+      const focusK = this.focus ? this.focus.k : 0;
       this.fov = M.damp(this.fov,
         Math.min(80, 62 + this.speedFx * 2.2 + rush * 1.4 + boost * 5.0
-          + (this.raceModeFx || 0) * 3.0), 4.8, dt);
+          + (this.raceModeFx || 0) * 3.0) - focusK * 5.5, 4.8, dt);
       /* A lens that pumps on a hit swings the pillars and the roof across
-         the frame, so from the seat it is a flicker of it, no more. */
-      this.fov += Math.min(1, this.shake || 0) * 0.6 + (this.jerkFov || 0) * 0.25;
-      this.fov -= (this.slowFov || 0) * 9.0;
+         the frame, so from the seat it is a flicker of it, no more. Counted
+         in sixtieths of a real second, as the chase lens's kicks are. */
+      const frames = this.fovFrames(dt);
+      this.fov += (Math.min(1, this.shake || 0) * 0.6 + (this.jerkFov || 0) * 0.25) * frames;
+      this.fov -= (this.slowFov || 0) * 9.0 * frames;
+      this.fov = M.clamp(this.fov, 8, 140);
       return true;
     }
 
@@ -9843,19 +10073,22 @@
         /* raceMode is a colder, harder picture: the driver link is synchronised
            and the world is being read rather than looked at. A little more
            contrast and a little less chroma is all that takes. */
-        /* The COLOUR row SCALES the shipped grade rather than replacing it.
-           Every route's palette was authored against FX.saturation, so a look
-           that sets an absolute value re-grades seven routes at once; one that
+        /* THE VINTAGE LOOK SCALES the shipped grade rather than replacing it.
+           Every route's palette was authored against FX.saturation (at the
+           old SYNTHWAVE setting's 1.22 and 1.06), so a look that set an
+           absolute value would re-grade seven routes at once; one that
            multiplies keeps their relationship to each other. */
-        const ls = this.lookSat === undefined ? 1.22 : this.lookSat;
-        const lp = this.lookPunch === undefined ? 1.06 : this.lookPunch;
+        const ls = VINTAGE.sat, lp = VINTAGE.punch;
         U.f(gl, u.uSat, FX.saturation * (ls / 1.22) * (1 - raceModeGrade * .10));
         U.f(gl, u.uPunch, (FX.contrast * (lp / 1.06)) + raceModeGrade * .06);
-        /* The grade's own chroma push, on the same COLOUR row as the transform's
-           - one control, two places it lands. It can be honest about the number
-           now that the push is headroom-limited and cannot clip a channel to
-           black; see the note beside it in POST_FRAG. */
+        /* The grade's own chroma push, scaled the same way - one look, two
+           places it lands. It can be honest about the number now that the push
+           is headroom-limited and cannot clip a channel to black; see the note
+           beside it in POST_FRAG. */
         U.f(gl, u.uGradeSat, GRADE_SAT * (ls / 1.22) * (1 - raceModeGrade * .10));
+        const FO = this.focus;
+        U.f(gl, u.uFocus, FO ? FO.k : 0);
+        U.f(gl, u.uFocusRing, FO && FO.ring >= 0 ? FO.ring : -1);
         // the sun's shafts and its flare go behind the rain's cloud with it
         const veil = this.scene.sunVeil === undefined ? 1 : this.scene.sunVeil;
         U.f(gl, u.uGodAmt, doGod ? FX.godrayAmount * veil : 0);
@@ -9972,8 +10205,14 @@
         // bite; the row scales that rather than replacing it.
         const sharpBase = this.useTaa ? 0.55 : 0.25;
         const sharpScale = this.sharpenScale === undefined ? 1 : this.sharpenScale;
-        U.f(gl, u.uSharpen, sharpBase * sharpScale);
+        /* ...plus what FSR's SHARP mode asks for, whenever the frame was
+           actually reconstructed. It used to be RCAS inside the upscale pass;
+           it is the same operation done here on four reads. See the note in
+           UPSCALE_FRAG's main. */
+        const rcasHere = (upMode === 2 && shown === this.rtUp) ? 0.30 : 0;
+        U.f(gl, u.uSharpen, sharpBase * sharpScale + rcasHere);
         U.f(gl, u.uGrain, this.useGrain === false ? 0 : 1);
+        U.f(gl, u.uFocus, this.focus ? this.focus.k : 0);
         U.f(gl, u.uTime, this.time);
         /* The windscreen. A sampler must always have a texture of its own
            type bound whether or not the branch that reads it is taken - three
@@ -10187,9 +10426,533 @@
      */
     slowMo(amount, hold) {
       const a = M.clamp(amount || 0, 0, 0.8);
+      /* NOT IN A SHARED RACE. The lens still pinches - that is this screen's -
+         but the race clock is not this machine's to dilate: a hit-stop online
+         slowed only the local car, which then simply lost the ground it would
+         have covered, in front of three people watching it stutter. See the
+         note in updateFocus. */
+      if (this.multiplayer && this.multiplayer.racing) {
+        this.slowFov = Math.max(this.slowFov || 0, a);
+        return;
+      }
       this.timeScale = Math.min(this.timeScale === undefined ? 1 : this.timeScale, 1 - a);
       this.slowHold = Math.max(this.slowHold || 0, hold === undefined ? 0.22 : hold);
       this.slowFov = Math.max(this.slowFov || 0, a);
+    }
+
+    /* ============================ FOCUS: TIME, SLOWED ====================
+     *
+     * The player's own dilation, as opposed to the hit-stop above, which is
+     * the game's. Press it and the whole road runs at a third of its speed -
+     * the car, every rival, the stunt course, the rain, the particles - so a
+     * line through traffic or a gap off a ramp that would have to be read at
+     * two hundred kilometres an hour can be read at seventy. Nothing about
+     * the race is changed: everything slows by the same factor, so it buys
+     * TIME TO THINK, not speed.
+     *
+     * IT IS ITS OWN FACTOR, multiplied with `timeScale` rather than written
+     * into it. The hit-stop eases `timeScale` back to 1 every frame it is not
+     * holding, and a focus written into the same number would be undone by
+     * that recovery within a quarter of a second.
+     *
+     * A RESERVE, NOT A SWITCH. `span` real seconds of it, spent while it is on
+     * and refilled on its own after a short lockout; it will not engage below
+     * `min`, so it cannot be tapped into a strobe. The world slows in and
+     * recovers on curves of their own, on REAL time - a slowed recovery would
+     * take three times as long as it reads.
+     *
+     * WHERE IT IS ALLOWED. A live race only - not the grid, not a cutscene,
+     * not a pause - and never online: three other people's cars are not this
+     * machine's to slow down. Leaving any of those conditions drops it.
+     *
+     * What it LOOKS like is POST_FRAG's (uFocus, uFocusRing): the colour
+     * drains from the edges in, a shockwave crosses the frame on the way in,
+     * and the picture becomes a monochrome print with its blacks seated. The
+     * mixer muffles and tape-slows the radio (Audio.setFocus), and the
+     * interface goes grey with it. */
+    resetFocus() {
+      const was = this.focus;
+      this.focus = { on: false, k: 0, reserve: 1, lock: 0, ring: -1, scale: 1, nag: 0 };
+      // the tyres FOCUS lent, handed back - a reset does not touch gripScale
+      if (this._focusGrip && this.car) this.car.gripScale = 1;
+      this._focusGrip = false;
+      this._focusSteer = 0;
+      // a reset car is a new state block: nothing of the last turn is in it
+      this._assistYaw = 0;
+      if (was && was.on && this.audio && this.audio.focusOut) this.audio.focusOut();
+      if (this.audio && this.audio.setFocus) this.audio.setFocus(0);
+      this.paintFocusHud(0);
+    }
+
+    focusAllowed() {
+      /* A multiplayer race is allowed too - as LINK, which slows nothing that
+         is shared. See updateFocus. */
+      if (this.benchActive || this.benchDriving) return false;
+      /* ...and the prologue's drive to Vector, which is where it is taught.
+         That road is stepped by the story (state 'story') rather than by the
+         race loop, but it is the same car on the same clock - the story
+         wraps Game.update, so the dilation reaches it like any race. */
+      if (this.state === 'story') return !!(this.story && this.story.mode === 'tutorial');
+      return this.state === 'racing' && !this.raceOver;
+    }
+
+    /** Step FOCUS on REAL time; returns the factor the world runs at. */
+    updateFocus(dt) {
+      if (!this.focus) this.resetFocus();
+      const F = this.focus;
+      const allowed = this.focusAllowed();
+      F.nag = Math.max(0, F.nag - dt);
+      if (this.input && this.input.actHit('focus')) {
+        if (F.on) {
+          this.endFocus();
+        } else if (!allowed) {
+          // nothing to slow here - a menu, the grid, a finished run
+        } else if (F.reserve >= FOCUS.min) {
+          F.on = true;
+          F.ring = 0;
+          if (this.audio && this.audio.focusIn) this.audio.focusIn();
+          if (this.pad) this.pad.vibrate(0.25, 120);
+          if (NR.Record) NR.Record.mark('focus');
+        } else if (F.nag <= 0) {
+          this.hud.toast('FOCUS CHARGING', '#c8b8ff');
+          F.nag = 1.5;
+        }
+      }
+      if (F.on && !allowed) this.endFocus();
+      if (F.on) {
+        F.reserve = Math.max(0, F.reserve - dt / FOCUS.span);
+        if (F.reserve <= 0) this.endFocus();
+      } else if (F.lock > 0) {
+        F.lock = Math.max(0, F.lock - dt);
+      } else if (F.reserve < 1) {
+        F.reserve = Math.min(1, F.reserve + dt / FOCUS.refill);
+      }
+      const want = F.on ? 1 : 0;
+      const rate = want > F.k ? FOCUS.in : FOCUS.out;
+      F.k += (want - F.k) * (1 - Math.exp(-rate * dt));
+      if (Math.abs(want - F.k) < 0.002) F.k = want;
+      if (F.ring >= 0) {
+        F.ring += dt / FOCUS.ring;
+        if (F.ring >= 1) F.ring = -1;
+      }
+      /* FOCUS IN A SHARED RACE IS NOT SLOW TIME, because time there is not
+       * this machine's to slow.
+       *
+       * Every car on the grid is checked by the server against REAL elapsed
+       * time (validate.rs), and every other player draws this car from what
+       * it sends on that same clock. Dilating this simulation would not slow
+       * the race - it would slow only this car, in everybody's race, and hand
+       * the player a deficit of two thirds of a second for every second held.
+       * Slowing the others is not ours to do either: their cars are theirs.
+       *
+       * So online FOCUS is LINK, and it keeps everything FOCUS is FOR:
+       *   - the eye: the monochrome print, the lens closing in, the sound
+       *     falling away under the heartbeat - all of it local;
+       *   - the air: rain and sparks and smoke slow to FOCUS's rate (`feel`),
+       *     so the frame reads as slowed while every car in it - the one
+       *     thing that is shared - runs at exactly the race's own speed;
+       *   - the hands: the handling FOCUS gives (focusAssist), which is the
+       *     same per second of race whether the race is slowed or not;
+       *   - and PRECOG: where every rival really is NOW and where they are
+       *     going, drawn on the road (Hud.drawPrecog). A remote car is always
+       *     drawn a playout delay in the past; FOCUS closes that gap and looks
+       *     ahead of it, out of the state each car already broadcasts.
+       * Nothing about it reaches the wire, so it costs the other players
+       * nothing, needs nothing from the server, and is the same for all four.
+       *
+       * `feel` is the rate FOCUS would run the world at; `scale` is the rate
+       * it actually does, which is `feel` alone and 1 online. */
+      const mp = this.multiplayer;
+      F.online = !!(mp && mp.racing);
+      F.feel = 1 - F.k * (1 - FOCUS.scale);
+      F.scale = F.online ? 1 : F.feel;
+      if (this.fx) this.fx.flow = F.online ? F.feel : 1;
+      /* What the meter reads out, in seconds the player can count: how long
+         the slowdown has left while it holds, and how long until it can be
+         called while it charges (the lockout first, then the refill up to the
+         threshold). The threshold is published so the meter can mark it. */
+      F.min = FOCUS.min;
+      F.left = F.reserve * FOCUS.span;
+      F.readyIn = F.reserve >= FOCUS.min ? 0 : F.lock + (FOCUS.min - F.reserve) * FOCUS.refill;
+      if (this.audio && this.audio.setFocus) this.audio.setFocus(F.k);
+      this.paintFocusHud(F.k);
+      return F.scale;
+    }
+
+    endFocus() {
+      const F = this.focus;
+      if (!F || !F.on) return;
+      F.on = false;
+      F.lock = FOCUS.lockout;
+      if (this.audio && this.audio.focusOut) this.audio.focusOut();
+    }
+
+    /* FOCUS IS AN ADVANTAGE, NOT ONLY A SLOWER WORLD.
+     *
+     * Slowing everything - the player's car included - buys reaction time
+     * and nothing else: the car corners exactly as hard as it did, so a gap
+     * that was too tight at full speed is still too tight, it just arrives
+     * more slowly. And it FEELS heavy, because every input answers at a
+     * third of the speed the hands moved at.
+     *
+     * So while FOCUS holds, the car is given more than the road gives it.
+     * Run after each solver step of the player's car, scaled by how far
+     * FOCUS has come in, and nowhere else:
+     *
+     *   TURN. The heading and the velocity are rotated TOGETHER by the stick:
+     *   an extra `lat` of cornering that adds no slip, so the tyres have
+     *   nothing to fight and the car simply goes where it is pointed, harder.
+     *   Its input follows the stick on REAL time (`hands`), so it answers as
+     *   fast as the thumb does while the world crawls.
+     *   SETTLE. A slide is drawn back onto the heading - speed kept, only its
+     *   direction turned - unless the handbrake is in or the car is drifting
+     *   on purpose, so FOCUS still lets a drift be placed.
+     *   GRIP. The tyres bite harder (`gripScale`), handed back to 1 as FOCUS
+     *   lets go. Nothing else writes the player's gripScale.
+     *
+     * Not in the air (the solver owns a car in flight), not in reverse, not
+     * while a hit is still being resolved. Online it is the same turn per
+     * second of race as it is offline - the race there is simply never
+     * slowed (see updateFocus) - and it reaches the other players only as
+     * the car's own state: a heading, a velocity and the yaw rate below,
+     * every one inside what the server already allows. */
+    /* Take the assist's published turn rate back off the car before the
+       solver steps it again. See the note in focusAssist. A correction from
+       the server overwrites the whole state and the rate with it, so the
+       multiplayer layer drops the record when one lands. */
+    focusAssistUndo() {
+      const w = this._assistYaw;
+      this._assistYaw = 0;
+      if (w && this.car) this.car.yawRate = (this.car.yawRate || 0) - w;
+    }
+
+    /* ==================================== THE CAR, AT THIS FRAME'S INSTANT ==
+     *
+     * The solver steps in fixed 1/240 s slices and keeps whatever part of a
+     * frame does not fill one (Vehicle::lag in vehicle.rs) - which is what
+     * makes a car at 144 Hz finish a run exactly where the same car at 60 Hz
+     * does. The price is that the state a frame ends on is up to a slice SHORT
+     * of that frame, by an amount that changes every frame: three slices one
+     * frame, five the next. At a hundred units a second that is a quarter of
+     * a unit of jump - a hitch every few frames at 60 Hz, a judder on EVERY
+     * frame at 144 Hz (one slice, then two, against a frame of one and two
+     * thirds), worse in slow motion, and in a shared race a stamp on every
+     * published state that is out by up to four milliseconds, which the other
+     * three screens draw as this car trembling on its line.
+     *
+     * So after the solver has stepped it, the car is CARRIED ON over its lag,
+     * along the velocity and turn rate it has, and everything that frame -
+     * the camera, the model, the effects, the state that goes on the wire -
+     * sees the car at the frame. Under a slice, a straight line is exact.
+     * Before the solver steps it again the same offsets are taken back off,
+     * so it integrates from its own state and nothing about the physics
+     * changes. Taken back off EXACTLY, whatever happened in between: a
+     * collision's push or a tow's nudge stays, and a car leaning on another
+     * for a whole straight cannot be handed the offset twice. Only something
+     * that PLACES the car - a reset, a director's setVehicle, the server's
+     * correction - cancels it, because a placed car has no lag to undo. */
+    presentCar(car) {
+      if (!car) return;
+      const P = car._pose || (car._pose = { on: false, dx: 0, dz: 0, dy: 0, dyaw: 0, ds: 0 });
+      // never on top of itself: one offset on the car at a time
+      if (P.on) this.unpresentCar(car);
+      const lag = car.lag || 0;
+      // a lag of more than a slice or two is not a lag but a stale block
+      // from a core that never stepped this car - draw it as it is
+      P.on = false;
+      if (!(lag > 0) || lag > 0.0105 || this.noPresent) return;
+      P.dx = (car.vx || 0) * lag;
+      P.dz = (car.vz || 0) * lag;
+      P.dy = car.airborne ? (car.airV || 0) * lag : 0;
+      P.dyaw = (car.yawRate || 0) * lag;
+      P.ds = (car.vLong || 0) * lag;
+      car.x += P.dx; car.z += P.dz; car.y += P.dy;
+      car.yaw += P.dyaw; car.sTrack += P.ds;
+      P.on = true;
+    }
+
+    unpresentCar(car) {
+      const P = car && car._pose;
+      if (!P || !P.on) return;
+      P.on = false;
+      car.x -= P.dx; car.z -= P.dz; car.y -= P.dy;
+      car.yaw -= P.dyaw; car.sTrack -= P.ds;
+    }
+
+    focusAssist(dt, cmd) {
+      const F = this.focus, car = this.car;
+      if (!car) return;
+      const k = F ? F.k : 0;
+      if (k <= 0.001) {
+        if (this._focusGrip) { car.gripScale = 1; this._focusGrip = false; }
+        this._focusSteer = 0;
+        return;
+      }
+      car.gripScale = 1 + FOCUS_DRIVE.grip * k;
+      this._focusGrip = true;
+      // no command is a car nobody is driving (the grid, the run-out): grip only
+      if (!cmd || car.airborne || (car.stun || 0) > 0 || (car.vLong || 0) < 4 || !(dt > 0)) return;
+      const real = dt / Math.max(1e-3, (this.timeScale === undefined ? 1 : this.timeScale) * (F.scale || 1));
+      const want = M.clamp((cmd && cmd.steer) || 0, -1, 1);
+      this._focusSteer = M.damp(this._focusSteer || 0, want, FOCUS_DRIVE.hands, real);
+      const u = Math.max(10, car.vLong);
+      const w = Math.min(FOCUS_DRIVE.yawCap, FOCUS_DRIVE.lat / u) * this._focusSteer * k;
+      car.yaw += w * dt;
+      /* ...AND THE TURN IS SAID OUT LOUD. The heading moves here without the
+         solver's yaw rate knowing, and everything else reads the rate: the
+         seat camera's lean, and - the one that matters - the state this car
+         publishes in a shared race, whose yaw rate is the TANGENT every other
+         player's interpolator draws this car's heading along and the arc
+         their dead reckoning carries it on. Left out, a car in FOCUS turns
+         harder than it says it is turning, and on three other screens it
+         wobbles through every corner and overshoots the outside of it when a
+         packet is late. So the rate the car is actually turning at is in the
+         block until the next step, and is taken back off before it -
+         focusAssistUndo - because the solver integrates that field. */
+      if (w !== 0) {
+        car.yawRate = (car.yawRate || 0) + w;
+        this._assistYaw = w;
+      }
+      let vl = car.vLong, vt = car.vLat || 0;
+      if (!(cmd && cmd.ebrake) && !car.drifting) {
+        const sp = Math.hypot(vl, vt);
+        const beta = Math.atan2(vt, vl) * Math.exp(-FOCUS_DRIVE.settle * k * dt);
+        vl = sp * Math.cos(beta);
+        vt = sp * Math.sin(beta);
+        car.vLong = vl;
+        car.vLat = vt;
+      }
+      // the world-frame velocity, for everything that reads it this frame
+      const yaw = car.yaw;
+      car.vx = Math.sin(yaw) * vl + Math.cos(yaw) * vt;
+      car.vz = Math.cos(yaw) * vl - Math.sin(yaw) * vt;
+      car.speed = Math.hypot(vl, vt);
+    }
+
+    /* ========================= THE ROAD, FELT ==========================
+     *
+     * Four things a real car does that change how a race is driven, not only
+     * how it looks:
+     *
+     *   THE LAUNCH. On the grid the engine can be held on the launch limiter.
+     *   Get on the throttle on the last count and the car leaves the line on a
+     *   clean launch; sit on it through the whole countdown and the tyres are
+     *   already lit when the lights go - it bogs in wheelspin.
+     *
+     *   THE TOW. A car running in another's wake is pushing through air that
+     *   has already been moved: less drag, so it gains, more the closer and
+     *   straighter it sits and the faster both are going. It works on the
+     *   rival exactly as it works on the player. Sit in it long enough and
+     *   the tow builds a SLINGSHOT - pull out to pass and it fires.
+     *
+     *   THE NEAR MISS. Passing a car close enough to feel it, without
+     *   touching, earns a little boost back. Risk, paid.
+     *
+     *   THE SHIFT. Every upshift under power is a small shove through the
+     *   seat - the camera takes it.
+     *
+     * None of them touches the solver: speed is added along the car's own
+     * heading the way raceMode adds it (see nudge), drag is not a lever the
+     * core exposes, and everything here is gated on a live race. */
+    resetFeel() {
+      this.launch = { pressAt: null, revs: 0.12, kick: 0, spin: 0, judged: false };
+      this.draft = { k: 0, build: 0, ready: false, fired: 0, leader: null };
+      this.nearMissCool = 0;
+      this._gearWas = 1;
+      this._touchAt = -9;
+    }
+
+    /* Speed along the car's own heading, with the velocity it is made of kept
+       consistent - the same arithmetic raceMode uses (js/chapters.js) - and
+       never past the car's own ceiling. */
+    nudge(car, dv) {
+      if (!car || !dv) return;
+      const top = (car.ceilingUnits || 0) > 0 ? car.ceilingUnits * 1.02 : Infinity;
+      let vl = (car.vLong || 0) + dv;
+      if (dv > 0) vl = Math.min(vl, Math.max(car.vLong || 0, top));
+      const lat = car.vLat || 0, yaw = car.yaw || 0;
+      car.vLong = vl;
+      car.vx = Math.sin(yaw) * vl + Math.cos(yaw) * lat;
+      car.vz = Math.cos(yaw) * vl - Math.sin(yaw) * lat;
+      car.speed = Math.hypot(vl, lat);
+    }
+
+    /** The grid: the throttle is watched, and the engine sits on the launch limiter. */
+    watchLaunch(dt) {
+      if (!this.launch) this.resetFeel();
+      const L = this.launch;
+      const thr = this.input && this.input.act('throttle');
+      /* Seconds to the lights. Offline that is the countdown itself; online
+         the countdown is the server's plus 0.999 so the numerals read as they
+         do offline, and judged against that a press half a second before GO
+         would count as a second and a half - wheelspin, every time. */
+      const mp = this.multiplayer;
+      const toGo = mp && mp.racing && mp.pending ? mp.untilStart(mp.pending) : this.countdown;
+      if (thr) { if (L.pressAt === null) L.pressAt = toGo; }
+      else L.pressAt = null;
+      const want = thr ? 0.72 + Math.sin(this.time * 33) * 0.035 : 0.12;
+      L.revs = M.damp(L.revs, want, thr ? 9 : 4, dt);
+    }
+
+    /** The lights go: was that a launch, wheelspin, or an ordinary start? */
+    judgeLaunch() {
+      const L = this.launch;
+      if (!L || L.judged) return;
+      L.judged = true;
+      if (L.pressAt === null) return;
+      if (L.pressAt <= LAUNCH.window) {
+        L.kick = LAUNCH.kick;
+        this.hud.toast('PERFECT LAUNCH', '#ffd25a');
+        this.impact({ punch: 0.6, shake: 0.14 });
+        if (this.pad) this.pad.vibrate(0.4, 160);
+        if (NR.Record) NR.Record.mark('launch');
+      } else {
+        L.spin = LAUNCH.spin;
+        this.hud.toast('WHEELSPIN // TOO EARLY', '#ff8a4a');
+        if (this.pad) this.pad.vibrate(0.55, 260);
+      }
+    }
+
+    /** How far `follower` sits in `leader`'s wake, 0..1. */
+    draftFactor(follower, leader) {
+      if (!follower || !leader) return 0;
+      const ds = (leader.sTrack || 0) - (follower.sTrack || 0);
+      if (ds < DRAFT.near || ds > DRAFT.far) return 0;
+      if ((follower.speed || 0) < DRAFT.minSpeed || follower.airborne) return 0;
+      const dl = Math.abs((leader.lateral || 0) - (follower.lateral || 0));
+      if (dl > DRAFT.width) return 0;
+      const along = 1 - (ds - DRAFT.near) / (DRAFT.far - DRAFT.near);
+      return M.clamp(along * (0.55 + 0.45 * along), 0, 1) * (1 - dl / DRAFT.width);
+    }
+
+    /* Drag is quadratic in speed, so what the tow is worth is too. */
+    draftAccel(car, k) {
+      const top = (car.ceilingUnits || 0) > 0 ? car.ceilingUnits : 110;
+      const share = M.clamp((car.speed || 0) / top, 0, 1);
+      return DRAFT.accel * k * share * share;
+    }
+
+    updateFeel(dt, active) {
+      if (!this.launch) this.resetFeel();
+      const L = this.launch, D = this.draft;
+      const car = this.car;
+      // the grid: the revs are the launch limiter's, so the needle and the note say so
+      if (this.state === 'countdown') {
+        car.rpm = Math.max(car.rpm || 0, L.revs);
+        car.engineLoad = Math.max(car.engineLoad || 0, L.pressAt !== null ? 0.6 : 0);
+      }
+      if (!active) { D.k = M.damp(D.k, 0, 6, dt); return; }
+
+      // the launch, paid out over its first second
+      if (L.kick > 0) {
+        this.nudge(car, LAUNCH.accel * dt * Math.min(1, L.kick / LAUNCH.kick + 0.25));
+        L.kick = Math.max(0, L.kick - dt);
+      }
+      if (L.spin > 0) {
+        this.nudge(car, -(car.vLong || 0) * Math.min(1, LAUNCH.bog * dt));
+        car.wheelSpinFx = Math.max(car.wheelSpinFx || 0, 0.9);
+        L.spin = Math.max(0, L.spin - dt);
+      }
+
+      // the tow, both ways
+      let mine = 0, lead = null;
+      if (this.rival && !this.soloRun && !(this.multiplayer && this.multiplayer.racing)) {
+        mine = this.draftFactor(car, this.rival);
+        if (mine > 0) lead = this.rival;
+        const theirs = this.draftFactor(this.rival, car);
+        if (theirs > 0) this.nudge(this.rival, this.draftAccel(this.rival, theirs) * dt);
+      }
+      for (const e of (this.storyExtraRacers || [])) {
+        if (!e || !e.car) continue;
+        const f = this.draftFactor(car, e.car);
+        if (f > mine) { mine = f; lead = e.car; }
+      }
+      /* WHOSE WAKE IT IS. The slingshot fires on the pass, and the pass is of
+         the car that was towing - which in a shared race is another player,
+         not the campaign's rival (who is not even on the road there). It used
+         to measure the gap to `this.rival` regardless, so online the
+         slingshot built, said READY, and never fired. */
+      if (mine > 0.3 && lead) D.leader = lead;
+      if (mine > 0) this.nudge(car, this.draftAccel(car, mine) * dt);
+      D.k = M.damp(D.k, mine, 6, dt);
+      if (mine > 0.3) D.build = Math.min(1, D.build + dt / DRAFT.build);
+      else if (!D.ready) D.build = Math.max(0, D.build - dt / 1.2);
+      if (D.build >= 1 && !D.ready) { D.ready = true; this.hud.toast('SLINGSHOT READY', '#5affc0'); }
+      /* ...and it fires when the car pulls OUT of the wake - which is the
+         pass - while it is still close enough for that to be one. */
+      if (D.ready && mine < 0.05) {
+        const L = D.leader || (this.soloRun ? null : this.rival);
+        const gap = L ? (L.sTrack || 0) - (car.sTrack || 0) : 99;
+        if (gap > -4 && gap < DRAFT.far) {
+          this.nudge(car, DRAFT.slingshot);
+          this.hud.toast('SLINGSHOT', '#5affc0');
+          this.impact({ punch: 0.45, shake: 0.08 });
+          if (NR.Record) NR.Record.mark('slingshot');
+          D.fired = 1;
+        }
+        D.ready = false;
+        D.build = 0;
+        D.leader = null;
+      }
+      D.fired = Math.max(0, D.fired - dt * 1.5);
+
+      // the near miss: drawing level with a car, close, fast, and clean
+      this.nearMissCool = Math.max(0, this.nearMissCool - dt);
+      const others = [];
+      if (this.rival && !this.soloRun) others.push(this.rival);
+      for (const e of (this.storyExtraRacers || [])) if (e && e.car) others.push(e.car);
+      for (const o of others) {
+        const ds = (car.sTrack || 0) - (o.sTrack || 0);
+        const was = o.__passGap;
+        o.__passGap = ds;
+        if (was === undefined || !(was < 0 && ds >= 0)) continue;
+        const dl = Math.abs((car.lateral || 0) - (o.lateral || 0));
+        const rel = (car.speed || 0) - (o.speed || 0);
+        const clean = this.time - this._touchAt > 0.6;
+        if (dl < NEAR_MISS.width && rel > NEAR_MISS.rel && clean && this.nearMissCool <= 0) {
+          car.boost = M.clamp((car.boost || 0) + NEAR_MISS.boost, 0, 1);
+          this.hud.toast('NEAR MISS', '#5affc0');
+          this.impact({ punch: 0.3 });
+          if (NR.Record) NR.Record.mark('nearMiss');
+          this.nearMissCool = NEAR_MISS.cool;
+        }
+      }
+
+      // the shift: a shove through the seat on every upshift under power
+      const gear = car.gear | 0;
+      if (gear > this._gearWas && (car.engineLoad || 0) > 0.3 && (car.speed || 0) > 6) {
+        this.impact({ punch: 0.13, shake: 0.05 });
+      }
+      this._gearWas = gear;
+    }
+
+    /* The interface goes grey with the world. A CSS filter on the HUD canvas
+       rather than a second draw of every widget, and written only when the
+       amount moves by a twentieth, because a style write is a recomposite. */
+    paintFocusHud(k) {
+      const cv = this.hud && this.hud.canvas;
+      if (!cv || !cv.style) return;
+      const q = Math.round((k || 0) * 20) / 20;
+      if (q === this._hudGrey) return;
+      this._hudGrey = q;
+      const f = q > 0 ? 'grayscale(' + (q * 0.9).toFixed(2) + ') contrast(' + (1 + q * 0.08).toFixed(2) + ')' : '';
+      cv.style.filter = f;
+      /* ...and the story's own cards with it - the chapter card, the radio,
+         the tutorial's lesson, the Forge's and the finale's instruments - or
+         the one part of the frame still in colour while the world prints in
+         black and white is the part that is DOM. Same step as the canvas, so
+         this writes a style a handful of times per transition and never
+         otherwise. The cards one by one rather than #storyRoot: a filter
+         makes its element the backdrop root, and the continue prompt and the
+         choice inside the root blur what is behind them. */
+      const doc = global.document;
+      if (doc) {
+        for (const id of ['storyRaceMeta', 'storyCompact', 'storyTutorial', 'storyWaypoint',
+          'storyRadio', 'forge6', 'pred7']) {
+          const el = doc.getElementById(id);
+          if (el && el.style) el.style.filter = f;
+        }
+      }
     }
 
     /* HOW MANY FRAMES THE CPU MAY RUN AHEAD OF THE GPU.
@@ -10335,6 +11098,16 @@
         const frameMs = now - last;
         let dt = (now - last) / 1000;
         last = now;
+        /* THE INSTANT THIS FRAME'S WORLD IS AT. The simulation is stepped to
+           the display tick's timestamp, not to whenever a line of the update
+           happens to run - so anything that stamps the world with a time (the
+           state a shared race publishes, the moment the other cars are drawn
+           at) reads it from here. A performance.now() taken partway through
+           the frame lands a few milliseconds later each time, by however long
+           the frame has spent so far, and at a hundred units a second each
+           of those milliseconds is a tenth of a unit of jitter on every car
+           in the race. See Multiplayer.afterUpdate. */
+        this.frameNow = now;
         if (!isFinite(dt) || dt < 0) dt = 0;
         this.fpsSample(dt);
         this.adaptResolution(frameMs);
@@ -10373,11 +11146,18 @@
              see pumpPad. Inside the try, because a pad that throws must not
              take the frame with it. */
           this.pumpPad(dt);
-          this.update(dt * this.timeScale);
+          /* FOCUS first, on real time, because it decides how fast this
+             frame's world runs - see updateFocus. */
+          const focusScale = this.updateFocus(dt);
+          this.update(dt * this.timeScale * focusScale);
           /* The sky, once a frame whatever state the game is in, and on the
              same dilated clock as the world: a slow-motion beat slows the
-             rain with it. See js/weather.js. */
-          if (this.weather) this.weather.tick(dt * this.timeScale);
+             rain with it. See js/weather.js. In a shared race the world is
+             never dilated, and the rain takes FOCUS's rate on its own - the
+             air slows, the cars do not. See updateFocus. */
+          const F = this.focus;
+          const sky = F && F.online ? (F.feel || 1) : this.timeScale * focusScale;
+          if (this.weather) this.weather.tick(dt * sky);
           const tDraw = performance.now();
           // ...and the interface animates on the wall clock, because a menu
           // that eases in at quarter speed reads as the game having hung
@@ -10549,7 +11329,14 @@
       const target = cap > 0 ? cap : 16.7;
 
       const steps = DYN_STEPS;
-      const floor = mode >= 2 ? 0.45 : 0.645;
+      /* THE FLOOR IS A FRACTION OF NATIVE, not of RENDER SCALE. It used to be
+         a fraction of whatever the player had asked for, so at 200% the
+         scaler would stop at 129% of native and call that its floor; now a
+         supersampled setting can give its supersampling back first, which is
+         the most expensive thing in the frame and the least missed, and then
+         come down to the same floor as everybody else. See onResize. */
+      const rsNow = Math.max(1, this.renderScale || 1);
+      const floor = (mode >= 2 ? 0.45 : 0.645) / rsNow;
       let idx = A.idx === undefined ? 0 : A.idx;
 
       if (A.cool > 0) { A.cool--; A.sinceUp++; return; }
@@ -10584,18 +11371,21 @@
              last one did not, and throwing away everything that worked would
              put a machine that is genuinely fill-bound back at the frame rate
              it could not hold. */
-          A.idx = idx = Math.max(0, idx - 1);
+          /* ...the MOVE, that is: one rung, or the several a move far over
+             budget takes at once - a jump that bought nothing is undone whole,
+             not left most of the way down. */
+          A.idx = idx = Math.max(0, A.probeIdx !== undefined ? A.probeIdx : idx - 1);
           this.setDynScale(steps[idx]);
           A.fails = (A.fails || 0) + 1;
           A.standDown = Math.min(1200, 66 * Math.pow(2, A.fails - 1));
           A.good = 0; A.bad = 0;
           if (A.fails >= 3) {
             A.off = true;
-            console.info('SYNX: adaptive resolution stopped - three measurements '
+            if (NR.DEV !== false) console.info('SYNX: adaptive resolution stopped - three measurements '
               + 'say this frame is not limited by how many pixels it draws');
           } else if (!A._said) {
             A._said = true;
-            console.info('SYNX: adaptive resolution stood down - this frame is not fill-bound');
+            if (NR.DEV !== false) console.info('SYNX: adaptive resolution stood down - this frame is not fill-bound');
           }
           return;
         }
@@ -10614,7 +11404,29 @@
         const urgent = mean > target * 1.6;
         if (A.bad >= (urgent ? 1 : 2) && idx < steps.length - 1 && steps[idx + 1] >= floor) {
           if (A.sinceUp <= 3) A.upNeed = Math.min(40, A.upNeed * 2);
-          A.idx = ++idx;
+          /* HOW FAR, BY HOW FAR OVER. One rung is six per cent of the scale,
+             which is the right step for a machine a little over budget and
+             hopeless for one that is eight times over it - a supersampled
+             setting on integrated graphics, measured at seven frames a
+             second. Creeping down from there one rung at a time takes a
+             minute, and each rung is too small a change for the verdict below
+             to see through frame times that come in whole vsync intervals: it
+             misread one, stood down, and left the game at seven frames a
+             second for the minute after that.
+             A fill-bound frame costs in proportion to its pixels, so the scale
+             that would hold the target is about sqrt(target / mean) of this
+             one. Well over budget, the scaler goes most of the way there in
+             one move - up to five rungs, never past the floor - and the
+             verdict then judges a change big enough to be unmistakable. */
+          let next = idx + 1;
+          if (mean > target * 2.2) {
+            const want = steps[idx] * Math.sqrt((target * 1.05) / mean);
+            while (next < steps.length - 1 && next - idx < 5
+                && steps[next + 1] >= floor && steps[next] > want) next++;
+          }
+          // where this move started, so a move that bought nothing is undone whole
+          A.probeIdx = idx;
+          A.idx = idx = next;
           A.bad = 0;
           A.cool = 2;
           /* EVERY step is measured, not only the first.
@@ -10646,7 +11458,7 @@
 
     /** Apply an adaptive factor, reallocating only when it actually moves. */
     setDynScale(v) {
-      const want = Math.max(0.3, Math.min(1, v));
+      const want = Math.max(0.2, Math.min(1, v));
       if (this.dynScale === want) return;
       this.dynScale = want;
       this.onResize();
@@ -10686,8 +11498,11 @@
     syncGfxClass() {
       const body = global.document && global.document.body;
       if (!body) return;
+      /* On the EFFECTIVE scale: a 200% setting that has given half of itself
+         back is still drawing more pixels than native, and is not the machine
+         this switch is for. */
       const lean = !!this.gfxLean
-        || (this.dynScale !== undefined && this.dynScale < 0.8);
+        || (this.dynScale !== undefined && (this.renderScale || 1) * this.dynScale < 0.8);
       if (lean === this._gfxLeanWas) return;
       this._gfxLeanWas = lean;
       if (lean) body.setAttribute('data-gfx', 'lean');

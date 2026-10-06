@@ -43,6 +43,12 @@ browser, because what they are about only exists there: the command that turns
 the launcher's answers into a game window, which display that window lands on,
 and what a frame costs on a real GPU. They are skipped, not failed, where they
 cannot run - the debugging hook they attach to is a WebView2 mechanism.
+
+They need a TEST build of it: `cargo build -p synx --release --features
+harness`. A production build opens no debugging port whatever its
+environment says - see platform.rs - so against one they skip and say why.
+Build without the feature again before shipping anything by hand; the release
+workflow always does.
 """
 import argparse
 import base64
@@ -344,8 +350,15 @@ def _report(rep, a):
 
 # ========================================================== the real host ===
 
+# What a closed port almost always means now.
+NO_PORT = ('the webview did not open a debug port - is target/release/synx a test build?'
+           ' (cargo build -p synx --release --features harness; a production build never'
+           ' opens one) - or there is no display')
+
+
 class Host:
-    """The release binary, with its webview opened for debugging."""
+    """The release binary - a `--features harness` build of it - with its
+    webview opened for debugging. A production build ignores SYNX_DEBUG_PORT."""
 
     def __init__(self):
         self.child = None
@@ -438,7 +451,7 @@ def run_launcher(a):
     with Host() as host:
         page, saw_port, targets = host.wait_for(r'launcher\.html')
         if not saw_port:
-            return _host_skip('the webview did not open a debug port (no display?)')
+            return _host_skip(NO_PORT)
         if not page:
             print('  the host never navigated to launcher.html - last saw: '
                   + ', '.join(t.get('url') or '?' for t in targets), file=sys.stderr)
@@ -624,7 +637,7 @@ def run_display(a):
         with Host() as host:
             page, saw_port, _ = host.wait_for(r'launcher\.html')
             if not saw_port:
-                return _host_skip('the webview did not open a debug port (no display?)')
+                return _host_skip(NO_PORT)
             if not page:
                 bad.append(mode + ': the host never reached launcher.html')
                 continue
@@ -718,7 +731,7 @@ def run_profile(a):
     with Host() as host:
         page, saw_port, _ = host.wait_for(r'index\.html|launcher\.html')
         if not saw_port:
-            return _host_skip('the webview did not open a debug port (no display?)')
+            return _host_skip(NO_PORT)
         if not page:
             print('  the host never opened a page', file=sys.stderr)
             return 1

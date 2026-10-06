@@ -162,12 +162,33 @@ pub extern "C" fn synx_rec_push(t_ms: u32, px: u32, score: u32) -> u32 {
     let px = if px == 3 { 3 } else { 4 };
     match rec() {
         Some(r) => {
-            /* The borrow has to be split: `push` takes `&mut self` and the
-               source is a field of the same struct. The frame buffer is only
-               read, so a raw slice over it is sound and avoids a copy of the
-               whole picture on every frame. */
-            let src = unsafe { core::slice::from_raw_parts(r.frame.as_ptr(), r.frame.len()) };
-            r.reel.push_scored(src, px, t_ms, score.min(1000) as u16) as u32
+            /* Two fields of one struct, borrowed apart: the reel stamps the
+               SYNX mark into the frame buffer in place and then encodes it.
+               The buffer is this module's scratch - the worker copied the
+               page's pixels into it - so writing on it costs nothing and the
+               page's own buffer goes back to it untouched. */
+            let Rec { reel, frame, .. } = r;
+            reel.push_scored(frame, px, t_ms, score.min(1000) as u16) as u32
+        }
+        None => 0,
+    }
+}
+
+/// Hand the encoder the page's SYNX artwork: `w * h` premultiplied RGBA
+/// pixels, read from the start of the frame buffer, to be laid at (`x`, `y`)
+/// on every frame from now on. Returns 1 when it was taken; 0 when it does
+/// not fit the frame, in which case the mark already in use - at the very
+/// least the built-in lettering - stays.
+#[no_mangle]
+pub extern "C" fn synx_rec_set_watermark(x: u32, y: u32, w: u32, h: u32) -> u32 {
+    match rec() {
+        Some(r) => {
+            let n = (w as usize) * (h as usize) * 4;
+            if n == 0 || n > r.frame.len() {
+                return 0;
+            }
+            let Rec { reel, frame, .. } = r;
+            reel.set_watermark(x as usize, y as usize, w as usize, h as usize, &frame[..n]) as u32
         }
         None => 0,
     }

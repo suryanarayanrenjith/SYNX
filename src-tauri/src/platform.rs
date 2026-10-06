@@ -53,17 +53,22 @@ pub fn browser_args(r: Renderer, vsync: bool) -> String {
         "--disable-backgrounding-occluded-windows ",
         "--disable-pinch --overscroll-history-navigation=0 ",
     ));
-    /* A WAY IN, FOR THE BUILD ONLY.
+    /* A WAY IN, FOR TEST BUILDS ONLY - AND NOT IN WHAT SHIPS.
 
        `tools/smoke.py launcher` drives the real host - it opens the launcher,
        presses PLAY and checks that the window actually becomes the game -
-       and to do that it has to attach a debugger to the webview. That is the
+       and to do that it has to attach a debugger to the webview, which is the
        one thing this process cannot be asked for after it has started.
 
-       Gated on an environment variable that nothing sets in a shipped run, so
-       a player's build never opens a port. It is read rather than compiled in
-       because the test drives the RELEASE binary: a debug-only hook would be
-       testing a different executable from the one that ships. */
+       This used to be read in EVERY build, release included, on the grounds
+       that a variable nothing sets is a port nothing opens. But anybody can
+       set an environment variable, and then the shipped game served a
+       Chromium debugging endpoint - the whole page, its state and its
+       network, scriptable from outside. So it is COMPILED OUT of a release
+       build now: present in a debug build, and in a release build only when
+       it is asked for by name with `--features harness`, which neither
+       tools/build.py nor the release workflow ever does. */
+    #[cfg(any(debug_assertions, feature = "harness"))]
     if let Ok(port) = std::env::var("SYNX_DEBUG_PORT") {
         if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() {
             a.push_str(&format!("--remote-debugging-port={port} "));
@@ -98,6 +103,40 @@ pub fn browser_args(r: Renderer, vsync: bool) -> String {
         )),
     }
     a
+}
+
+/// The environment variables through which somebody OTHER than this process
+/// can switch a webview's debugging on. WebView2 APPENDS the first to whatever
+/// command line the host passes - so `--remote-debugging-port` arrives that
+/// way however carefully [`browser_args`] was written - and WebKitGTK opens a
+/// remote inspector on either of the other two.
+pub const DEBUG_ENV: &[&str] = &[
+    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+    "WEBKIT_INSPECTOR_SERVER",
+    "WEBKIT_INSPECTOR_HTTP_SERVER",
+];
+
+/// NO WAY IN FROM OUTSIDE, in a build that ships.
+///
+/// Every variable in [`DEBUG_ENV`] is taken out of this process's environment
+/// before any webview exists, so the webviews it creates never see them. Run
+/// first in `main`, while the process has one thread and nothing else is
+/// reading its environment. A debug build is left alone: debugging it is the
+/// point of it.
+///
+/// What this cannot reach is machine policy - WebView2 also reads an
+/// administrator's registry policy - and that is the right boundary: whoever
+/// administers the machine can always debug what runs on it. What it closes
+/// is a shipped game that anybody could open up with one `set` command.
+pub fn lock_down() {
+    /* `cfg!` rather than `#[cfg]`: the loop is compiled - and DEBUG_ENV is
+       used - in every build, and a debug build returns before it runs. */
+    if cfg!(debug_assertions) {
+        return;
+    }
+    for k in DEBUG_ENV {
+        std::env::remove_var(k);
+    }
 }
 
 /// Configure the webview through the environment, for the platforms that are
@@ -256,6 +295,31 @@ mod tests {
         for a in [&gpu, &cpu] {
             assert!(a.contains("autoplay-policy=no-user-gesture-required"));
             assert!(a.contains("disable-background-timer-throttling"));
+        }
+    }
+
+    /// A SHIPPED BUILD OPENS NO DEBUGGING PORT, whatever the environment
+    /// says. Only compiled where it means something: a release build without
+    /// the test harness - `cargo test -p synx --release`.
+    #[cfg(all(target_os = "windows", not(debug_assertions), not(feature = "harness")))]
+    #[test]
+    fn a_shipped_build_ignores_the_debug_port() {
+        std::env::set_var("SYNX_DEBUG_PORT", "9229");
+        let a = browser_args(Renderer::Gpu, true);
+        std::env::remove_var("SYNX_DEBUG_PORT");
+        assert!(!a.contains("remote-debugging"), "a release build asked for a debugging port: {a}");
+    }
+
+    /// ...and nothing else can ask for one on its behalf.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn lock_down_takes_every_debugging_variable_away() {
+        for k in DEBUG_ENV {
+            std::env::set_var(k, "--remote-debugging-port=9229");
+        }
+        lock_down();
+        for k in DEBUG_ENV {
+            assert!(std::env::var_os(k).is_none(), "{k} survived lock_down");
         }
     }
 

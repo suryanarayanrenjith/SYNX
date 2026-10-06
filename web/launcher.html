@@ -10,10 +10,10 @@
      tokens it needs are duplicated at the top of launcher.css, deliberately
      and with a note saying so.
 
-     THE TYPEFACE IS LOCAL. The game installs Orbitron out of the 56 MB asset
-     pack at load, which is the right trade for the game and the wrong one for
-     a launcher that has to be on screen instantly. The two faces are 35 KB
-     between them, so they sit in web/fonts/ and are declared in launcher.css.
+     THE TYPEFACES ARE LOCAL. They are the site's three - Orbitron, Rajdhani
+     and Share Tech Mono, about 190 KB together - and they sit loose in
+     web/fonts/, declared in launcher.css, so a launcher that has to be on
+     screen instantly never waits on the asset pack or the network for them.
      Nothing here NEEDS the network: a desktop game whose settings screen
      needs Google Fonts is a settings screen that does not open on a machine
      with no connection. The one thing that uses it - the network row and the
@@ -72,9 +72,9 @@
 
   <!-- THE UPDATE NOTICE. Hidden unless this build is behind the newest release
        (js/updater.js), and never shown at all without a connection to find
-       that out with. It floats in the top corner rather than taking a band of
-       the screen: a player who does not care can ignore it without anything
-       having moved under the cursor. GET IT opens the SYNX site's download
+       that out with. It sits at the end of the tab row rather than taking a
+       band of the screen: a player who does not care can ignore it without
+       anything having moved under the cursor. GET IT opens the SYNX site's download
        section in a window of its own - see open_site in src-tauri. -->
   <aside id="update" class="synx-cut" hidden role="status" aria-live="polite">
     <div class="up-text">
@@ -135,6 +135,9 @@
   <p id="diag"></p>
 </main>
 
+<!-- The production guard, first: development hooks only in a development
+     session, and no browser menu or keys in a shipped one. See js/guard.js. -->
+<script src="js/guard.js"></script>
 <!-- The rows themselves. Shared with the in-game options screen so the two
      cannot disagree about what a setting is called or what it defaults to. -->
 <script src="js/settings.js"></script>

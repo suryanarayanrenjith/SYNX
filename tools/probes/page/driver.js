@@ -3077,7 +3077,10 @@
       if (!(g.dynScale < 1)) {
         note('PROBLEM: a machine at 29 fps was left at full resolution');
       }
-      if (g.dynScale < 0.45 - 1e-6) {
+      /* The floors are fractions of NATIVE, so above it they are lower in
+         `dynScale` - read the ceiling off the game rather than assuming one. */
+      var ceil = Math.max(1, g.renderScale || 1);
+      if (g.dynScale < 0.45 / ceil - 1e-6) {
         note('PROBLEM: the scaler went below the floor AGGRESSIVE asks for ('
              + g.dynScale.toFixed(3) + ')');
       }
@@ -3150,7 +3153,7 @@
       reset(1);
       fill(60, 4000);
       note('dynres: ON, fill-bound at 60 ms -> floor reached ' + g.dynScale.toFixed(3));
-      if (g.dynScale < 0.645 - 1e-6) {
+      if (g.dynScale < 0.645 / Math.max(1, g.renderScale || 1) - 1e-6) {
         note('PROBLEM: ON went below its own floor (' + g.dynScale.toFixed(3) + ')');
       }
 

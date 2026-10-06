@@ -7,57 +7,13 @@
 <meta name="description" content="SYNX - a neon racer on a Rust simulation core, with volumetric lighting, screen-space reflections and a full four-wheel physics model.">
 <meta name="theme-color" content="#12002b">
 <link rel="icon" type="image/png" href="favicon.png">
-<!-- THE TYPEFACE, ASKED FOR BEFORE THE STYLESHEET MENTIONS IT.
-
-     Both faces are declared `font-display: block`, which means any text set in
-     them is INVISIBLE until the file arrives - and the first thing this page
-     shows is a wordmark set in the heavy one. Without these two lines the font
-     is not even requested until the 210 KB stylesheet has been parsed and the
-     preloader's own rule has been matched, so the opening frame of the game
-     was a blank space where its name should be.
-
-     They are 17 KB each and they are served out of the executable, so this
-     costs nothing and removes the one thing that could make the first paint
-     look broken. -->
 <link rel="preload" href="fonts/Orbitron-900.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="preload" href="fonts/Orbitron-600.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="fonts/Rajdhani-600.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="fonts/Rajdhani-700.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="fonts/ShareTechMono-Regular.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="css/style.css?v=rust-1">
 
-<!-- ================================================== THE FIRST PAINT ====
-     The preloader's own style, inline, and the only CSS in this project that
-     is not in css/style.css.
-
-     IT IS HERE BECAUSE OF WHEN IT IS NEEDED. Everything else on this page is
-     styled by a stylesheet the browser has to fetch and parse before it will
-     paint anything at all; that is fine for a screen nobody sees for four
-     seconds and wrong for the one screen whose entire job is to be on the
-     glass before the player has finished letting go of the mouse. Inline, it
-     is styled by the time the markup below it has been parsed, which is as
-     early as a first paint can possibly happen.
-
-     It is also the one screen that has to survive css/style.css failing to
-     arrive, because if it does then what the player is looking at is a black
-     window and no explanation. So nothing in here reads a custom property or
-     a shared class: the colours are literals and the rules stand alone.
-
-     EVERY MOVING THING IS `transform` OR `opacity` AND NOTHING ELSE.
-     That is not a style preference, it is the whole design. This screen
-     covers a load that blocks the main thread for hundreds of milliseconds at
-     a time - forty-two megabytes of archive, a WebAssembly core being
-     compiled, nineteen shader programs being linked, a hundred and
-     seventy-five kilometres of course being built - and anything driven by
-     requestAnimationFrame, by a timer, or by script of any kind runs on
-     exactly the thread that is blocked. A spinner shown over a stall is a
-     spinner that stops during it, which is worse than no spinner at all
-     because now the player has been shown something visibly broken.
-     Transform and opacity are advanced by the COMPOSITOR, off the main
-     thread, so this keeps moving at sixty through a stall in which no
-     JavaScript runs whatsoever. Same rule, same reason, as js/staging.js.
-
-     Script's only job here is the two things that must be true rather than
-     merely reassuring: the percentage and the caption. Those stop when the
-     thread stops, which is honest - and the motion around them says the
-     machine has not died. -->
 <style>
 #preload{position:fixed;inset:0;z-index:9700;background:#04010c;overflow:hidden;
   font-family:"Orbitron","Segoe UI",system-ui,sans-serif;
@@ -143,12 +99,18 @@
   animation:plSheen 4.5s cubic-bezier(.5,0,.4,1) infinite;will-change:background-position}
 @keyframes plSheen{0%,62%{background-position:180% 0}100%{background-position:-80% 0}}
 
+/* THE WORDS ARE THE SITE'S BOOT SCREEN'S. synx-landing opens on this same
+   screen, rebuilt, and sets every line of it in the display face at its
+   semibold weight, tracked wide - so the game's first frame and the site's
+   are the same picture. Written out, not read from a variable, for the
+   reason at the top of this block. */
 #preload .pl-sub{margin:14px 0 0;font-weight:600;font-size:clamp(9px,1.05vw,14px);
   letter-spacing:.56em;text-indent:.56em;color:rgba(186,214,242,.72);
   text-shadow:0 0 18px rgba(57,230,255,.45)}
 
 /* The rail. `--p` is the only thing script writes, and it writes it to a
-   transform - so even the progress is composited. */
+   transform - so even the progress is composited. The site's: a two-pixel
+   hairline in a faint track, filling cyan through violet into pink, lit. */
 #preload .pl-rail{position:relative;margin-top:clamp(28px,5vh,56px);
   width:min(560px,74vw);height:2px;background:rgba(122,158,210,.16);overflow:hidden}
 #preload .pl-fill{position:absolute;inset:0;transform-origin:0 50%;
@@ -166,16 +128,19 @@
 #preload .pl-read{display:flex;justify-content:space-between;align-items:baseline;
   width:min(560px,74vw);margin-top:12px;font-weight:600;font-size:10px;
   letter-spacing:.24em;color:rgba(150,184,220,.66)}
-#preload .pl-pct{font-weight:900;font-size:13px;letter-spacing:.12em;color:#39e6ff;
-  text-shadow:0 0 14px rgba(57,230,255,.6);font-variant-numeric:tabular-nums}
+/* The number in the display face's black, cyan and lit, as the site has it. */
+#preload .pl-pct{font-weight:900;font-size:13px;letter-spacing:.12em;
+  color:#39e6ff;text-shadow:0 0 14px rgba(57,230,255,.6);
+  font-variant-numeric:tabular-nums}
 /* The second line, when a phase has something concrete to say - the megabytes
    that have actually arrived, the surface being uploaded. Directly under the
    readout rather than pinned to the bottom of the frame: it is a footnote to
    the percentage, and forty per cent of the screen away from it it reads as a
-   separate announcement. */
-#preload .pl-note{width:min(560px,74vw);margin-top:7px;min-height:1em;
-  text-align:left;font-weight:600;font-size:9px;letter-spacing:.24em;
-  color:rgba(130,160,196,.46)}
+   separate announcement. In the data face, because it is data. */
+#preload .pl-note{width:min(560px,74vw);margin-top:8px;min-height:1em;
+  text-align:left;font-family:"Share Tech Mono",ui-monospace,monospace;
+  font-weight:400;font-size:11px;letter-spacing:.12em;
+  color:rgba(130,160,196,.58)}
 
 /* Corner ticks and scanlines: the panel language the rest of the game is
    built from, so the first screen belongs to the same object as the last. */
@@ -910,8 +875,12 @@
 
      Nothing here reads document.readyState expecting 'loading', and js/main.js
      starts from DOMContentLoaded, which still fires after deferred scripts. -->
-<!-- The preloader's readout. First, because it is what covers everything the
-     rest of this list is about to do. -->
+<!-- The production guard, before everything: whether this is a development
+     session at all, and in a shipped build the browser's own menu and keys
+     taken out of the game. See js/guard.js. -->
+<script defer src="js/guard.js?v=rust-1"></script>
+<!-- The preloader's readout. First after the guard, because it is what covers
+     everything the rest of this list is about to do. -->
 <script defer src="js/preload.js?v=rust-1"></script>
 <script defer src="js/settings.js?v=rust-1"></script>
 <!-- The controller. Loaded before the game, which holds the only instance. -->
@@ -927,7 +896,6 @@
 <script defer src="js/pak.js?v=rust-1"></script>
 <script defer src="js/gl.js?v=rust-1"></script>
 <script defer src="js/wasm.js?v=rust-1"></script>
-<script defer src="data/game_data.js?v=rust-1"></script>
 <script defer src="js/scene.js?v=rust-1"></script>
 <script defer src="js/autosave.js?v=rust-1"></script>
 <script defer src="js/damage.js?v=rust-1"></script>

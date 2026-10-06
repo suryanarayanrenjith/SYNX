@@ -389,6 +389,8 @@
     reset(s, lateral) {
       M().synx_veh_reset(this._id, s || 0, lateral || 0);
       M();
+      // a car put down on the road has no lag to take back - see Game.presentCar
+      if (this._pose) this._pose.on = false;
       return this;
     }
 

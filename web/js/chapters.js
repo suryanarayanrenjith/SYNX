@@ -505,7 +505,7 @@
      drawSpec call, so a harness that records those instead of drawing them has
      the whole kit as boxes and can ask what passes through what - which is how
      the turbine outlets were found sitting inside the diffuser fins. */
-  global.__SYNX_RAPTOR_KIT__ = RaptorKit;
+  if ((global.NR || {}).DEV !== false) global.__SYNX_RAPTOR_KIT__ = RaptorKit;
 
   class DynamicSetpieceWorld {
     constructor(game) {
@@ -824,6 +824,8 @@
      */
     setVehicle(car, s, lateral, speed, dodgePitch) {
       if (!car) return;
+      // a placed car is exactly where it was put - see Game.presentCar
+      if (car._pose) car._pose.on = false;
       const p = this.g.track.at(s, {});
       const rx = Math.cos(p.yaw), rz = -Math.sin(p.yaw);
       car.sTrack = s;
@@ -1829,7 +1831,7 @@
   const oldFinish=GP.finish;
   GP.finish=function(){const g=this,d=director(g);if(d.requestFinish(function(){oldFinish.call(g);} ))return;oldFinish.call(this);};
 
-  global.__SYNX_LEVEL5__={
+  if ((global.NR || {}).DEV !== false) global.__SYNX_LEVEL5__={
     name:'ASHFALL ZERO',mainCutscenes:3,
     collapseSeconds:EVENTS.collapse.duration,volcanoSeconds:EVENTS.volcano.duration,finishSeconds:EVENTS.finish.duration,
     collapseQTaps:EVENTS.collapse.targetTaps,volcanoCueCount:EVENTS.volcano.cueCount,
@@ -1957,7 +1959,7 @@
     { track: 2.95, commit: 58, catch: 5.0, habit: 4.4 },
   ];
   // the tuning harness reads these; nothing in the game does
-  global.__ghostTiers = GHOST_TIERS;
+  if ((global.NR || {}).DEV !== false) global.__ghostTiers = GHOST_TIERS;
   const TEST_START = 126700;
   const TRUCK_S = 128200;
   const GATE_REVEAL_UNITS = 50 / .733;
@@ -3629,7 +3631,7 @@
      is checked by cargo and the table by tools/check.py ramps, and whether the
      DECK is where the car will be is a question about vertices. Same reason
      __SYNX_LEVEL7__ is published a few thousand lines below. */
-  global.__SYNX_FACTORY_WORLD__ = FactoryWorld;
+  if ((global.NR || {}).DEV !== false) global.__SYNX_FACTORY_WORLD__ = FactoryWorld;
 
 
   /* Aurora's driver-link handshake. Four glyphs, on 1-4.
@@ -4741,7 +4743,7 @@
   GP.resetCar=function(){oldReset.call(this);if(this.__level6Director&&!(this.story&&this.story.chapter&&this.story.chapter.id===6))this.__level6Director.reset();};
   GP.toMenu=function(){oldMenu.call(this);if(this.__level6Director)this.__level6Director.reset();};
 
-  global.__SYNX_LEVEL6__={name:'BROKEN CIRCUIT',track:'AURORA FORGE',gateRevealMetres:50,electricStrikes:3,inversionSeconds:5,
+  if ((global.NR || {}).DEV !== false) global.__SYNX_LEVEL6__={name:'BROKEN CIRCUIT',track:'AURORA FORGE',gateRevealMetres:50,electricStrikes:3,inversionSeconds:5,
     quizInputs:'1234',handshakeGlyphs:GLYPHS.length,handshakeLengths:[3,4,5],
     damagedTopKmh:100,raceModeSeconds:30,raceModeCooldown:70,blueReserve:.5,speedMultiplier:1.5,
     engineSwapMph:200,
@@ -5745,7 +5747,7 @@
       /* Timed, in the same table the rest of the load reports through, because
          this is the one build in the game that is not the shipped scene's and
          it is the one the frame budget of this route depends on. */
-      const T=(global.__synxLoad=global.__synxLoad||{});
+      const T=(global.NR||{}).DEV!==false?(global.__synxLoad=global.__synxLoad||{}):{};
       const mark=(k,fn)=>{const a=performance.now();fn();T[k]=+(performance.now()-a).toFixed(1);};
       mark('l7Materials',()=>this.buildMaterials());
       mark('l7Ground',()=>this.buildGround());
@@ -8677,7 +8679,7 @@ PredatorDirector.prototype.updateMazeGates=function(dt){
   NR.Level7World=Level7World;
   NR.chapter7ConfidenceDelta=confidenceDelta;NR.chapter7TelegraphSeconds=telegraphSeconds;
   NR.chapter7HuntPace=huntPace;
-  global.__SYNX_LEVEL7__={version:4,name:'NEON HORIZON',jumps:JUMPS,jumpClean:JUMP_CLEAN,jumpTelegraph:JUMP_TELEGRAPH,from:ROUTE_FROM,to:FINISH,distanceKm:+((FINISH-ROUTE_FROM)*KM_PER_UNIT).toFixed(2),roadHalf:32,deckHalf:DECK_HALF,cityFloor:FLOOR,pierStep:PIER_STEP,glassway:[GLASS_A,GLASS_B],zones:ZONES,events:EVENTS,checkpoints:CHECKPOINTS,hazards:HAZARDS,chapter:7,predatorLock:[PRED.lockFrom,PRED.lockTo],raceMode:true,eventStates:['idle','arming','active','resolved','failed','cleanup'],confidenceDelta,telegraphSeconds,
+  if ((global.NR || {}).DEV !== false) global.__SYNX_LEVEL7__={version:4,name:'NEON HORIZON',jumps:JUMPS,jumpClean:JUMP_CLEAN,jumpTelegraph:JUMP_TELEGRAPH,from:ROUTE_FROM,to:FINISH,distanceKm:+((FINISH-ROUTE_FROM)*KM_PER_UNIT).toFixed(2),roadHalf:32,deckHalf:DECK_HALF,cityFloor:FLOOR,pierStep:PIER_STEP,glassway:[GLASS_A,GLASS_B],zones:ZONES,events:EVENTS,checkpoints:CHECKPOINTS,hazards:HAZARDS,chapter:7,predatorLock:[PRED.lockFrom,PRED.lockTo],raceMode:true,eventStates:['idle','arming','active','resolved','failed','cleanup'],confidenceDelta,telegraphSeconds,
   /* What the finale actually contains, for the harnesses to assert against. */
   cityTiers:3,hazardVerbs:['AVOID','SLIDE','FALL'],
   hazardTypes:['sky_panel','metal_ball','oil','barrier','slab'],

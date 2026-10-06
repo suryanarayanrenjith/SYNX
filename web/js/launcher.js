@@ -992,6 +992,6 @@
   } else {
     app.boot();
   }
-  // what the smoke harness asserts against
-  global.__SYNX_LAUNCHER__ = app;
+  // what the smoke harness asserts against - a development session only
+  if ((global.NR || {}).DEV !== false) global.__SYNX_LAUNCHER__ = app;
 })(window);

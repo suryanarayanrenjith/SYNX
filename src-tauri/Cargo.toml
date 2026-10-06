@@ -1,6 +1,6 @@
 [package]
 name = "synx"
-version = "1.0.2"
+version = "1.0.5"
 edition = "2021"
 description = "SYNX Synthwave eXtreme Racing"
 authors = ["SYNX"]
@@ -10,9 +10,26 @@ default-run = "synx"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# No "devtools" feature, deliberately: without it a release build's webview
+# has no inspector on any platform. Debug builds keep theirs.
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# WebView2's own browser keys and right-click menu are switched off in a
+# release build (see lock_webview2 in src/main.rs); Tauri does not expose the
+# two settings, so they are reached through the same bindings it uses itself.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows-core = "0.61"
+
+[features]
+# TEST BUILDS ONLY. Compiles in the one way into a release binary's webview
+# that tools/smoke.py's host checks need - SYNX_DEBUG_PORT, see
+# src/platform.rs - as `cargo build -p synx --release --features harness`.
+# tools/build.py and the release workflow never turn it on, so a shipped build
+# contains no code for it at all.
+harness = []
 
 [[bin]]
 name = "synx"

@@ -80,6 +80,9 @@
     record: 'NEW RECORD',
     raceMode: 'RACE MODE',
     roof: 'THE BROKEN ROOF',
+    focus: 'FOCUS',
+    launch: 'PERFECT LAUNCH',
+    slingshot: 'SLINGSHOT',
   };
 
   /* `kind` as crates/synx-rec understands it. */
@@ -343,6 +346,132 @@
     lastWant = t;
   }
 
+  /* ======================================================= THE SYNX MARK ==
+   *
+   * EVERY RECORDING CARRIES IT. The mark is not drawn on the game's picture -
+   * the player is not looking at a watermark while they drive - but laid onto
+   * each frame inside the encoder, on its way into the ring (see
+   * crates/synx-rec/src/watermark.rs). Nothing can enter the ring any other
+   * way, so the last thirty seconds, the stitched highlights, the automatic
+   * best moment and the whole buffer are all cut from frames that have it.
+   *
+   * This draws the artwork the encoder lays on: the name in the house chrome
+   * (hud.chrome, .synx-chrome - white into lavender to a horizon, gold off the
+   * break into magenta) over a soft dark shadow so it reads on a sunlit road
+   * as well as on the night sky, with the line under it, in the bottom-right
+   * corner where a broadcast puts its bug. Drawn ONCE per capture size, in the
+   * game's own faces, at the exact pixel size it will be stamped at - so it is
+   * as sharp as the frame allows rather than a bitmap scaled into it.
+   *
+   * If the page cannot draw it the encoder still stamps its own block
+   * lettering. A clip without a mark is not something any path produces. */
+  const MARK_CHROME = [
+    [0.00, '#ffffff'], [0.30, '#c8b8ff'], [0.47, '#5b3fb8'],
+    [0.50, '#2a1650'], [0.53, '#ffd977'], [0.72, '#ff5fb0'], [1.00, '#7a1f6b'],
+  ];
+  const MARK_LINE = 'SYNTHWAVE EXTREME RACING';
+  const MARK_FACES = ['900 24px "Orbitron"', '600 12px "Rajdhani"'];
+
+  /** Have the faces the mark is set in arrived? */
+  function markFacesReady() {
+    try {
+      return !doc.fonts || MARK_FACES.every((f) => doc.fonts.check(f));
+    } catch (e) { return true; }
+  }
+
+  /** The artwork for a `fw` x `fh` frame: premultiplied RGBA and where it
+      goes. Null when there is no 2D canvas to set it with. */
+  function watermarkArt(fw, fh) {
+    let cv = null, c = null;
+    try {
+      cv = doc.createElement('canvas');
+      c = cv.getContext('2d', { willReadFrequently: true });
+    } catch (e) { return null; }
+    if (!c) return null;
+    const word = Math.max(12, Math.round(fh * 0.068));
+    const cap = Math.max(7, Math.round(fh * 0.022));
+    const pad = Math.ceil(word * 0.42);
+    const fWord = '900 ' + word + 'px "Orbitron", system-ui, sans-serif';
+    const fCap = '600 ' + cap + 'px "Rajdhani", system-ui, sans-serif';
+    const spaced = 'letterSpacing' in c;
+    const set = (font, track) => {
+      c.font = font;
+      if (spaced) c.letterSpacing = track.toFixed(2) + 'px';
+    };
+    set(fWord, word * 0.08);
+    const ww = c.measureText('SYNX').width;
+    set(fCap, cap * 0.24);
+    const lw = c.measureText(MARK_LINE).width;
+    const margin = Math.round(fh * 0.035);
+    const mw = Math.min(fw - margin * 2, Math.ceil(Math.max(ww, lw) + pad * 2));
+    const mh = Math.min(fh - margin * 2, Math.ceil(word + cap * 1.6 + pad * 2));
+    if (mw < 8 || mh < 8) return null;
+    // a resize resets the context, so everything is set again after it
+    cv.width = mw;
+    cv.height = mh;
+    const rx = mw - pad;
+    const wy = pad + word * 0.5;
+    const ly = wy + word * 0.5 + cap * 0.95;
+    const sh = Math.max(1, Math.round(word * 0.045));
+    c.textAlign = 'right';
+    c.textBaseline = 'middle';
+
+    // the shadow under it: what keeps white letters legible on a bright road
+    set(fWord, word * 0.08);
+    c.shadowColor = 'rgba(4,0,14,0.75)';
+    c.shadowBlur = word * 0.3;
+    c.fillStyle = 'rgba(4,0,14,0.55)';
+    c.fillText('SYNX', rx + sh, wy + sh);
+    // the bloom, in the house magenta
+    c.shadowColor = 'rgba(255,46,136,0.6)';
+    c.shadowBlur = word * 0.4;
+    c.fillStyle = 'rgba(255,46,136,0.3)';
+    c.fillText('SYNX', rx, wy);
+    c.shadowBlur = 0;
+    c.shadowColor = 'rgba(0,0,0,0)';
+    // the chrome
+    const g = c.createLinearGradient(0, wy - word * 0.5, 0, wy + word * 0.5);
+    for (const [stop, col] of MARK_CHROME) g.addColorStop(stop, col);
+    c.fillStyle = g;
+    c.fillText('SYNX', rx, wy);
+    c.lineWidth = Math.max(0.6, word * 0.022);
+    c.strokeStyle = 'rgba(255,255,255,0.55)';
+    c.strokeText('SYNX', rx, wy);
+    // ...and the line under it
+    set(fCap, cap * 0.24);
+    c.fillStyle = 'rgba(4,0,14,0.65)';
+    c.fillText(MARK_LINE, rx + 1, ly + 1);
+    c.fillStyle = 'rgba(232,236,255,0.88)';
+    c.fillText(MARK_LINE, rx, ly);
+
+    /* Premultiplied, which is what the encoder lays on, and a touch under
+       full strength: a mark, not a sticker over the picture. */
+    let img;
+    try { img = c.getImageData(0, 0, mw, mh).data; } catch (e) { return null; }
+    const px = new Uint8Array(mw * mh * 4);
+    const fade = 0.92;
+    for (let i = 0; i < px.length; i += 4) {
+      const a = img[i + 3] * fade;
+      px[i] = Math.round(img[i] * a / 255);
+      px[i + 1] = Math.round(img[i + 1] * a / 255);
+      px[i + 2] = Math.round(img[i + 2] * a / 255);
+      px[i + 3] = Math.round(a);
+    }
+    return { x: fw - mw - margin, y: fh - mh - margin, w: mw, h: mh, px: px.buffer };
+  }
+
+  /* If the faces were still arriving when the ring started, the mark that
+     went with `begin` was set in the fallback face. It is drawn again once
+     they are in, for as long as the same ring is running. */
+  function refineMark(fw, fh) {
+    if (!doc.fonts || !doc.fonts.load) return;
+    Promise.all(MARK_FACES.map((f) => doc.fonts.load(f))).then(() => {
+      if (!on || !worker || w !== fw || h !== fh) return;
+      const art = watermarkArt(fw, fh);
+      if (art) worker.postMessage({ t: 'watermark', mark: art }, [art.px]);
+    }).catch(() => { /* the fallback face it already has is a mark too */ });
+  }
+
   /* ---------------------------------------------------------- the worker -- */
 
   function onWorker(ev) {
@@ -442,11 +571,15 @@
     on = true;
     ready = false;                                   // until the worker says so
     t0 = global.performance ? performance.now() : Date.now();
+    // the SYNX mark rides with `begin`, so the very first frame already has it
+    const art = watermarkArt(w, h);
     worker.postMessage({
       t: 'begin', w, h, fmt: 4,
       fps: cfg.fps, quality: cfg.quality,
       windowMs: cfg.windowMs, budgetMb: cfg.budgetMb,
-    });
+      mark: art,
+    }, art ? [art.px] : []);
+    if (!markFacesReady()) refineMark(w, h);
     return true;
   }
 
@@ -497,7 +630,7 @@
     invoke('clip_write', bytes, { headers: { 'x-synx-clip': tag } })
       .then((path) => {
         toast(what + ' - ' + mb(bytes.length), '#5affc0');
-        if (global.console) global.console.info('SYNX: clip written to ' + path);
+        if (global.console && NR.DEV !== false) global.console.info('SYNX: clip written to ' + path);
       })
       .catch((e) => toast('CLIP FAILED: ' + e, '#ff3b3b'));
   }

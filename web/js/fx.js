@@ -559,7 +559,12 @@
         this.emit(dt, list[ci], active, ci === 0);
         this.trail(dt, list[ci], active);
       }
-      this.integrate(dt);
+      /* `flow` slows what is already in the air - the sparks, the smoke -
+         without thinning what is emitted or touching the trails, which are
+         where the cars have been. One is everything as it always was; FOCUS
+         lowers it in a shared race, where the cars cannot be slowed and the
+         air around them can (see Game.updateFocus). */
+      this.integrate(dt * (this.flow === undefined ? 1 : this.flow));
     }
 
     /* The light trails and the tyre marks.

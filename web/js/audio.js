@@ -294,7 +294,17 @@
 
       this.master = ctx.createGain();
       this.master.gain.value = 0.9;
-      this.master.connect(ctx.destination);
+      /* FOCUS'S MUFFLE, on the way out of everything. A low-pass that sits
+         wide open at 20 kHz - which is no filter at all - until FOCUS pulls it
+         down, so the whole mix sounds as though it is heard through the
+         helmet while time is slowed. See setFocus. */
+      this.focusLp = ctx.createBiquadFilter();
+      this.focusLp.type = 'lowpass';
+      this.focusLp.frequency.value = 20000;
+      this.focusLp.Q.value = 0.8;
+      this.master.connect(this.focusLp);
+      this.focusLp.connect(ctx.destination);
+      this.focusK = 0;
 
       this.sfx = ctx.createGain();
       this.sfx.gain.value = 0.7 * (this.sfxVol === undefined ? 1 : this.sfxVol);
@@ -808,12 +818,132 @@
       if (!this.ready || !this.buffers[key]) return false;
       const s = this.ctx.createBufferSource();
       s.buffer = this.buffers[key];
-      s.playbackRate.value = rate || 1;
+      // a crash heard in FOCUS is heard slowed, like the world it came from
+      s.playbackRate.value = (rate || 1) * (1 - 0.32 * (this.focusK || 0));
       const g = this.ctx.createGain();
       g.gain.value = gain === undefined ? 1 : gain;
       s.connect(g); g.connect(this.sfx);
       s.start();
       return true;
+    }
+
+    /* ======================================== FOCUS, HEARD ==============
+     *
+     * What slowed time sounds like. Four things, all procedural - nothing here
+     * is a shipped clip, so nothing new is in the pack:
+     *
+     *   THE MUFFLE. The master low-pass comes down from wide open to about
+     *   seven hundred hertz on an exponential curve, so the whole mix sounds
+     *   heard through a helmet.
+     *   THE TAPE. The radio is slowed like a cassette on a dying motor - the
+     *   media element's rate brought down with its pitch unpreserved, so the
+     *   song sags rather than time-stretches.
+     *   THE ENTRY. A breath of filtered noise falling through the spectrum
+     *   and a sub-bass drop under it: the moment time is caught. Leaving is
+     *   the same breath rising.
+     *   THE PULSE. While it holds, a heartbeat - a lub and a dub, low and soft
+     *   - under everything, because a slowed moment is one the driver hears
+     *   themselves in.
+     *
+     * `k` is Game.updateFocus's blend, 0..1, set every frame. */
+    setFocus(k) {
+      const f = Math.max(0, Math.min(1, k || 0));
+      this.focusK = f;
+      if (!this.ready || !this.focusLp) return;
+      const t = this.ctx.currentTime;
+      aim(this.focusLp.frequency, 20000 * Math.pow(720 / 20000, f), t, 0.04);
+      // the tape: written only when it moves, because a rate write re-seeks nothing but costs a frame
+      const rate = Math.round((1 - 0.17 * f) * 100) / 100;
+      if (rate !== this._tapeRate) {
+        this._tapeRate = rate;
+        for (const key in this.tracks) {
+          const e = this.tracks[key];
+          if (!e || !e.ready || !e.el) continue;
+          try {
+            e.el.preservesPitch = false;
+            e.el.playbackRate = rate;
+          } catch (err) { /* a browser that will not change a rate keeps the song */ }
+        }
+      }
+      if (f > 0.55) {
+        if (!this._beatAt || this._beatAt < t) this._beatAt = t + 0.05;
+        if (this._beatAt < t + 0.12) {
+          this._thump(this._beatAt, 0.30 * f);
+          this._thump(this._beatAt + 0.17, 0.19 * f);
+          this._beatAt += 0.86;
+        }
+      } else {
+        this._beatAt = 0;
+      }
+    }
+
+    focusIn() { this._breath(true); this._drop(); }
+    focusOut() { this._breath(false); }
+
+    /* One second of white noise, made once, for the breaths. */
+    _noise() {
+      if (this._noiseBuf) return this._noiseBuf;
+      const ctx = this.ctx;
+      const b = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 1.0), ctx.sampleRate);
+      const d = b.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      this._noiseBuf = b;
+      return b;
+    }
+
+    /* A breath of noise swept through a band-pass: down on the way in, up on
+       the way out. On the FX bus, so the SOUND FX slider governs it. */
+    _breath(falling) {
+      if (!this.ready) return;
+      const ctx = this.ctx, t = ctx.currentTime;
+      const src = ctx.createBufferSource();
+      src.buffer = this._noise();
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.Q.value = 1.3;
+      const g = ctx.createGain();
+      const len = falling ? 0.62 : 0.42;
+      bp.frequency.setValueAtTime(falling ? 3400 : 320, t);
+      bp.frequency.exponentialRampToValueAtTime(falling ? 240 : 3600, t + len);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(falling ? 0.55 : 0.34, t + 0.06);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + len + 0.08);
+      src.connect(bp); bp.connect(g); g.connect(this.sfx);
+      src.start(t);
+      src.stop(t + len + 0.12);
+    }
+
+    /* The sub-bass drop under the entry: a sine falling an octave. */
+    _drop() {
+      if (!this.ready) return;
+      const ctx = this.ctx, t = ctx.currentTime;
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(78, t);
+      o.frequency.exponentialRampToValueAtTime(36, t + 0.7);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.6, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.95);
+      o.connect(g); g.connect(this.sfx);
+      o.start(t);
+      o.stop(t + 1.0);
+    }
+
+    /* One beat of the heart: a low sine with a fast attack and a short tail. */
+    _thump(at, level) {
+      const ctx = this.ctx;
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(58, at);
+      o.frequency.exponentialRampToValueAtTime(40, at + 0.14);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, level), at + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.16);
+      o.connect(g); g.connect(this.sfx);
+      o.start(at);
+      o.stop(at + 0.2);
     }
 
     /* Everything the car makes, off, now.
@@ -893,7 +1023,9 @@
       }
       const rpm = this.noteRpm || 0;
       const load = this.noteLoad || 0;
-      const pitch = MIN_PITCH + (MAX_PITCH - MIN_PITCH) * rpm;
+      /* In FOCUS the engine is heard slowed with everything else - pitched
+         down rather than revving at the rate the sim's clock implies. */
+      const pitch = (MIN_PITCH + (MAX_PITCH - MIN_PITCH) * rpm) * (1 - 0.30 * (this.focusK || 0));
       const moving = active && car.speed > 1.5;
 
       const eng = this.loops.engine;
@@ -905,7 +1037,7 @@
       }
       const idle = this.loops.idle;
       if (idle) {
-        aim(idle.src.playbackRate, 0.85 + rpm * 0.5, t, 0.08);
+        aim(idle.src.playbackRate, (0.85 + rpm * 0.5) * (1 - 0.30 * (this.focusK || 0)), t, 0.08);
         aim(idle.gain.gain,
           active ? ENGINE_TRIM * (moving ? 0.16 : 0.40) : 0.0, t, 0.1);
       }

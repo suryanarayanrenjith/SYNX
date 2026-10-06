@@ -55,7 +55,7 @@ fn main() {
                 buf[i + 2] = (b.clamp(0.0, 1.0) * 255.0) as u8;
             }
         }
-        reel.push(&buf, 3, f * (1000 / fps));
+        reel.push(&mut buf, 3, f * (1000 / fps));
         if f == total / 2 {
             reel.mark(f * (1000 / fps), "SAMPLE");
         }

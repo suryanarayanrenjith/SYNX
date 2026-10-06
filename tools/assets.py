@@ -6,7 +6,6 @@
     python tools/assets.py check              verify it, writing nothing
     python tools/assets.py list               show what is in it
     python tools/assets.py shrink [--write]   re-encode every PNG, losslessly
-    python tools/assets.py atlas  [--write]   erase sprites nothing draws
     python tools/assets.py gentex [--force]   generate the R-IX surface maps
     python tools/assets.py scene  [--write]   drop geometry nothing submits
     python tools/assets.py sfx    [--write]   synthesise the one-shots
@@ -205,134 +204,6 @@ def cmd_shrink(args):
     print('%s -> %s   (%.2f MB saved, %.1f%%)'
           % (pak.mb(before), pak.mb(after), (before - after) / 1048576.0,
              (before - after) * 100.0 / max(1, before)))
-    if not args.write:
-        print('\n--write to apply, then re-run `python tools/assets.py pack`')
-    return 0
-
-
-# Sprite names the HUD builds rather than writes. Each one needs a reason: an
-# exception nobody wrote down is a hole.
-BUILT_AT_RUNTIME = {
-    'countdown_1': "js/hud.js draws 'countdown_' + n for the three lights",
-    'countdown_2': "js/hud.js draws 'countdown_' + n for the three lights",
-    'countdown_3': "js/hud.js draws 'countdown_' + n for the three lights",
-}
-
-
-def game_data():
-    """data/game_data.js as a dict, plus the text either side of it.
-
-    The file is one assignment of a JSON object literal, so the object is cut
-    out by its braces rather than executed. That is deliberate: this tool
-    WRITES the file back, and round-tripping through a JavaScript engine would
-    mean trusting the engine's idea of how to print it.
-    """
-    src = paths.read(paths.DATA / 'game_data.js')
-    a, b = src.index('{'), src.rindex('}') + 1
-    return json.loads(src[a:b]), src[:a], src[b:]
-
-
-def cmd_atlas(args):
-    """The sprites nothing draws any more.
-
-    A sprite is not a file: `speed`, `boost_bar` and the rest are RECTANGLES
-    inside two shipped atlas sheets that also carry the countdown numerals, the
-    chequered flag and the chase meter - so the sheets have to stay, and the
-    only thing that can be got back is the AREA. Erased to transparent black it
-    deflates to almost nothing.
-
-    WHAT IS DEAD IS DERIVED, NOT LISTED. The live set is read out of js/hud.js:
-    every literal name handed to the four sprite calls, plus the widget names
-    those resolve through. A hard-coded list would be wrong the first time
-    somebody drew one again, and the failure would be a hole in a sheet rather
-    than an error.
-    """
-    png = _png()
-    import numpy as np
-    gd, _, _ = game_data()
-    hud = paths.read(paths.JS / 'hud.js')
-
-    asked = set()
-    for pat in (r"placeSprite\(\s*'([^']+)'", r"placeSpriteTinted\(\s*'([^']+)'",
-                r"\bsprite\(\s*'([^']+)'", r"spriteAt\(\s*'([^']+)'"):
-        asked.update(re.findall(pat, hud))
-    widget_sprite = {w['name']: w['sprite'] for w in gd.get('hud', []) if w.get('sprite')}
-    live = set(BUILT_AT_RUNTIME)
-    for a in asked:
-        live.add(a)
-        if a in widget_sprite:
-            live.add(widget_sprite[a])
-
-    before = after = dead_count = dead_px = 0
-    dropped = {}
-    for key, atlas in (gd.get('atlas') or {}).items():
-        if not atlas.get('texture'):
-            continue
-        p = paths.ASSETS_SRC / 'textures' / (atlas['texture'] + '.png')
-        if not p.exists():
-            print('  skip  %s  (not in assets-src; run `python tools/assets.py unpack`)'
-                  % p.name)
-            continue
-        dead = [n for n in atlas['sprites'] if n not in live]
-        src = p.read_bytes()
-        before += len(src)
-        print('\n== %s  %s  %d KB' % (key, p.name, len(src) // 1024))
-        if not dead:
-            print('   every sprite on this sheet is still drawn')
-            after += len(src)
-            continue
-
-        im = png.decode(src)
-        px = 0
-        for n in dead:
-            x, y, w, h = atlas['sprites'][n]
-            print('   DEAD  %-20s %dx%d at %d,%d   %d kpx' % (n, w, h, x, y, w * h // 1000))
-            # Erased to zero rather than to a colour: an all-zero run is the
-            # cheapest thing deflate can encode, and transparent black cannot
-            # bleed into a neighbouring sprite through bilinear filtering the
-            # way an opaque fill would.
-            y0, y1 = max(0, y), min(im.h, y + h)
-            x0, x1 = max(0, x), min(im.w, x + w)
-            if y1 > y0 and x1 > x0:
-                im.pixels[y0:y1, x0:x1, :] = 0
-            px += w * h
-        dead_count += len(dead)
-        dead_px += px
-        dropped[key] = dead
-
-        out = png.encode(im)
-        back = png.decode(out)
-        if (back.w != im.w or back.h != im.h or back.ctype != im.ctype
-                or not np.array_equal(back.pixels, im.pixels)):
-            raise SystemExit(p.name + ': the round trip changed the pixels')
-        save = len(src) - len(out)
-        print('   %d KB -> %d KB   (%s%d KB, %.1f%%)'
-              % (len(src) // 1024, len(out) // 1024, '-' if save >= 0 else '+',
-                 abs(save) // 1024, save * 100.0 / len(src)))
-        after += len(out)
-        if args.write:
-            p.write_bytes(out)
-
-    # A rectangle that has been erased must stop being ADDRESSABLE, or a later
-    # edit can point something at a hole and see nothing at all - which is the
-    # hardest kind of missing art to trace, because everything about the draw
-    # succeeds.
-    if dead_count:
-        data, head, tail = game_data()
-        removed = 0
-        for key, names in dropped.items():
-            for n in names:
-                if data['atlas'].get(key, {}).get('sprites', {}).pop(n, None) is not None:
-                    removed += 1
-        print('\n%d sprite(s) dropped from data/game_data.js' % removed)
-        if args.write:
-            paths.write(paths.DATA / 'game_data.js',
-                        head + json.dumps(data, separators=(',', ':'),
-                                          ensure_ascii=False) + tail)
-
-    print('\n%d dead sprite(s), %d kpx of sheet' % (dead_count, dead_px // 1000))
-    print('%d KB -> %d KB   (%d KB saved)'
-          % (before // 1024, after // 1024, (before - after) // 1024))
     if not args.write:
         print('\n--write to apply, then re-run `python tools/assets.py pack`')
     return 0
@@ -1052,7 +923,7 @@ def cmd_icons(args):
 
 COMMANDS = {
     'pack': cmd_pack, 'unpack': cmd_unpack, 'check': cmd_check, 'list': cmd_list,
-    'shrink': cmd_shrink, 'atlas': cmd_atlas, 'gentex': cmd_gentex,
+    'shrink': cmd_shrink, 'gentex': cmd_gentex,
     'scene': cmd_scene, 'sfx': cmd_sfx, 'icons': cmd_icons,
 }
 

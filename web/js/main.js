@@ -551,15 +551,26 @@
           const game = new NR.Game({
             canvas: document.getElementById('glCanvas'),
             hudCanvas: document.getElementById('hudCanvas'),
-            gameData: window.NR_GAME || {},
           });
-          window.__nr = game;
+          /* The game, for the modules that need it, through the namespace
+             every module already holds. On window as well only in a
+             development session - it is the handle the tools in tools/ drive
+             the game through, and in a shipped build it is nobody's
+             business. See js/guard.js. */
+          NR.game = game;
+          if (NR.DEV !== false) window.__nr = game;
           NR.Boot.complete('pipeline');
           game.run();
           return game.load();
         });
       })
       .then(function () {
+        /* EVERY SHADER, CHECKED. Programs are submitted to the driver and
+           compiled in parallel behind the load rather than one by one in
+           front of it (see `program` in js/gl.js); anything nothing has used
+           yet is asked here, so a broken one still lands on the fatal card
+           through the catch below, exactly as a synchronous failure did. */
+        if (NR.gl && NR.gl.settleAll) NR.gl.settleAll();
         /* THE LOAD IS OVER, AND THE OPENING MAY NOW HAPPEN.
            The pack is decoded, the core is compiled, the course is built and
            the first frame is on the canvas. Nothing is left to compete for
@@ -588,13 +599,13 @@
            about that decision lives in js/bench.js, including what to do
            when it cannot run - see autorun.
 
-           THROUGH window.__nr, NOT THROUGH `game`. The game is declared in the
+           THROUGH NR.game, NOT THROUGH `game`. The game is declared in the
            PREVIOUS link of this chain and is not in scope here - referencing it
            threw ReferenceError at exactly this point, after the advisory had
            been dismissed and the opening cutscene skipped and before the sweep
            could start. That is the whole of why the button appeared to do
            nothing and why the warning screen stopped appearing afterwards. */
-        if (NR.Bench && NR.Bench.autorun && window.__nr) NR.Bench.autorun(window.__nr);
+        if (NR.Bench && NR.Bench.autorun && NR.game) NR.Bench.autorun(NR.game);
 
         /* THE REPLAY BUFFER IS ATTACHED HERE AND STARTED BY NOBODY.
            It is OFF unless the player has turned it on - F8, or the row on the
@@ -603,9 +614,9 @@
            something to spend on somebody who has not asked. Attaching is free:
            no worker is started and nothing is allocated until it is switched
            on. See web/js/record.js. */
-        if (NR.Record && window.__nr) {
-          NR.Record.attach(window.__nr);
-          if (window.__nr.applyRecorderSettings) window.__nr.applyRecorderSettings();
+        if (NR.Record && NR.game) {
+          NR.Record.attach(NR.game);
+          if (NR.game.applyRecorderSettings) NR.game.applyRecorderSettings();
           else NR.Record.configure(NR.Record.defaults);
         }
 
@@ -622,7 +633,7 @@
          * begins its closing move, so the sequence ended on a stutter. It is
          * spread over a few frames now and nothing waits for it. */
         NR.Pak.compactAsync(NR.Boot.breathe).then(function (freed) {
-          if (freed) console.info('SYNX: released ' + (freed / 1048576).toFixed(1) + ' MB of pack buffer');
+          if (freed && NR.DEV !== false) console.info('SYNX: released ' + (freed / 1048576).toFixed(1) + ' MB of pack buffer');
         }).catch(function () {
           /* Failing to give memory back is not a failure to run. It is off the
              main chain deliberately - an unhandled rejection here would be

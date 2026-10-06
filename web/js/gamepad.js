@@ -54,6 +54,7 @@
     { id: 'RT', button: B.RT, label: 'ACCELERATE', side: 'right', analog: true },
     { id: 'LT', button: B.LT, label: 'BRAKE / REVERSE', side: 'left', analog: true },
     { id: 'LSTICK', axis: 0, label: 'STEER', side: 'left', analog: true },
+    { id: 'L3', button: B.LS, label: 'FOCUS / SLOW TIME', side: 'left' },
     { id: 'A', button: B.A, label: 'BOOST', side: 'right' },
     { id: 'B', button: B.B, label: 'HANDBRAKE / DRIFT', side: 'right' },
     { id: 'X', button: B.X, label: 'RACE MODE / RESTART', side: 'right' },

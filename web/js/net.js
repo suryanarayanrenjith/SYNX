@@ -813,8 +813,16 @@
      *
      *   THE CLOCK. A state stamped before the clock has settled would be
      *   rejected as being from the wrong time, so nothing is sent until it is.
+     *
+     * `at` is the instant the state is TRUE at, on performance.now()'s clock:
+     * the display tick the simulation was stepped to (Game.frameNow). The
+     * pacing above is the wall clock's business; the stamp is the car's. A
+     * stamp read here instead lands however far into the frame this line
+     * runs, a few milliseconds that change every frame, and every receiver
+     * draws that wander as the car shimmering along its own path. Omitted, it
+     * is now, which is what it always was.
      */
-    publish(car, flags, checkpoint) {
+    publish(car, flags, checkpoint, at) {
       if (!this.online || !car || !NR.NetCore) return false;
       const ws = this.ws;
       if (!ws || ws.readyState !== WebSocket.OPEN) return false;
@@ -836,7 +844,13 @@
       if (ws.bufferedAmount > 8192) { this._sendAt = now; return false; }
 
       this._sendAt = now;
-      const out = NR.NetCore.packState(car, now, flags | 0, checkpoint | 0);
+      /* Never later than now - a stamp from the future is one the server is
+         entitled to refuse - and never earlier than the last one sent, or the
+         receiver's playout buffer would be handed time running backwards. */
+      let stamp = at > 0 && at <= now ? at : now;
+      if (stamp <= (this._stampAt || 0)) stamp = Math.min(now, (this._stampAt || 0) + 0.001);
+      this._stampAt = stamp;
+      const out = NR.NetCore.packState(car, stamp, flags | 0, checkpoint | 0);
       if (!out) return false;
       try { ws.send(out); } catch (e) { return false; }
       return true;
@@ -927,7 +941,7 @@
 
   /* What a harness asserts against, in the shape the other modes publish
      theirs. */
-  global.__SYNX_NET__ = {
+  if ((global.NR || {}).DEV !== false) global.__SYNX_NET__ = {
     name: 'GRID LINK',
     defaultServer: DEFAULT_SERVER,
     keys: { name: KEY_NAME, install: KEY_INSTALL, server: KEY_SERVER },

@@ -22,6 +22,60 @@
   src: url("../fonts/Orbitron-900.ttf") format("truetype");
 }
 
+/* THE SITE'S THREE FACES - the kit synx-landing is set in, so the game and
+   the page that sells it read as one object.
+
+   ORBITRON is the display face, and on the site that means more than the
+   wordmark: every headline, every tracked kicker, every button and every big
+   statistic. It is never asked to set a paragraph - a display face set as
+   copy is the most reliable way to make an interface look home-made, because
+   the eye reads the strain in it before it reads the words.
+
+   RAJDHANI is what the site's copy is set in, and here it is every label,
+   value and line that is READ. Squared, condensed, cut from the same
+   geometry as Orbitron, so the two read as one family at two jobs. Shipped as
+   a Latin subset at 500, 600 and 700 with THE DIGITS MADE TABULAR: a 2D
+   canvas cannot switch an OpenType feature on, and a readout in proportional
+   figures shuffles sideways every time a digit changes. Rajdhani reserves no
+   font name, so the modified files keep it. See fonts/Rajdhani-OFL.txt.
+
+   SHARE TECH MONO is the site's data face - versions, sizes, distances,
+   frequencies - and it is the data here. Its licence reserves the name
+   'Share', so it ships EXACTLY as published, unsubset. See
+   fonts/ShareTechMono-OFL.txt.
+
+   Static faces rather than variable fonts, because WebKitGTK and WKWebView
+   are shipped engines too and a fixed file per face is the one thing every
+   engine draws identically. */
+@font-face {
+  font-family: "Rajdhani";
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url("../fonts/Rajdhani-500.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Rajdhani";
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url("../fonts/Rajdhani-600.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Rajdhani";
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url("../fonts/Rajdhani-700.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Share Tech Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("../fonts/ShareTechMono-Regular.ttf") format("truetype");
+}
+
 :root {
   /* ============ ONE HUD VIRTUAL UNIT, IN CSS PIXELS ====================
    *
@@ -83,7 +137,20 @@
   --t-base: 200ms;
   --t-slow: 420ms;
 
-  --font: "Orbitron", "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* THREE FACES, the site's: --font is the reading face (labels, values,
+     copy), --font-display the headline, kicker and button face, and
+     --font-mono the data face. Every weight-900 rule in this file is a
+     headline and is set in the display face. See the note above the
+     @font-face rules at the top. */
+  --font: "Rajdhani", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-display: "Orbitron", "Rajdhani", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Share Tech Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  /* The site's accents beyond the HUD's four, for the pieces built to match
+     it: the primary button's gold, the lit edge's lilac. */
+  --gold: #ffd977;
+  --gold-ink: #ffe9a8;
+  --lilac: #c8b8ff;
+  --void: #04010c;
   /* Shared shape tokens for the .synx-* primitives, so a panel built out of
      them behaves identically inside Story Mode, the Forge and the finale. */
   --glass: rgba(10, 2, 26, .82);
@@ -140,8 +207,11 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
   position: absolute;
   left: clamp(16px, 2.2vw, 38px);
   /* Below the canvas progress rail, which runs across x 0.15-0.85 at y 0.06
-     and drops checkpoint ticks under itself. */
-  top: clamp(74px, 10vh, 118px);
+     and drops checkpoint ticks under itself - and below FOCUS's meter in the
+     top-left corner, which the canvas draws down to HUD y 302 (see FOCUS_HUD
+     in js/hud.js). The pixel clamp alone put the card's top ABOVE that line
+     on a large window, where 118px is a smaller share of the frame. */
+  top: max(clamp(74px, 10vh, 118px), calc(50% - 292 * var(--hud-unit)));
   width: clamp(212px, 18vw, 272px);
   padding: 12px 15px 13px;
   --edge: var(--cyan);
@@ -151,13 +221,13 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
 #forge6Round small, #forge6Math small, #forge6Skill small, #forge6Fatal small {
   display: block;
   color: var(--cyan);
-  font: 800 8px/1 var(--font);
+  font: 800 10px/1 var(--font);
   letter-spacing: .24em;
   text-shadow: 0 0 10px rgba(57,230,255,.55);
 }
 #pred7Objective small { color: #ff6a4a; text-shadow: 0 0 10px rgba(255,59,30,.6); }
-#forge6Objective b, #pred7Objective b { display: block; margin-top: 7px; font: 900 clamp(13px,1.2vw,18px)/1.05 var(--font); letter-spacing: .04em; }
-#forge6Objective span, #pred7Objective span { display: block; margin-top: 7px; color: var(--amber); font: 700 8.5px/1.4 var(--font); letter-spacing: .13em; }
+#forge6Objective b, #pred7Objective b { display: block; margin-top: 7px; font: 900 clamp(13px,1.2vw,18px)/1.05 var(--font-display); letter-spacing: .04em; }
+#forge6Objective span, #pred7Objective span { display: block; margin-top: 7px; color: var(--amber); font: 700 10.5px/1.4 var(--font); letter-spacing: .13em; }
 /* Strike pips: three cells that fill red as the arc walls land. */
 #forge6Strikes { display: flex; gap: 5px; margin-top: 10px; }
 #forge6Strikes i { flex: 1; height: 4px; background: rgba(57,230,255,.2); box-shadow: inset 0 0 0 1px rgba(57,230,255,.28); }
@@ -205,7 +275,7 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
 #forge6Round b {
   display: block;
   margin: 10px 0 9px;
-  font: 900 clamp(28px, 4.2vw, 54px)/.98 var(--font);
+  font: 900 clamp(28px, 4.2vw, 54px)/.98 var(--font-display);
   font-style: italic;
   letter-spacing: -.03em;
   color: #fff;
@@ -227,7 +297,7 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
 }
 #forge6Math.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 #forge6Math small { color: var(--amber); text-shadow: 0 0 10px rgba(255,180,0,.5); }
-#forge6Math b { display: block; margin: 12px 0 18px; text-align: center; font: 900 clamp(32px,5.4vw,66px)/1 var(--font); letter-spacing: .02em; text-shadow: 0 0 24px rgba(255,180,0,.28); }
+#forge6Math b { display: block; margin: 12px 0 18px; text-align: center; font: 900 clamp(32px,5.4vw,66px)/1 var(--font-display); letter-spacing: .02em; text-shadow: 0 0 24px rgba(255,180,0,.28); }
 #forge6Answers { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 #forge6Answers span {
   display: flex;
@@ -245,7 +315,7 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
   margin-right: 11px;
   background: rgba(57,230,255,.16);
   color: var(--cyan);
-  font: 900 12px/1 var(--font);
+  font: 900 12px/1 var(--font-display);
   font-style: normal;
 }
 #forge6Math > i {
@@ -289,7 +359,7 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
 #forge6Skill div { align-self: center; padding: 26px 30px 24px 4px; }
 #forge6Skill b {
   display: block;
-  font: 900 clamp(40px, 6.4vw, 74px)/.94 var(--font);
+  font: 900 clamp(40px, 6.4vw, 74px)/.94 var(--font-display);
   font-style: italic;
   letter-spacing: -.045em;
   text-transform: none;
@@ -297,7 +367,7 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
   text-shadow: 0 0 8px var(--cyan), 0 0 34px rgba(57,230,255,.45);
 }
 #forge6Skill strong { display: block; margin: 8px 0 15px; color: var(--amber); font: 800 clamp(11px,1vw,14px)/1 var(--font); letter-spacing: .2em; }
-#forge6Skill p { margin: 0; color: rgba(180,202,214,.8); font: 600 10px/1.9 var(--font); letter-spacing: .1em; }
+#forge6Skill p { margin: 0; color: rgba(180,202,214,.8); font: 600 12px/1.9 var(--font); letter-spacing: .1em; }
 
 /* Ability meter. Right flank, below the canvas score readout. */
 /* Chapter 7's centre alert is a thin instrument strip with short-lived copy,
@@ -313,7 +383,7 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
 #pred7Event small {
   display: block;
   color: #ff6a4a;
-  font: 800 8px/1 var(--font);
+  font: 800 10px/1 var(--font);
   letter-spacing: .22em;
   text-shadow: 0 0 10px rgba(255,59,30,.54);
 }
@@ -347,7 +417,7 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
 }
 #pred7Event.show { opacity: 1; transform: translate(-50%, 0) scaleX(1); }
 #pred7Event small { color: var(--amber); text-shadow: 0 0 10px rgba(255,180,0,.55); }
-#pred7Event b { display: block; margin-top: 6px; color: #fff; font: 900 clamp(12px,1.35vw,18px)/1 var(--font); letter-spacing: .11em; text-shadow: 0 0 14px rgba(255,70,35,.35); }
+#pred7Event b { display: block; margin-top: 6px; color: #fff; font: 900 clamp(12px,1.35vw,18px)/1 var(--font-display); letter-spacing: .11em; text-shadow: 0 0 14px rgba(255,70,35,.35); }
 #pred7Checkpoint {
   position: absolute;
   left: 50%; top: clamp(67px, 8.5vh, 90px);
@@ -355,7 +425,7 @@ body.synx-modal #storyWaypoint { opacity: 0 !important; pointer-events: none !im
   --cut: 9px;
   --edge: var(--cyan);
   color: rgba(218,248,255,.92);
-  font: 800 8px/1 var(--font);
+  font: 800 10px/1 var(--font);
   letter-spacing: .18em;
   opacity: 0;
   transform: translate(-50%, -8px);
@@ -386,12 +456,12 @@ body.pred7-failure #pred7Lock { opacity: .78; background: radial-gradient(circle
 #forge6Fatal small { color: #ff7a5a; }
 #forge6Fatal b {
   margin: 10px 0;
-  font: 900 clamp(44px, 8vw, 94px)/1 var(--font);
+  font: 900 clamp(44px, 8vw, 94px)/1 var(--font-display);
   font-style: italic;
   color: #fff;
   text-shadow: 0 0 14px #ff2a11, 0 0 46px rgba(255,20,0,.7);
 }
-#forge6Fatal span { color: rgba(255,200,190,.86); font: 700 11px/1.5 var(--font); letter-spacing: .16em; }
+#forge6Fatal span { color: rgba(255,200,190,.86); font: 700 12.5px/1.5 var(--font); letter-spacing: .16em; }
 
 body.forge6-invert #stage { filter: hue-rotate(8deg); }
 body.forge6-racemode #glCanvas { filter: saturate(.97) contrast(1.025); }
@@ -635,7 +705,7 @@ body.race-active #synxCursor { opacity: 0 !important; }
 }
 #cine5Title {
   display: block;
-  font: 900 clamp(24px, 4.15vw, 68px)/.96 var(--font);
+  font: 900 clamp(24px, 4.15vw, 68px)/.96 var(--font-display);
   letter-spacing: -.04em;
 }
 #cine5Actor {
@@ -683,7 +753,7 @@ body.cine5-finish #hudCanvas { opacity: .10; }
 }
 #cine5Telemetry.show{opacity:1;transform:none}
 #cine5Telemetry>*{position:relative;z-index:1}
-#cine5TelemetryTitle{display:block;color:#ff6a4a;font:800 9px/1 var(--font);letter-spacing:.28em;margin-bottom:11px;text-shadow:0 0 10px rgba(255,59,30,.6)}
+#cine5TelemetryTitle{display:block;color:#ff6a4a;font:800 11px/1 var(--font);letter-spacing:.28em;margin-bottom:11px;text-shadow:0 0 10px rgba(255,59,30,.6)}
 #cine5TelemetryBody{display:grid;gap:7px}
 #cine5TelemetryBody span{display:block;color:var(--ink-body);font:700 clamp(9px,.74vw,12px)/1.3 var(--font);letter-spacing:.12em}
 
@@ -711,8 +781,8 @@ body.cine5-raptor #hudCanvas{opacity:0!important}
 #cine5BossCard.show{opacity:1;transform:none}
 #cine5BossCard{padding-left:clamp(14px,1.5vw,24px);border-left:3px solid #ff3a20}
 #cine5BossCard small{display:block;color:rgba(230,236,244,.56);font:800 clamp(8px,.7vw,12px)/1 var(--font);letter-spacing:.34em}
-#cine5BossCard strong{display:block;margin-top:9px;color:#ff4028;font:900 clamp(22px,3.2vw,52px)/.9 var(--font);letter-spacing:.18em;text-shadow:0 0 18px rgba(255,58,32,.5)}
-#cine5BossCard b{display:block;color:#f5f7fa;font:900 clamp(48px,8.4vw,136px)/.84 var(--font);letter-spacing:-.055em}
+#cine5BossCard strong{display:block;margin-top:9px;color:#ff4028;font:900 clamp(22px,3.2vw,52px)/.9 var(--font-display);letter-spacing:.18em;text-shadow:0 0 18px rgba(255,58,32,.5)}
+#cine5BossCard b{display:block;color:#f5f7fa;font:900 clamp(48px,8.4vw,136px)/.84 var(--font-display);letter-spacing:-.055em}
 #cine5BossCard i{display:inline-block;margin-top:15px;padding:7px 10px 6px;border-left:2px solid #ff3a20;color:rgba(255,255,255,.76);font:700 clamp(8px,.72vw,12px)/1 var(--font);font-style:normal;letter-spacing:.22em;background:rgba(0,0,0,.64)}
 
 @media (max-width: 700px) {
@@ -808,7 +878,7 @@ body.cine5-raptor #hudCanvas{opacity:0!important}
   left: 50%; bottom: calc(var(--story-safe) + 2.6vh);
   transform: translateX(-50%);
   color: #fff;
-  font: 900 clamp(12px,1.2vw,19px)/1 var(--font);
+  font: 900 clamp(12px,1.2vw,19px)/1 var(--font-display);
   letter-spacing: .22em;
   text-shadow: 0 2px 12px #000;
 }
@@ -866,20 +936,20 @@ body.cine5-qte #hudCanvas { opacity: .12; filter: saturate(.58) brightness(.55);
 body.pred7-fatality #pred7Fatality { opacity: 1; }
 #pred7Fatality small {
   color: #ff8b55;
-  font: 800 10px/1 var(--font);
+  font: 800 12px/1 var(--font);
   letter-spacing: .34em;
 }
 #pred7Fatality b {
   display: block;
   color: #ff2a0d;
-  font: 900 clamp(54px, 10vw, 164px)/1 var(--font);
+  font: 900 clamp(54px, 10vw, 164px)/1 var(--font-display);
   letter-spacing: .035em;
   text-shadow: 0 0 12px #ff5a18, 0 0 52px rgba(255, 20, 0, .92), 0 5px 3px #130000;
   animation: cine5-fatality 180ms steps(2, end) 2;
 }
 #pred7Fatality span {
   color: #fff1de;
-  font: 700 11px/1.5 var(--font);
+  font: 700 12.5px/1.5 var(--font);
   letter-spacing: .22em;
 }
 /* A crush is a crush: the route furniture comes off the frame for it, the way
@@ -940,11 +1010,19 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
 
 /* hud.panel(): the cut is taken out of the top-left and the bottom-right, the
    inside carries a 1-in-4 scanline wash, and the edge is a lit tube. */
+/* THE SITE'S PANEL. synx-landing lifted this primitive from here, and this
+   is it again in the form the site settled on: glass graded on the site's
+   150-degree light, the faint 1-in-4 scanline wash the retro grade wants, and
+   a short bar of the panel's accent along the top edge from the cut corner,
+   which is how the canvas cards (hud.panelBody) carry their colour too. The
+   edge below runs accent into violet and back, as the site's does. */
 .synx-cut {
   position: relative;
   background:
-    repeating-linear-gradient(0deg, rgba(255,255,255,.030) 0 1px, transparent 1px 4px),
-    linear-gradient(150deg, var(--glass-hi), var(--glass) 62%);
+    linear-gradient(var(--edge, var(--cyan)), var(--edge, var(--cyan))) var(--cut) 0 / min(22%, 150px) 2px no-repeat,
+    repeating-linear-gradient(0deg, rgba(255,255,255,.03) 0 1px, transparent 1px 4px),
+    linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,0) 40%),
+    linear-gradient(150deg, rgba(22,8,52,.93), rgba(10,2,26,.86) 62%, rgba(5,1,16,.92));
   clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
 /* THE EDGE FOLLOWS THE CUT. It was a rectangular one-pixel ring - a mask of
@@ -960,9 +1038,9 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  --w: 1px;
+  --w: var(--ring, 1px);
   --d: calc(var(--cut) + var(--w) * .414);
-  background: linear-gradient(150deg, var(--edge, var(--cyan)), rgba(139,92,246,.42) 55%, var(--edge, var(--cyan)));
+  background: var(--rim, linear-gradient(150deg, var(--edge, var(--cyan)), rgba(139,92,246,.48) 55%, var(--edge, var(--cyan))));
   clip-path: polygon(evenodd,
     var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut), var(--cut) 0,
     var(--d) var(--w), var(--w) var(--d), var(--w) calc(100% - var(--w)),
@@ -998,6 +1076,7 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
    gold into magenta - plus the horizontal cut lines the era's airbrushed logos
    were finished with, masked in rather than punched out. */
 .synx-chrome {
+  font-family: var(--font-display);
   background:
     repeating-linear-gradient(0deg, transparent 0 .112em, rgba(0,0,0,.46) .112em .136em),
     linear-gradient(180deg, #ffffff 0%, #c8b8ff 30%, #5b3fb8 47%, #2a1650 50%, #ffd977 53%, #ff5fb0 72%, #7a1f6b 100%);
@@ -1031,9 +1110,12 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
   inset: 0;
   z-index: 9;
   pointer-events: none;
+  /* Scanlines at under half their old strength, the same cut the canvas
+     menus took (Hud.crt) - over a portrait or a chapter tile they were the
+     loudest texture on the screen. */
   background:
-    repeating-linear-gradient(0deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px),
-    radial-gradient(ellipse at 50% 50%, transparent 30%, rgba(2,0,10,.55) 100%);
+    repeating-linear-gradient(0deg, rgba(0,0,0,.085) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at 50% 50%, transparent 34%, rgba(2,0,10,.50) 100%);
 }
 
 /* ------------------------------------------------------------ scaffolding -- */
@@ -1096,7 +1178,7 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
   display: grid;
   place-items: center;
   padding: 0 14px;
-  font: 700 10px/1 var(--font);
+  font: 700 12px/1 var(--font);
   letter-spacing: .26em;
   color: rgba(168, 200, 235, .52);
   text-shadow: 0 0 10px rgba(57, 230, 255, .28);
@@ -1151,7 +1233,7 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
   display: block;
   width: fit-content;
   max-width: 100%;
-  font: 900 clamp(36px, 6.6vw, 112px)/.9 var(--font);
+  font: 900 clamp(36px, 6.6vw, 112px)/.9 var(--font-display);
   letter-spacing: -.05em;
   text-wrap: balance;
 }
@@ -1173,7 +1255,8 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
   position: absolute;
   z-index: 5;
   left: var(--story-gutter);
-  top: calc(var(--story-safe) + 3.4vh);
+  /* ...and clear of FOCUS's meter in the corner above it; see #storyRaceMeta. */
+  top: max(calc(var(--story-safe) + 3.4vh), calc(50% - 292 * var(--hud-unit)));
   display: grid;
   grid-template-columns: clamp(46px, 4.6vw, 70px) minmax(180px, 440px);
   gap: 14px;
@@ -1198,7 +1281,7 @@ body.pred7-fatality #storyRaceMeta { opacity: 0 !important; }
 #storyRadio small {
   display: block;
   color: var(--cyan);
-  font: 800 10px/1 var(--font);
+  font: 800 12px/1 var(--font);
   letter-spacing: .26em;
   text-shadow: 0 0 10px rgba(57,230,255,.6);
 }
@@ -1467,7 +1550,7 @@ img.is-boss {
   position: relative;
   z-index: 1;
   display: block;
-  font: 900 clamp(13px, 1.15vw, 19px)/1.15 var(--font);
+  font: 900 clamp(13px, 1.15vw, 19px)/1.15 var(--font-display);
   letter-spacing: .17em;
   text-shadow: 0 0 14px var(--voice);
 }
@@ -1478,7 +1561,7 @@ img.is-boss {
   display: block;
   margin-top: 4px;
   color: var(--ash);
-  font: 700 8px/1.2 var(--font);
+  font: 700 10px/1.2 var(--font);
   font-style: normal;
   letter-spacing: .2em;
 }
@@ -1518,7 +1601,7 @@ img.is-boss {
   align-items: center;
   gap: 15px;
   color: rgba(190,214,238,.4);
-  font: 700 9px/1 var(--font);
+  font: 700 11px/1 var(--font);
   letter-spacing: .2em;
 }
 /* K, and only on a scene that has already been read. Hidden by default and
@@ -1602,7 +1685,7 @@ img.is-boss {
 #storyCompact small {
   display: block;
   color: var(--voice);
-  font: 900 10px/1 var(--font);
+  font: 900 10px/1 var(--font-display);
   letter-spacing: .16em;
   text-shadow: 0 0 10px var(--voice);
 }
@@ -1710,12 +1793,12 @@ img.is-boss {
 .battle-versus b {
   display: block;
   margin: 12px 0 10px;
-  font: 900 clamp(66px, 10vw, 158px)/.8 var(--font);
+  font: 900 clamp(66px, 10vw, 158px)/.8 var(--font-display);
   font-style: italic;
   letter-spacing: -.1em;
   filter: drop-shadow(-5px 0 0 rgba(255,46,136,.72)) drop-shadow(5px 0 0 rgba(57,230,255,.62)) drop-shadow(0 0 30px rgba(255,46,136,.4));
 }
-.battle-versus strong { display: block; font: 900 clamp(19px,2.1vw,36px)/1 var(--font); letter-spacing: .1em; color: #fff; text-shadow: 0 0 8px var(--amber), 0 0 26px rgba(255,180,0,.6); }
+.battle-versus strong { display: block; font: 900 clamp(19px,2.1vw,36px)/1 var(--font-display); letter-spacing: .1em; color: #fff; text-shadow: 0 0 8px var(--amber), 0 0 26px rgba(255,180,0,.6); }
 .battle-versus em { display: block; margin-top: 8px; color: var(--amber); font: 800 clamp(9px,.9vw,14px)/1.5 var(--font); font-style: normal; letter-spacing: .2em; }
 .battle-versus u { display: block; margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(139,92,246,.4); color: rgba(214,228,246,.62); font: 700 clamp(8px,.78vw,12px)/1.7 var(--font); text-decoration: none; letter-spacing: .14em; }
 
@@ -1805,15 +1888,15 @@ img.is-boss {
   border-bottom: 1px solid rgba(139,92,246,.34);
   background: linear-gradient(90deg, rgba(57,230,255,.045), transparent 54%);
 }
-.story-hub-head small { display: block; color: var(--cyan); font: 800 10px/1 var(--font); letter-spacing: .32em; text-shadow: 0 0 12px rgba(57,230,255,.6); }
-.story-hub-head h1 { margin: 10px 0 0; font: 900 clamp(21px, 2.85vw, 46px)/1 var(--font); letter-spacing: -.045em; text-transform: uppercase; }
+.story-hub-head small { display: block; color: var(--cyan); font: 800 12px/1 var(--font); letter-spacing: .32em; text-shadow: 0 0 12px rgba(57,230,255,.6); }
+.story-hub-head h1 { margin: 10px 0 0; font: 900 clamp(21px, 2.85vw, 46px)/1 var(--font-display); letter-spacing: -.045em; text-transform: uppercase; }
 .story-hub-head p { margin: 10px 0 0; max-width: 66ch; color: var(--ink-mute); font: 500 clamp(11px, .92vw, 14px)/1.6 var(--font); }
 /* The save dossier: rating, chapters cleared, unlocks - a progression readout
    rather than one sentence of status text. */
 .story-hub-dossier { display: grid; grid-auto-flow: column; gap: clamp(10px, 1.4vw, 22px); text-align: right; }
 .story-hub-dossier div { min-width: 78px; }
-.story-hub-dossier span { display: block; color: rgba(186,212,232,.45); font: 700 8px/1 var(--font); letter-spacing: .18em; }
-.story-hub-dossier b { display: block; margin-top: 7px; color: var(--amber); font: 900 clamp(15px, 1.5vw, 24px)/1 var(--font); letter-spacing: .02em; text-shadow: 0 0 14px rgba(255,180,0,.45); }
+.story-hub-dossier span { display: block; color: rgba(186,212,232,.45); font: 700 10px/1 var(--font); letter-spacing: .18em; }
+.story-hub-dossier b { display: block; margin-top: 7px; color: var(--amber); font: 900 clamp(15px, 1.5vw, 24px)/1 var(--font-display); letter-spacing: .02em; text-shadow: 0 0 14px rgba(255,180,0,.45); }
 
 .story-hub-body { display: grid; grid-template-columns: minmax(0, 1fr) clamp(232px, 21vw, 306px); gap: clamp(14px, 1.6vw, 24px); min-height: 0; }
 #storyChapterList {
@@ -1863,17 +1946,17 @@ img.is-boss {
 }
 .story-action > *, .story-chapter > * { position: relative; z-index: 1; }
 .story-action { padding: 15px 17px; --cut: 12px; }
-.story-action small { display: block; color: rgba(186,212,232,.5); font: 700 8px/1 var(--font); letter-spacing: .17em; margin-bottom: 8px; }
+.story-action small { display: block; color: rgba(186,212,232,.5); font: 700 10px/1 var(--font); letter-spacing: .17em; margin-bottom: 8px; }
 .story-chapter small {
   position: absolute;
   left: 14px; top: 12px;
   z-index: 1;
   color: rgba(206,226,244,.62);
-  font: 700 8px/1 var(--font);
+  font: 700 10px/1 var(--font);
   letter-spacing: .19em;
   text-shadow: 0 2px 8px #000;
 }
-.story-action b { display: block; font: 900 clamp(12px, 1.02vw, 15px)/1.2 var(--font); letter-spacing: .07em; }
+.story-action b { display: block; font: 900 clamp(12px, 1.02vw, 15px)/1.2 var(--font-display); letter-spacing: .07em; }
 .story-action:hover, .story-action:focus, .story-action.is-hover,
 .story-chapter:not(.locked):hover, .story-chapter:not(.locked):focus-visible,
 .story-chapter.is-highlighted {
@@ -1927,13 +2010,13 @@ img.is-boss {
   filter: saturate(1.2) contrast(1.09) brightness(1.04);
   transform: scale(1.07);
 }
-.story-chapter b { display: block; max-width: 88%; font: 900 clamp(12px, 1.05vw, 17px)/1.1 var(--font); letter-spacing: -.01em; text-shadow: 0 2px 12px #000; }
-.story-chapter span { display: block; margin-top: 8px; max-width: 94%; color: var(--cyan); font: 700 8.5px/1.5 var(--font); letter-spacing: .09em; text-shadow: 0 2px 8px #000; }
+.story-chapter b { display: block; max-width: 88%; font: 900 clamp(12px, 1.05vw, 17px)/1.1 var(--font-display); letter-spacing: -.01em; text-shadow: 0 2px 12px #000; }
+.story-chapter span { display: block; margin-top: 8px; max-width: 94%; color: var(--cyan); font: 700 10.5px/1.5 var(--font); letter-spacing: .09em; text-shadow: 0 2px 8px #000; }
 .story-chapter i {
   display: block;
   margin-top: 10px;
   color: #5affc0;
-  font: 800 8px/1 var(--font);
+  font: 800 10px/1 var(--font);
   font-style: normal;
   letter-spacing: .14em;
   text-shadow: 0 2px 8px #000;
@@ -1955,10 +2038,10 @@ img.is-boss {
   justify-content: center;
   gap: clamp(14px, 2.2vw, 40px);
   color: rgba(198,216,238,.36);
-  font: 700 9px/1 var(--font);
+  font: 700 11px/1 var(--font);
   letter-spacing: .14em;
 }
-.story-hub-panel footer b { color: var(--ink-body); font-weight: 900; }
+.story-hub-panel footer b { color: var(--ink-body); font-weight: 900; font-family: var(--font-display); }
 
 /* ================================================================ FREE ROAM ==
    The open-route screen.
@@ -2037,14 +2120,14 @@ img.is-boss {
   border-bottom: 1px solid rgba(139,92,246,.34);
   background: linear-gradient(90deg, rgba(57,230,255,.045), transparent 54%);
 }
-.freeroam-head small { display: block; color: var(--cyan); font: 800 10px/1 var(--font); letter-spacing: .32em; text-shadow: 0 0 12px rgba(57,230,255,.6); }
-.freeroam-head h1 { margin: 10px 0 0; font: 900 clamp(21px, 2.85vw, 46px)/1 var(--font); letter-spacing: -.045em; text-transform: uppercase; }
+.freeroam-head small { display: block; color: var(--cyan); font: 800 12px/1 var(--font); letter-spacing: .32em; text-shadow: 0 0 12px rgba(57,230,255,.6); }
+.freeroam-head h1 { margin: 10px 0 0; font: 900 clamp(21px, 2.85vw, 46px)/1 var(--font-display); letter-spacing: -.045em; text-transform: uppercase; }
 .freeroam-head p { margin: 10px 0 0; max-width: 74ch; color: var(--ink-mute); font: 500 clamp(10px, .86vw, 13px)/1.6 var(--font); }
 
 .freeroam-dossier { display: grid; grid-auto-flow: column; gap: clamp(10px, 1.4vw, 22px); text-align: right; }
 .freeroam-dossier div { min-width: 78px; }
-.freeroam-dossier span { display: block; color: rgba(186,212,232,.45); font: 700 8px/1 var(--font); letter-spacing: .18em; }
-.freeroam-dossier b { display: block; margin-top: 7px; color: var(--amber); font: 900 clamp(15px, 1.5vw, 24px)/1 var(--font); letter-spacing: .02em; text-shadow: 0 0 14px rgba(255,180,0,.45); }
+.freeroam-dossier span { display: block; color: rgba(186,212,232,.45); font: 700 10px/1 var(--font); letter-spacing: .18em; }
+.freeroam-dossier b { display: block; margin-top: 7px; color: var(--amber); font: 900 clamp(15px, 1.5vw, 24px)/1 var(--font-display); letter-spacing: .02em; text-shadow: 0 0 14px rgba(255,180,0,.45); }
 
 .freeroam-body { display: grid; grid-template-columns: minmax(0, 1fr) clamp(232px, 21vw, 306px); gap: clamp(14px, 1.6vw, 24px); min-height: 0; }
 #freeRoamRoutes {
@@ -2160,18 +2243,18 @@ img.is-boss {
   left: 14px; top: 12px;
   z-index: 1;
   color: rgba(206,226,244,.66);
-  font: 700 8px/1 var(--font);
+  font: 700 10px/1 var(--font);
   letter-spacing: .19em;
   text-shadow: 0 2px 8px #000;
 }
-.freeroam-route b { display: block; max-width: 94%; font: 900 clamp(12px, 1.05vw, 17px)/1.1 var(--font); letter-spacing: -.01em; text-shadow: 0 2px 12px #000; }
+.freeroam-route b { display: block; max-width: 94%; font: 900 clamp(12px, 1.05vw, 17px)/1.1 var(--font-display); letter-spacing: -.01em; text-shadow: 0 2px 12px #000; }
 .freeroam-route.freeroam-tour b { font-size: clamp(16px, 1.6vw, 25px); }
-.freeroam-route span { display: block; margin-top: 6px; max-width: 96%; color: var(--cyan); font: 700 8.5px/1.45 var(--font); letter-spacing: .07em; text-shadow: 0 2px 8px #000; }
+.freeroam-route span { display: block; margin-top: 6px; max-width: 96%; color: var(--cyan); font: 700 10.5px/1.45 var(--font); letter-spacing: .07em; text-shadow: 0 2px 8px #000; }
 .freeroam-route u {
   display: block;
   margin-top: 8px;
   color: #5affc0;
-  font: 800 8px/1.4 var(--font);
+  font: 800 10px/1.4 var(--font);
   text-decoration: none;
   letter-spacing: .1em;
   text-shadow: 0 2px 8px #000;
@@ -2198,10 +2281,10 @@ img.is-boss {
    border and the type, because those are the route screen's own. */
 .freeroam-panel footer {
   color: rgba(198,216,238,.36);
-  font: 700 9px/1 var(--font);
+  font: 700 11px/1 var(--font);
   letter-spacing: .14em;
 }
-.freeroam-panel footer b { color: var(--ink-body); font-weight: 900; }
+.freeroam-panel footer b { color: var(--ink-body); font-weight: 900; font-family: var(--font-display); }
 
 /* The panel is the screen while it is up: the canvas HUD has nothing to say
    over it, and the pointer goes back to being a pointer. */
@@ -2295,14 +2378,14 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   border-bottom: 1px solid rgba(139,92,246,.34);
   background: linear-gradient(90deg, rgba(57,230,255,.045), transparent 54%);
 }
-.mp-head small { display: block; color: var(--cyan); font: 800 10px/1 var(--font); letter-spacing: .32em; text-shadow: 0 0 12px rgba(57,230,255,.6); }
-.mp-head h1 { margin: 10px 0 0; font: 900 clamp(21px, 2.85vw, 46px)/1 var(--font); letter-spacing: -.045em; text-transform: uppercase; }
+.mp-head small { display: block; color: var(--cyan); font: 800 12px/1 var(--font); letter-spacing: .32em; text-shadow: 0 0 12px rgba(57,230,255,.6); }
+.mp-head h1 { margin: 10px 0 0; font: 900 clamp(21px, 2.85vw, 46px)/1 var(--font-display); letter-spacing: -.045em; text-transform: uppercase; }
 .mp-head p { margin: 9px 0 0; max-width: 78ch; color: var(--ink-mute); font: 500 clamp(10px, .86vw, 13px)/1.6 var(--font); }
 
 .mp-dossier { display: grid; grid-auto-flow: column; gap: clamp(10px, 1.4vw, 22px); text-align: right; }
 .mp-dossier div { min-width: 82px; }
-.mp-dossier span { display: block; color: rgba(186,212,232,.45); font: 700 8px/1 var(--font); letter-spacing: .18em; }
-.mp-dossier b { display: block; margin-top: 7px; color: var(--amber); font: 900 clamp(14px, 1.4vw, 22px)/1 var(--font); letter-spacing: .02em; text-shadow: 0 0 14px rgba(255,180,0,.45); }
+.mp-dossier span { display: block; color: rgba(186,212,232,.45); font: 700 10px/1 var(--font); letter-spacing: .18em; }
+.mp-dossier b { display: block; margin-top: 7px; color: var(--amber); font: 900 clamp(14px, 1.4vw, 22px)/1 var(--font-display); letter-spacing: .02em; text-shadow: 0 0 14px rgba(255,180,0,.45); }
 .mp-dossier b.is-locked { color: #ff5a78; text-shadow: 0 0 14px rgba(255,90,120,.45); }
 
 .mp-body {
@@ -2321,7 +2404,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   gap: 9px;
   margin: 6px 0 -2px;
   color: rgba(186,212,232,.42);
-  font: 700 7.5px/1 var(--font);
+  font: 700 9.5px/1 var(--font);
   letter-spacing: .24em;
 }
 .mp-group::after {
@@ -2341,8 +2424,8 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   --edge: rgba(120,150,190,.22);
   background: rgba(8,12,22,.5);
 }
-.mp-fact small { display: block; color: rgba(186,212,232,.45); font: 700 7.5px/1.4 var(--font); letter-spacing: .17em; }
-.mp-fact b { display: block; margin-top: 8px; color: var(--ink-body); font: 900 13px/1 var(--font); letter-spacing: .05em; }
+.mp-fact small { display: block; color: rgba(186,212,232,.45); font: 700 9.5px/1.4 var(--font); letter-spacing: .17em; }
+.mp-fact b { display: block; margin-top: 8px; color: var(--ink-body); font: 900 13px/1 var(--font-display); letter-spacing: .05em; }
 
 /* WHAT JUST HAPPENED.
    The kept copy of the toasts: joins, departures, the host trying to start.
@@ -2353,7 +2436,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   padding-left: 9px;
   border-left: 1px solid rgba(139,92,246,.4);
   color: var(--ink-faint);
-  font: 500 8.5px/1.5 var(--font);
+  font: 500 10.5px/1.5 var(--font);
   letter-spacing: .05em;
 }
 .mp-log p:first-of-type { color: var(--ink-mute); border-left-color: var(--cyan); }
@@ -2365,9 +2448,9 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   --cut: 16px;
   --edge: rgba(57,230,255,.55);
 }
-.mp-connecting small { display: block; color: var(--cyan); font: 800 9px/1 var(--font); letter-spacing: .24em; }
-.mp-connecting b { display: block; margin-top: 12px; font: 900 clamp(17px, 1.9vw, 28px)/1.1 var(--font); letter-spacing: -.02em; }
-.mp-connecting span { display: block; margin-top: 12px; max-width: 62ch; color: var(--ink-mute); font: 500 11px/1.65 var(--font); }
+.mp-connecting small { display: block; color: var(--cyan); font: 800 11px/1 var(--font); letter-spacing: .24em; }
+.mp-connecting b { display: block; margin-top: 12px; font: 900 clamp(17px, 1.9vw, 28px)/1.1 var(--font-display); letter-spacing: -.02em; }
+.mp-connecting span { display: block; margin-top: 12px; max-width: 62ch; color: var(--ink-mute); font: 500 12.5px/1.65 var(--font); }
 
 /* A refusal is not a failure to connect, and it should not look like one.
    The panel keeps its shape and swaps cyan for the warning amber used
@@ -2389,7 +2472,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   padding-top: 12px;
   border-top: 1px solid rgba(57,230,255,.14);
   color: var(--ink-mute);
-  font: 700 9px/1 var(--font);
+  font: 700 11px/1 var(--font);
   letter-spacing: .18em;
   opacity: .72;
 }
@@ -2422,9 +2505,9 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   background: linear-gradient(160deg, rgba(20,8,44,.72), rgba(6,2,18,.86));
   transition: transform var(--t-fast) var(--ease), filter var(--t-fast) var(--ease);
 }
-.mp-tile small { display: block; color: rgba(206,226,244,.62); font: 700 8.5px/1 var(--font); letter-spacing: .2em; }
-.mp-tile b { display: block; margin-top: 10px; font: 900 clamp(15px, 1.5vw, 23px)/1 var(--font); letter-spacing: -.03em; }
-.mp-tile span { display: block; margin-top: 9px; color: var(--cyan); font: 700 8.5px/1.5 var(--font); letter-spacing: .09em; }
+.mp-tile small { display: block; color: rgba(206,226,244,.62); font: 700 10.5px/1 var(--font); letter-spacing: .2em; }
+.mp-tile b { display: block; margin-top: 10px; font: 900 clamp(15px, 1.5vw, 23px)/1 var(--font-display); letter-spacing: -.03em; }
+.mp-tile span { display: block; margin-top: 9px; color: var(--cyan); font: 700 10.5px/1.5 var(--font); letter-spacing: .09em; }
 .mp-tile:hover, .mp-tile:focus, .mp-tile.is-hover, .mp-tile.is-highlighted {
   outline: 0;
   --edge: var(--cyan);
@@ -2435,7 +2518,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
 /* --------------------------------------------------------------- rooms -- */
 
 .mp-rooms { display: grid; grid-auto-rows: min-content; gap: 8px; }
-.mp-rooms-head { display: block; color: rgba(186,212,232,.5); font: 700 8px/1 var(--font); letter-spacing: .2em; padding: 4px 0; }
+.mp-rooms-head { display: block; color: rgba(186,212,232,.5); font: 700 10px/1 var(--font); letter-spacing: .2em; padding: 4px 0; }
 .mp-room {
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -2453,9 +2536,9 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   background: rgba(12,4,30,.6);
   transition: filter var(--t-fast) var(--ease);
 }
-.mp-room b { font: 900 15px/1 var(--font); letter-spacing: .16em; color: var(--amber); }
-.mp-room span { color: var(--ink-body); font: 700 10px/1 var(--font); letter-spacing: .08em; }
-.mp-room u { color: var(--cyan); font: 700 9px/1 var(--font); text-decoration: none; letter-spacing: .1em; }
+.mp-room b { font: 900 15px/1 var(--font-display); letter-spacing: .16em; color: var(--amber); }
+.mp-room span { color: var(--ink-body); font: 700 12px/1 var(--font); letter-spacing: .08em; }
+.mp-room u { color: var(--cyan); font: 700 11px/1 var(--font); text-decoration: none; letter-spacing: .1em; }
 .mp-room:hover, .mp-room:focus, .mp-room.is-hover { outline: 0; --edge: var(--cyan); filter: brightness(1.16); }
 
 /* ---------------------------------------------------------- the seats -- */
@@ -2470,10 +2553,10 @@ body.freeroam-open #hudCanvas { opacity: 0; }
 }
 .mp-seat.empty { --edge: rgba(120,140,170,.2); opacity: .55; }
 .mp-seat.is-you { --edge: var(--cyan); background: rgba(10,30,50,.6); }
-.mp-seat small { display: block; color: rgba(186,212,232,.45); font: 700 8px/1 var(--font); letter-spacing: .2em; }
-.mp-seat b { display: block; margin-top: 8px; font: 900 clamp(13px, 1.2vw, 18px)/1 var(--font); letter-spacing: -.01em; }
+.mp-seat small { display: block; color: rgba(186,212,232,.45); font: 700 10px/1 var(--font); letter-spacing: .2em; }
+.mp-seat b { display: block; margin-top: 8px; font: 900 clamp(13px, 1.2vw, 18px)/1 var(--font-display); letter-spacing: -.01em; }
 .mp-seat span { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
-.mp-tag { font-style: normal; padding: 3px 7px; color: var(--ink-mute); font: 700 7.5px/1 var(--font); letter-spacing: .14em; background: rgba(255,255,255,.06); }
+.mp-tag { font-style: normal; padding: 3px 7px; color: var(--ink-mute); font: 700 9.5px/1 var(--font); letter-spacing: .14em; background: rgba(255,255,255,.06); }
 .mp-tag.ready { color: #5affc0; background: rgba(90,255,192,.10); }
 .mp-tag.host { color: var(--amber); background: rgba(255,180,0,.10); }
 .mp-tag.warn { color: #ff5a78; background: rgba(255,90,120,.10); }
@@ -2484,7 +2567,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   border: 0;
   padding: 4px 8px;
   color: #ff8ea6;
-  font: 700 7.5px/1 var(--font);
+  font: 700 9.5px/1 var(--font);
   letter-spacing: .14em;
   background: rgba(255,90,120,.10);
   cursor: pointer;
@@ -2528,17 +2611,17 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   -webkit-mask-image: linear-gradient(180deg, #000 30%, transparent 100%);
   mask-image: linear-gradient(180deg, #000 30%, transparent 100%);
 }
-.mp-map small { display: block; color: rgba(186,212,232,.5); font: 700 7.5px/1 var(--font); letter-spacing: .18em; }
+.mp-map small { display: block; color: rgba(186,212,232,.5); font: 700 9.5px/1 var(--font); letter-spacing: .18em; }
 .mp-map b {
   display: block;
   margin-top: 7px;
   min-height: 2.2em;
-  font: 900 clamp(11px, 1vw, 15px)/1.1 var(--font);
+  font: 900 clamp(11px, 1vw, 15px)/1.1 var(--font-display);
   letter-spacing: -.01em;
   text-shadow: 0 2px 10px #000, 0 0 18px rgba(0,0,0,.9);
 }
-.mp-map span { display: block; margin-top: 5px; color: var(--cyan); font: 700 7px/1.4 var(--font); letter-spacing: .06em; text-shadow: 0 2px 8px #000; }
-.mp-map u { display: block; margin-top: 7px; color: var(--amber); font: 800 8px/1 var(--font); text-decoration: none; letter-spacing: .1em; }
+.mp-map span { display: block; margin-top: 5px; color: var(--cyan); font: 700 9px/1.4 var(--font); letter-spacing: .06em; text-shadow: 0 2px 8px #000; }
+.mp-map u { display: block; margin-top: 7px; color: var(--amber); font: 800 10px/1 var(--font); text-decoration: none; letter-spacing: .1em; }
 .mp-map.is-picked { --edge: var(--cyan); background: rgba(10,34,54,.7); }
 .mp-map.is-picked .freeroam-art { opacity: .48; }
 /* A locked card is information, not a control: no lift, no pointer, and it
@@ -2567,8 +2650,8 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   background: rgba(30,18,2,.5);
   transition: filter var(--t-fast) var(--ease);
 }
-.mp-code small { display: block; color: rgba(255,210,140,.7); font: 700 7.5px/1.4 var(--font); letter-spacing: .18em; }
-.mp-code b { display: block; margin-top: 8px; color: var(--amber); font: 900 clamp(20px, 2.2vw, 30px)/1 var(--font); letter-spacing: .30em; text-shadow: 0 0 18px rgba(255,180,0,.55); }
+.mp-code small { display: block; color: rgba(255,210,140,.7); font: 700 9.5px/1.4 var(--font); letter-spacing: .18em; }
+.mp-code b { display: block; margin-top: 8px; color: var(--amber); font: 900 clamp(20px, 2.2vw, 30px)/1 var(--font-display); letter-spacing: .30em; text-shadow: 0 0 18px rgba(255,180,0,.55); }
 
 /* The running commentary: who joined, who left, what the server said. */
 
@@ -2576,10 +2659,10 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   padding-top: 10px;
   border-top: 1px solid rgba(139,92,246,.28);
   color: var(--ink-faint);
-  font: 700 8.5px/1 var(--font);
+  font: 700 10.5px/1 var(--font);
   letter-spacing: .16em;
 }
-.mp-panel footer b { color: var(--ink-body); font-weight: 900; }
+.mp-panel footer b { color: var(--ink-body); font-weight: 900; font-family: var(--font-display); }
 /* The lobby's hints are built by js/multiplayer.js and are left aligned there,
    because that screen's footer carries status as well as keys. */
 .mp-panel .panel-hints { justify-content: flex-start; flex: 1; }
@@ -2621,20 +2704,20 @@ body.freeroam-open #hudCanvas { opacity: 0; }
 .mp-dialog > small {
   display: block;
   color: var(--cyan);
-  font: 800 9px/1 var(--font);
+  font: 800 11px/1 var(--font);
   letter-spacing: .26em;
   text-shadow: 0 0 12px rgba(57,230,255,.55);
 }
 .mp-dialog > b {
   display: block;
   margin-top: 13px;
-  font: 900 clamp(19px, 2.2vw, 30px)/1 var(--font);
+  font: 900 clamp(19px, 2.2vw, 30px)/1 var(--font-display);
   letter-spacing: -.03em;
 }
 .mp-dialog > p {
   margin: 13px 0 0;
   color: var(--ink-mute);
-  font: 500 11px/1.65 var(--font);
+  font: 500 12.5px/1.65 var(--font);
 }
 .mp-dialog > p[hidden] { display: none; }
 #mpDialogInput {
@@ -2646,7 +2729,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   border: 1px solid rgba(57,230,255,.35);
   background: rgba(2,6,14,.8);
   color: var(--ink);
-  font: 900 19px/1 var(--font);
+  font: 900 19px/1 var(--font-display);
   letter-spacing: .18em;
   text-align: center;
   text-transform: uppercase;
@@ -2659,7 +2742,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   margin-top: 10px;
   min-height: 12px;
   color: var(--amber);
-  font: 700 8.5px/1.4 var(--font);
+  font: 700 10.5px/1.4 var(--font);
   font-style: normal;
   letter-spacing: .14em;
   text-transform: uppercase;
@@ -2694,12 +2777,12 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   background: rgba(10,16,28,.76);
   transition: filter var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
 }
-.mp-choice b { display: block; font: 900 14px/1 var(--font); letter-spacing: .01em; }
+.mp-choice b { display: block; font: 900 14px/1 var(--font-display); letter-spacing: .01em; }
 .mp-choice span {
   display: block;
   margin-top: 7px;
   color: rgba(186,212,232,.55);
-  font: 700 7.5px/1.4 var(--font);
+  font: 700 9.5px/1.4 var(--font);
   letter-spacing: .16em;
 }
 .mp-choice:hover, .mp-choice:focus {
@@ -2721,8 +2804,8 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   text-align: left;
   cursor: pointer;
 }
-.mp-dialog-actions button small { display: block; color: rgba(186,212,232,.5); font: 700 7.5px/1 var(--font); letter-spacing: .2em; }
-.mp-dialog-actions button b { display: block; margin-top: 7px; font: 900 13px/1 var(--font); letter-spacing: .02em; }
+.mp-dialog-actions button small { display: block; color: rgba(186,212,232,.5); font: 700 9.5px/1 var(--font); letter-spacing: .2em; }
+.mp-dialog-actions button b { display: block; margin-top: 7px; font: 900 13px/1 var(--font-display); letter-spacing: .02em; }
 .mp-dialog-actions button:hover,
 .mp-dialog-actions button:focus { outline: 0; --edge: var(--cyan); background: rgba(12,34,52,.85); }
 #mpDialogOk:hover, #mpDialogOk:focus { --edge: var(--amber); }
@@ -2749,7 +2832,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   border-left: 2px solid var(--cyan);
   background: rgba(6,14,26,.9);
   color: var(--ink-body);
-  font: 700 9.5px/1.45 var(--font);
+  font: 700 11.5px/1.45 var(--font);
   letter-spacing: .08em;
   text-transform: uppercase;
   animation: mp-toast-in .22s var(--ease) both;
@@ -2773,7 +2856,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   display: block;
   margin-top: 8px;
   color: rgba(186,212,232,.5);
-  font: 700 7.5px/1 var(--font);
+  font: 700 9.5px/1 var(--font);
   font-style: normal;
   letter-spacing: .18em;
 }
@@ -2815,17 +2898,17 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(4,1,14,.25));
   animation: mp-step-rise .42s var(--ease) both;
 }
-.mp-step small { display: block; color: rgba(186,212,232,.55); font: 700 7.5px/1 var(--font); letter-spacing: .22em; }
+.mp-step small { display: block; color: rgba(186,212,232,.55); font: 700 9.5px/1 var(--font); letter-spacing: .22em; }
 .mp-step b {
   display: block;
   margin-top: 8px;
-  font: 900 clamp(26px, 3vw, 40px)/1 var(--font);
+  font: 900 clamp(26px, 3vw, 40px)/1 var(--font-display);
   letter-spacing: -.04em;
 }
 .mp-step span {
   display: block;
   margin-top: 6px;
-  font: 900 clamp(11px, 1.1vw, 15px)/1.2 var(--font);
+  font: 900 clamp(11px, 1.1vw, 15px)/1.2 var(--font-display);
   letter-spacing: .04em;
   overflow-wrap: anywhere;
 }
@@ -2833,7 +2916,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   display: block;
   margin-top: 7px;
   color: var(--ink-mute);
-  font: 700 9px/1 var(--font);
+  font: 700 11px/1 var(--font);
   text-decoration: none;
   letter-spacing: .1em;
 }
@@ -2905,8 +2988,8 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   --edge: var(--cyan);
   background: rgba(8,2,22,.95);
 }
-.mp-name-panel small { display: block; color: var(--cyan); font: 800 9px/1 var(--font); letter-spacing: .26em; }
-.mp-name-panel b { display: block; margin-top: 14px; font: 900 clamp(20px, 2.4vw, 32px)/1 var(--font); letter-spacing: -.03em; }
+.mp-name-panel small { display: block; color: var(--cyan); font: 800 11px/1 var(--font); letter-spacing: .26em; }
+.mp-name-panel b { display: block; margin-top: 14px; font: 900 clamp(20px, 2.4vw, 32px)/1 var(--font-display); letter-spacing: -.03em; }
 #mpNameInput {
   display: block;
   width: 100%;
@@ -2916,13 +2999,13 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   border: 1px solid rgba(57,230,255,.35);
   background: rgba(2,6,14,.8);
   color: var(--ink);
-  font: 900 20px/1 var(--font);
+  font: 900 20px/1 var(--font-display);
   letter-spacing: .2em;
   text-align: center;
   text-transform: uppercase;
 }
 #mpNameInput:focus { outline: 0; border-color: var(--cyan); box-shadow: 0 0 22px rgba(57,230,255,.28); }
-#mpNameHint { display: block; margin-top: 10px; color: var(--ink-faint); font: 500 9px/1 var(--font); font-style: normal; letter-spacing: .1em; }
+#mpNameHint { display: block; margin-top: 10px; color: var(--ink-faint); font: 500 11px/1 var(--font); font-style: normal; letter-spacing: .1em; }
 #mpNameOk {
   display: block;
   width: 100%;
@@ -2937,8 +3020,8 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   --edge: var(--pink);
   background: rgba(40,4,26,.7);
 }
-#mpNameOk small { display: block; color: rgba(255,180,210,.7); font: 700 8px/1 var(--font); letter-spacing: .18em; }
-#mpNameOk b { display: block; margin-top: 7px; font: 900 15px/1 var(--font); letter-spacing: .08em; }
+#mpNameOk small { display: block; color: rgba(255,180,210,.7); font: 700 10px/1 var(--font); letter-spacing: .18em; }
+#mpNameOk b { display: block; margin-top: 7px; font: 900 15px/1 var(--font-display); letter-spacing: .08em; }
 #mpNameOk:hover { filter: brightness(1.2); }
 
 /* ------------------------------------------------------ the standings --- */
@@ -2973,7 +3056,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
 }
-#mpHudBanner { display: block; color: rgba(160,200,235,.62); font: 700 7.5px/1.3 var(--font); letter-spacing: .13em; }
+#mpHudBanner { display: block; color: rgba(160,200,235,.62); font: 700 9.5px/1.3 var(--font); letter-spacing: .13em; }
 #mpHudRows { list-style: none; margin: 9px 0 0; padding: 0; display: grid; gap: 4px; }
 .mp-standing {
   display: grid;
@@ -2984,9 +3067,9 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   border-top: 1px solid rgba(139,92,246,.16);
 }
 .mp-standing:first-child { border-top: 0; }
-.mp-standing b { color: var(--amber); font: 900 11px/1 var(--font); }
-.mp-standing span { color: var(--ink-body); font: 700 10px/1 var(--font); letter-spacing: .05em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mp-standing u { color: var(--cyan); font: 700 9px/1 var(--font); text-decoration: none; letter-spacing: .04em; }
+.mp-standing b { color: var(--amber); font: 900 11px/1 var(--font-display); }
+.mp-standing span { color: var(--ink-body); font: 700 12px/1 var(--font); letter-spacing: .05em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-standing u { color: var(--cyan); font: 700 11px/1 var(--font); text-decoration: none; letter-spacing: .04em; }
 .mp-standing.is-you span { color: #fff; text-shadow: 0 0 10px rgba(57,230,255,.5); }
 .mp-standing.is-you u { color: #5affc0; }
 .mp-standing.is-gone { opacity: .45; }
@@ -3015,9 +3098,9 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   background: rgba(6,2,20,.95);
   box-shadow: 0 28px 90px rgba(0,0,0,.5);
 }
-.mp-results-panel > small { display: block; color: var(--cyan); font: 800 9px/1 var(--font); letter-spacing: .26em; }
-#mpResultsTitle { display: block; margin-top: 12px; font: 900 clamp(26px, 3.4vw, 48px)/1 var(--font); letter-spacing: -.045em; }
-#mpResultsNote { margin: 10px 0 0; color: var(--ink-mute); font: 700 9px/1.5 var(--font); letter-spacing: .12em; }
+.mp-results-panel > small { display: block; color: var(--cyan); font: 800 11px/1 var(--font); letter-spacing: .26em; }
+#mpResultsTitle { display: block; margin-top: 12px; font: 900 clamp(26px, 3.4vw, 48px)/1 var(--font-display); letter-spacing: -.045em; }
+#mpResultsNote { margin: 10px 0 0; color: var(--ink-mute); font: 700 11px/1.5 var(--font); letter-spacing: .12em; }
 #mpResultsRows { list-style: none; margin: 20px 0 0; padding: 0; display: grid; gap: 5px; }
 .mp-result {
   display: grid;
@@ -3028,7 +3111,7 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   background: rgba(12,4,30,.6);
   border-left: 2px solid rgba(139,92,246,.4);
 }
-.mp-result b { color: var(--amber); font: 900 16px/1 var(--font); }
+.mp-result b { color: var(--amber); font: 900 16px/1 var(--font-display); }
 .mp-result span { color: var(--ink-body); font: 700 12px/1 var(--font); letter-spacing: .06em; }
 .mp-result u { color: var(--cyan); font: 700 12px/1 var(--font); text-decoration: none; letter-spacing: .04em; }
 .mp-result.is-you { border-left-color: var(--cyan); background: rgba(10,32,52,.7); }
@@ -3046,10 +3129,10 @@ body.freeroam-open #hudCanvas { opacity: 0; }
   --edge: rgba(139,92,246,.5);
   background: rgba(14,5,34,.7);
 }
-.mp-results-actions button small { display: block; color: rgba(206,226,244,.6); font: 700 8px/1 var(--font); letter-spacing: .16em; }
-.mp-results-actions button b { display: block; margin-top: 7px; font: 900 14px/1 var(--font); letter-spacing: .06em; }
+.mp-results-actions button small { display: block; color: rgba(206,226,244,.6); font: 700 10px/1 var(--font); letter-spacing: .16em; }
+.mp-results-actions button b { display: block; margin-top: 7px; font: 900 14px/1 var(--font-display); letter-spacing: .06em; }
 .mp-results-actions button:hover, .mp-results-actions button:focus { outline: 0; --edge: var(--cyan); filter: brightness(1.16); }
-.mp-results-panel footer { margin-top: 18px; color: var(--ink-faint); font: 700 8px/1 var(--font); letter-spacing: .16em; }
+.mp-results-panel footer { margin-top: 18px; color: var(--ink-faint); font: 700 10px/1 var(--font); letter-spacing: .16em; }
 
 /* The lobby is a screen, not an overlay: while it is up the canvas HUD has
    nothing to say, and the pointer belongs to the panel. */
@@ -3132,14 +3215,14 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
   border-bottom: 1px solid rgba(139,92,246,.34);
   background: linear-gradient(90deg, rgba(57,230,255,.045), transparent 54%);
 }
-.mode-head small { display: block; color: var(--cyan); font: 800 10px/1 var(--font); letter-spacing: .32em; text-shadow: 0 0 12px rgba(57,230,255,.6); }
-.mode-head h1 { margin: 10px 0 0; font: 900 clamp(21px, 2.85vw, 46px)/1 var(--font); letter-spacing: -.045em; text-transform: uppercase; }
+.mode-head small { display: block; color: var(--cyan); font: 800 12px/1 var(--font); letter-spacing: .32em; text-shadow: 0 0 12px rgba(57,230,255,.6); }
+.mode-head h1 { margin: 10px 0 0; font: 900 clamp(21px, 2.85vw, 46px)/1 var(--font-display); letter-spacing: -.045em; text-transform: uppercase; }
 .mode-head p { margin: 10px 0 0; max-width: 68ch; color: var(--ink-mute); font: 500 clamp(10px, .88vw, 13px)/1.6 var(--font); }
 
 .mode-dossier { display: grid; grid-auto-flow: column; gap: clamp(10px, 1.4vw, 22px); text-align: right; }
 .mode-dossier div { min-width: 84px; }
-.mode-dossier span { display: block; color: rgba(186,212,232,.45); font: 700 8px/1 var(--font); letter-spacing: .18em; }
-.mode-dossier b { display: block; margin-top: 7px; color: var(--amber); font: 900 clamp(15px, 1.5vw, 24px)/1 var(--font); letter-spacing: .02em; text-shadow: 0 0 14px rgba(255,180,0,.45); }
+.mode-dossier span { display: block; color: rgba(186,212,232,.45); font: 700 10px/1 var(--font); letter-spacing: .18em; }
+.mode-dossier b { display: block; margin-top: 7px; color: var(--amber); font: 900 clamp(15px, 1.5vw, 24px)/1 var(--font-display); letter-spacing: .02em; text-shadow: 0 0 14px rgba(255,180,0,.45); }
 .mode-dossier b.is-locked { color: #ff5a78; text-shadow: 0 0 14px rgba(255,90,120,.45); }
 
 #modeCards {
@@ -3306,7 +3389,7 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
   left: clamp(16px, 1.6vw, 26px); top: clamp(14px, 1.4vw, 22px);
   z-index: 1;
   color: rgba(206,226,244,.7);
-  font: 700 9px/1 var(--font);
+  font: 700 11px/1 var(--font);
   letter-spacing: .2em;
   text-shadow: 0 2px 8px #000;
 }
@@ -3325,7 +3408,7 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
      and shrinks with the column it is in and the longest title fits at every
      width the grid can produce. The floor keeps it readable when the grid
      wraps to one narrow column; the ceiling is the size it was drawn at. */
-  font: 900 clamp(18px, 11cqw, 42px)/1 var(--font);
+  font: 900 clamp(18px, 11cqw, 42px)/1 var(--font-display);
   letter-spacing: -.035em;
   text-shadow: 0 3px 18px #000;
   /* ...and a longer name added later wraps rather than overflows. */
@@ -3337,7 +3420,7 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
   margin-top: 12px;
   max-width: 40ch;
   color: var(--cyan);
-  font: 700 9.5px/1.6 var(--font);
+  font: 700 11.5px/1.6 var(--font);
   letter-spacing: .1em;
   text-shadow: 0 2px 8px #000;
 }
@@ -3345,7 +3428,7 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
   display: block;
   margin-top: 16px;
   color: #5affc0;
-  font: 800 10px/1.4 var(--font);
+  font: 800 12px/1.4 var(--font);
   text-decoration: none;
   letter-spacing: .12em;
   text-shadow: 0 2px 8px #000;
@@ -3482,10 +3565,10 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
   justify-content: flex-end;
   gap: clamp(14px, 2.2vw, 40px);
   color: rgba(198,216,238,.36);
-  font: 700 9px/1 var(--font);
+  font: 700 11px/1 var(--font);
   letter-spacing: .14em;
 }
-.panel-hints b { color: var(--ink-body); font-weight: 900; }
+.panel-hints b { color: var(--ink-body); font-weight: 900; font-family: var(--font-display); }
 
 .ui-back {
   display: inline-flex;
@@ -3496,7 +3579,7 @@ body.multiplayer-open #hudCanvas { opacity: 0; }
   --edge: rgba(139,92,246,.5);
   background: rgba(10,14,30,.55);
   color: rgba(198,216,238,.62);
-  font: 900 10px/1 var(--font);
+  font: 900 10px/1 var(--font-display);
   letter-spacing: .17em;
   cursor: pointer;
   transition: color .16s ease, background .16s ease, box-shadow .16s ease;
@@ -3577,8 +3660,8 @@ body.modeselect-open #hudCanvas { opacity: 0; }
 }
 #storyContinuePrompt.show .story-continue-panel { transform: translateY(0) scale(1); }
 .story-continue-panel > * { position: relative; z-index: 1; }
-.story-continue-panel > small { display: block; color: var(--cyan); font: 800 9px/1 var(--font); letter-spacing: .32em; text-shadow: 0 0 12px rgba(57,230,255,.6); }
-.story-continue-panel h2 { margin: 16px 0 6px; font: 900 clamp(44px, 6.4vw, 82px)/.9 var(--font); letter-spacing: -.055em; }
+.story-continue-panel > small { display: block; color: var(--cyan); font: 800 11px/1 var(--font); letter-spacing: .32em; text-shadow: 0 0 12px rgba(57,230,255,.6); }
+.story-continue-panel h2 { margin: 16px 0 6px; font: 900 clamp(44px, 6.4vw, 82px)/.9 var(--font-display); letter-spacing: -.055em; }
 .story-continue-panel > p { min-height: 20px; margin: 14px 0 26px; color: rgba(219,232,247,.68); font: 700 clamp(10px, .95vw, 13px)/1.5 var(--font); letter-spacing: .12em; }
 .story-continue-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .story-continue-actions button {
@@ -3594,8 +3677,8 @@ body.modeselect-open #hudCanvas { opacity: 0; }
   transition: transform var(--t-fast) var(--ease), filter var(--t-fast) var(--ease);
 }
 .story-continue-actions button > * { position: relative; z-index: 1; }
-.story-continue-actions button small { display: block; margin-bottom: 9px; color: rgba(206,220,241,.5); font: 700 8px/1 var(--font); letter-spacing: .17em; }
-.story-continue-actions button b { font: 900 clamp(22px, 2.2vw, 30px)/1 var(--font); letter-spacing: .05em; }
+.story-continue-actions button small { display: block; margin-bottom: 9px; color: rgba(206,220,241,.5); font: 700 10px/1 var(--font); letter-spacing: .17em; }
+.story-continue-actions button b { font: 900 clamp(22px, 2.2vw, 30px)/1 var(--font-display); letter-spacing: .05em; }
 .story-continue-actions button:hover, .story-continue-actions button:focus {
   outline: none;
   transform: translateY(-3px);
@@ -3604,7 +3687,7 @@ body.modeselect-open #hudCanvas { opacity: 0; }
 }
 #storyContinueYes:hover, #storyContinueYes:focus { --edge: var(--amber); }
 #storyContinueYes:hover b, #storyContinueYes:focus b { color: var(--amber); text-shadow: 0 0 16px rgba(255,180,0,.6); }
-.story-continue-panel footer { margin-top: 22px; color: rgba(190,212,235,.42); font: 700 8px/1 var(--font); letter-spacing: .16em; }
+.story-continue-panel footer { margin-top: 22px; color: rgba(190,212,235,.42); font: 700 10px/1 var(--font); letter-spacing: .16em; }
 
 /* ------------------------------------------------------------ decision --- */
 /* The three forks in the campaign. Same panel language as the continue prompt
@@ -3667,8 +3750,8 @@ body.modeselect-open #hudCanvas { opacity: 0; }
 }
 #storyTutorial.show { transform: translate(-50%, 0); }
 #storyTutorial > * { position: relative; z-index: 1; }
-#storyTutorial small { display: block; color: var(--cyan); font: 800 8px/1 var(--font); letter-spacing: .3em; text-shadow: 0 0 10px rgba(57,230,255,.6); }
-#storyTutorial b { display: block; margin-top: 10px; font: 900 clamp(15px, 1.7vw, 25px)/1.1 var(--font); letter-spacing: .1em; }
+#storyTutorial small { display: block; color: var(--cyan); font: 800 10px/1 var(--font); letter-spacing: .3em; text-shadow: 0 0 10px rgba(57,230,255,.6); }
+#storyTutorial b { display: block; margin-top: 10px; font: 900 clamp(15px, 1.7vw, 25px)/1.1 var(--font-display); letter-spacing: .1em; }
 #storyTutorial > i { display: block; width: 82%; height: 3px; margin: 15px auto 0; overflow: hidden; background: rgba(255,255,255,.12); }
 /* SCALED, NOT WIDENED: a width transition is laid out and repainted on the
    main thread for every frame it runs, and this one runs while a chapter is
@@ -3678,12 +3761,14 @@ body.modeselect-open #hudCanvas { opacity: 0; }
 /* -------------------------------------------------- route / objective ---- */
 
 /* Right flank. The canvas owns the top-right shoulder from x 0.80 at y 0.10;
-   this starts below it. */
+   this starts below it - and below the raceMode meter on that flank, which
+   reaches down to HUD y 132 (see the raceMode block in js/hud.js). At 26vh
+   the card's top landed at y 173, across the meter's name line. */
 #storyWaypoint {
   position: absolute;
   z-index: 4;
   right: var(--story-gutter);
-  top: clamp(172px, 26vh, 306px);
+  top: max(clamp(172px, 26vh, 306px), calc(50% - 124 * var(--hud-unit)));
   min-width: 176px;
   padding: 12px 18px 14px 22px;
   --cut: 11px;
@@ -3693,21 +3778,28 @@ body.modeselect-open #hudCanvas { opacity: 0; }
 }
 #storyWaypoint.show { transform: translateX(0); }
 #storyWaypoint > * { position: relative; z-index: 1; }
-#storyWaypoint small { display: block; color: rgba(210,228,245,.55); font: 800 8px/1 var(--font); letter-spacing: .26em; }
-#storyWaypoint b { display: block; margin-top: 8px; font: 900 clamp(16px, 1.8vw, 26px)/1 var(--font); letter-spacing: .02em; }
-#storyWaypoint span { display: block; margin-top: 8px; color: var(--cyan); font: 800 11px/1 var(--font); letter-spacing: .16em; text-shadow: 0 0 10px rgba(57,230,255,.5); }
+#storyWaypoint small { display: block; color: rgba(210,228,245,.55); font: 800 10px/1 var(--font); letter-spacing: .26em; }
+#storyWaypoint b { display: block; margin-top: 8px; font: 900 clamp(16px, 1.8vw, 26px)/1 var(--font-display); letter-spacing: .02em; }
+#storyWaypoint span { display: block; margin-top: 8px; color: var(--cyan); font: 800 12.5px/1 var(--font); letter-spacing: .16em; text-shadow: 0 0 10px rgba(57,230,255,.5); }
 
 /* ------------------------------------------------------- race dossier ---- */
 
-/* Top-left, inside x < 0.28 where js/hud.js draws nothing. It deliberately
-   does NOT repeat the position and gap - the canvas HUD already owns those at
-   x 0.30, and printing "2ND / 4" twice on one screen was the single loudest
-   piece of duplication in story mode. This is identity and order only. */
+/* Top-left, inside x < 0.28 where js/hud.js draws nothing but FOCUS's meter
+   in the very corner. It deliberately does NOT repeat the position and gap -
+   the canvas HUD already owns those at x 0.30, and printing "2ND / 4" twice
+   on one screen was the single loudest piece of duplication in story mode.
+   This is identity and order only.
+
+   ITS TOP IS THE LOWER OF TWO LINES: the pixel clamp it always had, and HUD
+   y 292, which is ten units under the meter (FOCUS_HUD in js/hud.js spans
+   302..349). The clamp is a fixed pixel count, so on a large window it is a
+   smaller share of the frame and the card rose into the meter; the second
+   term is in the canvas's own units (see --hud-unit) and cannot. */
 #storyRaceMeta {
   position: absolute;
   z-index: 5;
   left: var(--story-gutter);
-  top: clamp(74px, 10vh, 118px);
+  top: max(clamp(74px, 10vh, 118px), calc(50% - 292 * var(--hud-unit)));
   width: clamp(196px, 17vw, 250px);
   padding: 11px 14px 12px;
   --cut: 11px;
@@ -3758,9 +3850,9 @@ body.cine5-active #storyTutorial {
   transition: opacity var(--t-base, .28s) var(--ease, ease);
 }
 #storyRaceMeta > * { position: relative; z-index: 1; }
-#storyRaceMeta small { display: block; color: var(--cyan); font: 800 8px/1 var(--font); letter-spacing: .2em; text-shadow: 0 0 10px rgba(57,230,255,.55); }
-#storyRaceMeta b { display: block; margin-top: 7px; font: 900 clamp(13px, 1.2vw, 18px)/1.05 var(--font); letter-spacing: .01em; }
-#storyRaceMeta span { display: block; margin-top: 6px; color: var(--amber); font: 700 8.5px/1.4 var(--font); letter-spacing: .12em; }
+#storyRaceMeta small { display: block; color: var(--cyan); font: 800 10px/1 var(--font); letter-spacing: .2em; text-shadow: 0 0 10px rgba(57,230,255,.55); }
+#storyRaceMeta b { display: block; margin-top: 7px; font: 900 clamp(13px, 1.2vw, 18px)/1.05 var(--font-display); letter-spacing: .01em; }
+#storyRaceMeta span { display: block; margin-top: 6px; color: var(--amber); font: 700 10.5px/1.4 var(--font); letter-spacing: .12em; }
 /* The objective, under a rule, because it is a different KIND of fact from
    the three lines above it: those say where you are and who you are against,
    and this says what winning means here. It is set in the interface's key
@@ -3772,7 +3864,7 @@ body.cine5-active #storyTutorial {
   padding-top: 8px;
   border-top: 1px solid rgba(57, 230, 255, .22);
   color: var(--ink-key, rgba(238, 246, 255, .96));
-  font: 800 9px/1.45 var(--font);
+  font: 800 11px/1.45 var(--font);
   letter-spacing: .13em;
   text-decoration: none;
   text-shadow: 0 0 12px rgba(57, 230, 255, .3);
@@ -3793,13 +3885,13 @@ body.cine5-active #storyTutorial {
   gap: 7px;
   min-height: 21px;
   color: rgba(216,232,246,.62);
-  font: 700 9px/1 var(--font);
+  font: 700 11px/1 var(--font);
   letter-spacing: .1em;
   transition: color var(--t-fast) var(--ease), transform var(--t-base) var(--ease);
 }
 #storyStandings li i { color: rgba(57,230,255,.55); font-style: normal; }
 #storyStandings li strong { overflow: hidden; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
-#storyStandings li em { color: rgba(180,200,224,.44); font: 700 8px/1 var(--font); font-style: normal; }
+#storyStandings li em { color: rgba(180,200,224,.44); font: 700 10px/1 var(--font); font-style: normal; }
 #storyStandings li.player { color: #fff; }
 #storyStandings li.player i { color: var(--amber); text-shadow: 0 0 8px var(--amber); }
 #storyStandings li.player em { color: var(--amber); }
@@ -4081,7 +4173,7 @@ body.story-hub #hudCanvas { opacity: 0; }
   position: relative;
   margin: 0;
   font-size: clamp(19px, 5.2vw, 58px);
-  font-weight: 900;
+  font-weight: 900; font-family: var(--font-display);
   line-height: 1.06;
   letter-spacing: .05em;
   white-space: nowrap;
@@ -4181,7 +4273,7 @@ body.story-hub #hudCanvas { opacity: 0; }
   background: var(--amber);
   color: #1a1000;
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 900; font-family: var(--font-display);
   letter-spacing: .18em;
 }
 .adv-beta p {
@@ -4217,7 +4309,7 @@ body.story-hub #hudCanvas { opacity: 0; }
 .adv-go-key {
   display: block;
   font-size: clamp(13px, 1.7vw, 16px);
-  font-weight: 900;
+  font-weight: 900; font-family: var(--font-display);
   letter-spacing: .26em;
   text-indent: .26em;
   color: var(--cyan);
@@ -4339,7 +4431,7 @@ body.story-hub #hudCanvas { opacity: 0; }
 .ui-title {
   margin: 0;
   font-size: clamp(17px, 2.6vw, 26px);
-  font-weight: 900;
+  font-weight: 900; font-family: var(--font-display);
   letter-spacing: .04em;
   color: #fff;
   /* A hard two-pixel chroma and a glow behind, never a blur on the glyphs:
@@ -4773,7 +4865,7 @@ body.pointer-fallback [role="button"] { cursor: pointer !important; }
 .stage-label {
   color: #eaf4ff;
   font-size: clamp(15px, 2.1vw, 20px);
-  font-weight: 900;
+  font-weight: 900; font-family: var(--font-display);
   letter-spacing: .34em;
   text-shadow: 0 0 26px rgba(57, 230, 255, .40);
 }
@@ -5015,7 +5107,7 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
   width: max-content;
   margin: 0 auto;
   font-size: clamp(44px, 9.5vw, 118px);
-  font-weight: 900;
+  font-weight: 900; font-family: var(--font-display);
   letter-spacing: .06em;
   line-height: 1;
   text-align: center;
@@ -5080,17 +5172,20 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
 .intro-line {
   margin: 0;
   color: var(--cyan);
-  font-size: clamp(10px, 1.35vw, 13px);
+  font-size: clamp(11px, 1.35vw, 15px);
   font-weight: 700;
-  letter-spacing: .2em;
+  letter-spacing: .16em;
   text-shadow: 0 0 16px rgba(57, 230, 255, .45);
 }
+/* The sign-off is a readout, so it is set like one - the data face. */
 .intro-ok {
   flex: none;
   color: #5affc0;
-  font-size: clamp(9px, 1.05vw, 11px);
-  font-weight: 900;
-  letter-spacing: .3em;
+  font-family: var(--font-mono);
+  font-size: clamp(11px, 1.2vw, 14px);
+  font-weight: 400;
+  font-style: normal;
+  letter-spacing: .14em;
   text-shadow: 0 0 14px rgba(90, 255, 192, .6);
   opacity: 0;
   transform: translateX(6px);
@@ -5102,18 +5197,22 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
 .intro-rail {
   position: relative;
   margin-top: 1.5em;
-  height: 2px;
-  background: rgba(120, 160, 220, .16);
+  height: 4px;
+  background: rgba(8, 4, 24, .8);
+  box-shadow: inset 0 0 0 1px rgba(190, 175, 255, .2);
   overflow: hidden;
 }
+/* The preloader's tube, continued: the same glossy magenta-into-gold. */
 .intro-rail > i {
   position: absolute;
   inset: 0;
   display: block;
   transform: scaleX(0);
   transform-origin: 0 50%;
-  background: linear-gradient(90deg, var(--magenta, #ff2e88), var(--cyan, #39e6ff));
-  box-shadow: 0 0 18px rgba(57, 230, 255, .55);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.5) 0 40%, rgba(255,255,255,0) 40% 72%, rgba(60,0,30,.3) 72%),
+    linear-gradient(90deg, #c81a62, #ff3f7e 46%, #ff7a45 80%, #ffd25a);
+  box-shadow: 0 0 16px rgba(255, 63, 126, .55);
   transition: transform 260ms cubic-bezier(.3, .9, .3, 1);
 }
 
@@ -5126,7 +5225,7 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
   text-indent: .42em;
   color: var(--cyan, #39e6ff);
   font-size: clamp(11px, 1.5vw, 15px);
-  font-weight: 900;
+  font-weight: 900; font-family: var(--font-display);
   letter-spacing: .42em;
   opacity: 0;
   transform: translateY(6px);
@@ -5451,7 +5550,7 @@ section[aria-hidden="false"] > .freeroam-panel::after {
 .bench-scene {
   color: #eaf4ff;
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 900; font-family: var(--font-display);
   letter-spacing: .26em;
   white-space: nowrap;
   overflow: hidden;
@@ -5575,7 +5674,7 @@ section[aria-hidden="false"] > .freeroam-panel::after {
 .bench-stat b {
   color: #eaf4ff;
   font-size: clamp(24px, 3.6vw, 40px);
-  font-weight: 900;
+  font-weight: 900; font-family: var(--font-display);
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
@@ -5641,7 +5740,7 @@ section[aria-hidden="false"] > .freeroam-panel::after {
   color: #07021a;
   font-size: 9px;
   font-style: normal;
-  font-weight: 900;
+  font-weight: 900; font-family: var(--font-display);
   letter-spacing: .12em;
   white-space: nowrap;
 }
@@ -5899,4 +5998,391 @@ body[data-gfx="lean"] #storyDialogue.typing .story-wave { animation: none; opaci
     transition: filter 120ms ease;
     transform: none !important;
   }
+}
+
+/* ======================================================= THE PREMIUM THEME ==
+ *
+ * ONE SELECTED STATE FOR THE WHOLE GAME, AND IT IS THE SITE'S.
+ *
+ * The canvas menus (js/hud.js, Hud.barLayer) say "this one" with a lit bar,
+ * and that bar is synx-landing's primary button - the PLAY row: violet glass
+ * lit from inside, a pink edge, a gold hairline along its foot, and the word
+ * in gold with light round it. The DOM screens said it with an amber
+ * hairline and a three-pixel lift, and the glow that was supposed to go with
+ * it was a box-shadow OUTSIDE a panel whose clip-path cuts everything outside
+ * it away, so on screen the selection was barely there.
+ *
+ * This block gives every DOM control the same answer, in two forms:
+ *
+ *   BUTTONS (a word or two, no picture) light up as the button itself - the
+ *   violet, the pink edge, the gold foot, gold type.
+ *
+ *   TILES (a face, a map, a route) keep their picture and take the pink edge
+ *   and a glow rising from the copy edge, painted into the scrim that already
+ *   sits over the art - the one layer above the picture that the clip does
+ *   not remove - under the site's gold-into-pink top line.
+ *
+ * It is at the end of the file on purpose: these are STATE rules, and a state
+ * has to win over the resting rules it is the state of. Nothing here moves
+ * anything - layout is untouched - it only changes what a thing looks like
+ * once it is chosen.
+ */
+:root {
+  --sel-rim: linear-gradient(150deg, #ff2e88, rgba(255,95,176,.86) 55%, #ff2e88);
+  --sel-body: linear-gradient(180deg, rgba(90,40,190,.90), rgba(30,10,70,.95));
+  --sel-gloss:
+    linear-gradient(90deg, rgba(255,217,119,0), rgba(255,217,119,.88), rgba(255,217,119,0)) 0 100% / 100% 1px no-repeat,
+    radial-gradient(ellipse 55% 110% at 50% 55%, rgba(255,180,0,.15), rgba(255,180,0,0) 70%),
+    radial-gradient(ellipse 40% 140% at 0% 50%, rgba(255,46,136,.24), rgba(255,46,136,0) 70%),
+    linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,0) 46%);
+  --sel-ink: 0 0 10px rgba(255,217,119,.75), 0 0 28px rgba(255,180,0,.4);
+}
+
+/* --------------------------------------------------------------- buttons -- */
+.story-action:hover, .story-action:focus, .story-action.is-hover,
+.story-continue-actions button:hover, .story-continue-actions button:focus,
+#storyChoiceEdge:hover, #storyChoiceOpen:hover,
+#storyChoiceEdge:focus, #storyChoiceOpen:focus,
+#storyChoiceEdge.is-hover, #storyChoiceOpen.is-hover,
+.ui-back:hover, .ui-back:focus-visible, .ui-back.is-hover,
+.mp-dialog-actions button:hover, .mp-dialog-actions button:focus,
+.mp-results-actions button:hover, .mp-results-actions button:focus,
+#mpNameOk:hover, #mpNameOk:focus {
+  background: var(--sel-gloss), var(--sel-body);
+  --rim: var(--sel-rim);
+  --ring: 1.5px;
+  color: var(--gold-ink);
+  filter: drop-shadow(0 10px 22px rgba(255,46,136,.22));
+}
+.story-action:hover b, .story-action:focus b, .story-action.is-hover b,
+.story-action.primary:hover b, .story-action.primary:focus b, .story-action.primary.is-hover b,
+.story-continue-actions button:hover b, .story-continue-actions button:focus b,
+#storyContinueYes:hover b, #storyContinueYes:focus b,
+#storyChoiceEdge:hover b, #storyChoiceOpen:hover b,
+#storyChoiceEdge:focus b, #storyChoiceOpen:focus b,
+#storyChoiceEdge.is-hover b, #storyChoiceOpen.is-hover b,
+.mp-dialog-actions button:hover b, .mp-dialog-actions button:focus b,
+#mpDialogOk:hover b, #mpDialogOk:focus b,
+.mp-results-actions button:hover b, .mp-results-actions button:focus b,
+#mpNameOk:hover b, #mpNameOk:focus b {
+  color: var(--gold-ink);
+  text-shadow: var(--sel-ink);
+}
+.story-action:hover small, .story-action:focus small, .story-action.is-hover small,
+.story-continue-actions button:hover small, .story-continue-actions button:focus small,
+#storyChoiceEdge:hover small, #storyChoiceOpen:hover small,
+#storyChoiceEdge:focus small, #storyChoiceOpen:focus small,
+#storyChoiceEdge:hover em, #storyChoiceOpen:hover em,
+#storyChoiceEdge:focus em, #storyChoiceOpen:focus em,
+.mp-dialog-actions button:hover small, .mp-dialog-actions button:focus small,
+.mp-results-actions button:hover small, .mp-results-actions button:focus small,
+#mpNameOk:hover small, #mpNameOk:focus small {
+  color: rgba(255,255,255,.66);
+  text-shadow: none;
+}
+.ui-back:hover, .ui-back:focus-visible, .ui-back.is-hover { color: var(--gold-ink); box-shadow: none; }
+
+/* The resting buttons get the site's lit edge, and a little more body. */
+.story-action, .story-continue-actions button, .mp-dialog-actions button,
+.mp-results-actions button, .ui-back {
+  --edge: rgba(139,92,246,.62);
+}
+
+/* ----------------------------------------------------------------- tiles -- */
+/* The bevel is painted ABOVE the picture on a tile that has one: as the first
+   pseudo-element it was otherwise underneath a full-bleed image, and a rim
+   that cannot be seen cannot say anything. */
+.story-chapter::before, .mode-card::before, .freeroam-route::before { z-index: 2; }
+
+.story-chapter:not(.locked):hover, .story-chapter:not(.locked):focus-visible,
+.story-chapter.is-highlighted,
+.mode-card:not(.locked):hover, .mode-card:not(.locked):focus, .mode-card:not(.locked).is-hover,
+.mode-card.is-highlighted,
+.freeroam-route:hover, .freeroam-route:focus, .freeroam-route.is-hover,
+.freeroam-route.is-highlighted,
+.mp-tile:hover, .mp-tile:focus, .mp-tile.is-hover, .mp-tile.is-highlighted,
+.mp-room:hover, .mp-room:focus, .mp-room.is-hover,
+.mp-map:not(.locked):hover, .mp-map:not(.locked):focus, .mp-map.is-hover {
+  --rim: var(--sel-rim);
+  --ring: 1.5px;
+  box-shadow: none;
+}
+.story-chapter:not(.locked):hover::after, .story-chapter:not(.locked):focus-visible::after,
+.story-chapter.is-highlighted::after {
+  background:
+    linear-gradient(90deg, rgba(255,217,119,0), #ffd977 18%, #ff2e88 64%, rgba(255,46,136,0)) 0 0 / 100% 2px no-repeat,
+    linear-gradient(0deg, rgba(139,92,246,.42), rgba(255,46,136,.14) 30%, rgba(255,46,136,0) 56%),
+    linear-gradient(0deg, rgba(4,1,12,.94) 4%, rgba(4,1,12,.60) 34%, rgba(4,1,12,.04) 68%),
+    linear-gradient(96deg, rgba(4,1,12,.50), transparent 62%);
+}
+.mode-card:not(.locked):hover::after, .mode-card:not(.locked):focus::after,
+.mode-card:not(.locked).is-hover::after, .mode-card.is-highlighted::after {
+  background:
+    linear-gradient(90deg, rgba(255,217,119,0), #ffd977 18%, #ff2e88 60%, rgba(255,46,136,0)) 0 0 / 100% 2px no-repeat,
+    linear-gradient(0deg, rgba(139,92,246,.38), rgba(255,46,136,.12) 28%, rgba(255,46,136,0) 52%),
+    linear-gradient(0deg, rgba(4,1,12,.96) 6%, rgba(4,1,12,.74) 38%, rgba(4,1,12,.08) 74%),
+    linear-gradient(96deg, rgba(4,1,12,.56), transparent 60%);
+}
+/* A tile with no picture lights its own glass instead - the site's feature
+   card under the pointer: its accent line along the top, the glow in the
+   corner, the glass graded down. */
+.mp-tile:hover, .mp-tile:focus, .mp-tile.is-hover, .mp-tile.is-highlighted,
+.mp-room:hover, .mp-room:focus, .mp-room.is-hover {
+  background:
+    linear-gradient(90deg, rgba(255,217,119,0), #ffd977 18%, #ff2e88 64%, rgba(255,46,136,0)) 0 0 / 100% 2px no-repeat,
+    radial-gradient(ellipse 80% 60% at 100% 0%, rgba(255,46,136,.16), transparent 70%),
+    linear-gradient(0deg, rgba(139,92,246,.26), rgba(139,92,246,0) 60%),
+    linear-gradient(180deg, rgba(20,8,50,.82), rgba(7,3,26,.92));
+}
+
+/* ------------------------------------------------------------- dialogue -- */
+/* The speaker's plate is a skewed tag in their colour, the same plate the
+   instruments sit on, and the line itself gets a touch more presence. */
+#storyNameplate {
+  --cut: 0px;
+  padding: 9px 30px 8px 26px;
+  clip-path: polygon(14px 0, 100% 0, calc(100% - 14px) 100%, 0 100%);
+  background:
+    linear-gradient(var(--voice), var(--voice)) 0 0 / 5px 100% no-repeat,
+    linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,0) 50%),
+    linear-gradient(180deg, rgba(34,20,74,.96), rgba(10,5,28,.96));
+}
+#storyNameplate::before { display: none; }
+#storyNameplate span { text-shadow: 0 0 10px color-mix(in srgb, var(--voice) 70%, transparent), 0 2px 6px #000; }
+.story-dialogue-shell {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,0) 30%),
+    linear-gradient(118deg, rgba(5,2,18,.96), rgba(16,6,38,.94) 46%, rgba(5,10,28,.95));
+}
+#storyText { font-weight: 600; letter-spacing: .01em; }
+
+/* -------------------------------------------------------------- advisory -- */
+/* CONTINUE is the game's first button, so it is the game's button: the lit
+   bar, armed. Disabled it is the idle slot. */
+.adv-go {
+  border: 0;
+  padding: .85em 3.2em;
+  clip-path: polygon(16px 0, 100% 0, calc(100% - 16px) 100%, 0 100%);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,0) 46%),
+    linear-gradient(180deg, rgba(30,18,68,.92), rgba(10,5,28,.94));
+  box-shadow: inset 0 0 0 1px rgba(200,190,255,.35);
+}
+.adv-go.is-armed, .adv-go:hover, .adv-go:focus-visible {
+  background: var(--sel-gloss), var(--sel-body);
+  box-shadow: inset 0 0 0 1.5px rgba(255,46,136,.95);
+}
+.adv-go.is-armed .adv-go-key, .adv-go:hover .adv-go-key, .adv-go:focus-visible .adv-go-key {
+  color: var(--gold-ink);
+  text-shadow: var(--sel-ink);
+}
+.adv-go.is-armed .adv-go-sub, .adv-go:hover .adv-go-sub, .adv-go:focus-visible .adv-go-sub {
+  color: rgba(255,255,255,.66);
+}
+.adv-go:disabled { filter: grayscale(.6) brightness(.8); }
+
+/* ------------------------------------------------------------ side cards -- */
+/* The speaker on a compact chip is a name, and a name at ten pixels in the
+   display face was a row of squares; set it as every other label is. The
+   tutorial's progress is the house tube - the same glossy magenta-into-gold
+   the preloader and the boot ledger fill with. */
+#storyCompact small { font: 700 12px/1 var(--font); letter-spacing: .22em; }
+#storyTutorial > i, .stage-rail {
+  height: 5px;
+  background: rgba(8,4,24,.8);
+  box-shadow: inset 0 0 0 1px rgba(190,175,255,.2);
+}
+#storyTutorialFill {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.5) 0 40%, rgba(255,255,255,0) 40% 72%, rgba(60,0,30,.3) 72%),
+    linear-gradient(90deg, #c81a62, #ff3f7e 46%, #ff7a45 80%, #ffd25a);
+  box-shadow: 0 0 12px rgba(255,63,126,.55);
+}
+
+/* --------------------------------------------------------------- staging -- */
+/* The dial is the ignition cluster's, small: a deep blue face, a ring lit
+   orange into magenta, a red needle. Every moving part is still a transform
+   on an element that was painted once. */
+.stage-dial::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 38%, #1d2c78 0%, #0b1240 62%, #050818 100%);
+  box-shadow: inset 0 0 0 1px rgba(190,210,255,.22), inset 0 -8px 18px rgba(0,0,0,.5);
+}
+.stage-arc {
+  border-color: rgba(120,160,220,.12);
+  border-top-color: #ff7a45;
+  border-right-color: #ff3f7e;
+  box-shadow: 0 0 16px rgba(255,90,60,.22);
+}
+.stage-arc-in { border-bottom-color: rgba(57,230,255,.85); box-shadow: none; }
+.stage-needle::before {
+  width: 3px;
+  margin-left: -1.5px;
+  background: linear-gradient(180deg, #ff4436, rgba(255,68,54,0));
+}
+.stage-kicker { font-size: 11px; color: rgba(120,225,255,.8); }
+.stage-sub { font-size: 12px; letter-spacing: .22em; }
+.stage-rail > i {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.5) 0 40%, rgba(255,255,255,0) 40%),
+    linear-gradient(90deg, rgba(255,63,126,0), #ff3f7e 30%, #ffd25a 60%, rgba(255,180,78,0));
+}
+
+/* ----------------------------------------------------------- multiplayer -- */
+/* The standings and the results are the race screen's own rows: positions
+   in the HUD's display figures, and YOUR row lit the way a selected settings
+   row is - violet at the leading edge dying away across it, gold on the
+   edge. */
+.mp-hud-panel {
+  background:
+    linear-gradient(var(--edge), var(--edge)) var(--cut) 0 / min(22%, 150px) 2px no-repeat,
+    linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,0) 40%),
+    linear-gradient(180deg, rgba(24,14,58,.70), rgba(5,2,17,.74));
+}
+.mp-results-panel {
+  background:
+    linear-gradient(var(--edge), var(--edge)) var(--cut) 0 / min(22%, 150px) 2px no-repeat,
+    linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,0) 44%),
+    linear-gradient(180deg, rgba(30,18,68,.96), rgba(13,7,36,.96) 52%, rgba(5,2,17,.97));
+}
+/* Set like the HUD's figures; the colour stays the row's own, so the
+   podium's gold, silver and bronze still read. */
+.mp-standing b, .mp-result b {
+  font-family: var(--font-display);
+  font-style: normal;
+  font-weight: 900;
+  text-shadow: 0 1px 0 rgba(40,10,0,.6);
+}
+.mp-standing b { font-size: 12px; }
+.mp-result b { font-size: 17px; }
+.mp-standing.is-you, .mp-result.is-you {
+  background: linear-gradient(90deg, rgba(98,46,206,.55), rgba(255,46,136,.14) 58%, rgba(255,46,136,0));
+  box-shadow: inset 2px 0 0 #ffd977;
+}
+.mp-standing.is-you { padding-left: 6px; margin-left: -6px; }
+.mp-result.is-you { border-left-color: transparent; }
+.mp-result.is-you u, .mp-standing.is-you u { color: #fff; }
+
+/* The connection notices are the race's notifications: a skewed glass tag
+   with the accent down its leading edge, the shape the canvas toasts are. */
+.mp-toast {
+  padding: 9px 26px 9px 22px;
+  border-left: 0;
+  clip-path: polygon(10px 0, 100% 0, calc(100% - 10px) 100%, 0 100%);
+  background:
+    linear-gradient(100deg, transparent 6px, var(--cyan) 6px 11px, transparent 11px) 0 0 / 14px 100% no-repeat,
+    linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,0) 50%),
+    linear-gradient(180deg, rgba(30,18,70,.94), rgba(8,4,24,.94));
+  color: #f2f0ff;
+  font-weight: 700;
+  letter-spacing: .1em;
+}
+
+/* ----------------------------------------------------------------- fatal -- */
+/* The one screen nobody should see still looks like the game it belongs to. */
+#fatal .panel {
+  border: 0;
+  padding: 30px 38px 32px;
+  clip-path: polygon(16px 0, 100% 0, 100% calc(100% - 16px), calc(100% - 16px) 100%, 0 100%, 0 16px);
+  background:
+    linear-gradient(var(--pink), var(--pink)) 16px 0 / min(22%, 150px) 2px no-repeat,
+    linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,0) 44%),
+    linear-gradient(180deg, rgba(30,18,68,.96), rgba(13,7,36,.96) 52%, rgba(5,2,17,.97));
+  box-shadow: inset 0 0 0 1px rgba(200,190,255,.3);
+}
+#fatal .panel h3 {
+  font: 900 22px/1.1 var(--font-display);
+  letter-spacing: .06em;
+  text-shadow: 0 0 18px rgba(255,46,136,.5);
+}
+#fatal p { font-weight: 600; font-size: 14px; }
+#fatalAgain {
+  border: 0;
+  padding: 14px 34px;
+  clip-path: polygon(12px 0, 100% 0, calc(100% - 12px) 100%, 0 100%);
+  background: var(--sel-gloss), var(--sel-body);
+  color: var(--gold-ink);
+  font: 900 12px/1 var(--font-display);
+  letter-spacing: .28em;
+  text-shadow: var(--sel-ink);
+  box-shadow: inset 0 0 0 1.5px rgba(255,46,136,.95);
+}
+#fatalAgain:hover, #fatalAgain:focus-visible {
+  background: var(--sel-gloss), var(--sel-body);
+  filter: brightness(1.12);
+  box-shadow: inset 0 0 0 1.5px #ff5fb0;
+}
+
+/* ------------------------------------------------------ the last strays -- */
+/* THE WAY BACK is a button like any other, not a ghost of one: the same
+   glass and lit edge at rest, set the way the site sets its secondary
+   buttons - tracked display caps, the arrow in cyan - and it lights the same
+   way as every other button (see the buttons block above). */
+.ui-back {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,0) 44%),
+    linear-gradient(150deg, rgba(19,6,44,.92), rgba(10,2,26,.86) 62%);
+  color: rgba(236,240,255,.85);
+  font: 600 11px/1 var(--font-display);
+  letter-spacing: .26em;
+}
+.ui-back span { font-size: 15px; color: var(--cyan); }
+.ui-back:hover span, .ui-back:focus-visible span, .ui-back.is-hover span { color: var(--gold); }
+
+/* THE NAME DIALOG: the glass every other panel is, and its one action lit
+   at rest - it is the only thing on the card that does anything, so it is
+   the bar, the way PLAY is in the launcher. */
+.mp-name-panel {
+  background:
+    linear-gradient(var(--edge), var(--edge)) var(--cut) 0 / min(22%, 150px) 2px no-repeat,
+    linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,0) 44%),
+    linear-gradient(180deg, rgba(30,18,68,.96), rgba(13,7,36,.96) 52%, rgba(5,2,17,.97));
+}
+#mpNameOk {
+  background: var(--sel-gloss), var(--sel-body);
+  --rim: var(--sel-rim);
+  --ring: 1.5px;
+}
+#mpNameOk small { color: rgba(255,255,255,.62); font-family: var(--font-mono); font-weight: 400; letter-spacing: .06em; text-shadow: none; }
+#mpNameOk b { font: 900 14px/1 var(--font-display); letter-spacing: .26em; color: var(--gold-ink); text-shadow: var(--sel-ink); }
+
+/* -------------------------------------------------------------- kickers -- */
+/* THE SITE'S KICKER. Every screen opens on a tracked line in the "SYNX GRID
+   // ..." voice, and on synx-landing that line is the display face, tracked
+   wide, with a short rule leading into it in its own colour. Same here, for
+   every heading kicker in the game - the colour each one already has is
+   kept, so a hunt's kicker is still red and a decision's still pink. The
+   buttons' own small captions are not kickers and are not touched. */
+.story-hub-head small, .mode-head small, .freeroam-head small, .mp-head small,
+.story-continue-panel > small, .mp-name-panel > small, .mp-dialog > small,
+.mp-results-panel > small, #storyKicker, .stage-kicker {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 10.5px;
+  line-height: 1;
+  letter-spacing: .42em;
+}
+#storyKicker { font-size: clamp(9px, .74vw, 12px); }
+/* The two narrow dialogs hold the longest kickers in the game in the least
+   room - SYNX GRID // DRIVER REGISTRATION broke onto two lines at the site's
+   full tracking - so they track tighter. The registration line is fixed and
+   is kept to one; a dialog's kicker is written by script, can run long, and
+   may still wrap rather than be cut off by the panel's clip. */
+.mp-name-panel > small, .mp-dialog > small { font-size: 9.5px; letter-spacing: .3em; line-height: 1.5; }
+.mp-name-panel > small { white-space: nowrap; }
+.story-hub-head small::before, .mode-head small::before, .freeroam-head small::before,
+.mp-head small::before, .story-continue-panel > small::before, .mp-name-panel > small::before,
+.mp-dialog > small::before, .mp-results-panel > small::before, #storyKicker::before,
+.stage-kicker::before {
+  content: "";
+  display: inline-block;
+  width: 32px;
+  height: 1px;
+  margin: 0 12px 0 0;
+  vertical-align: middle;
+  background: currentColor;
+  opacity: .7;
 }

@@ -232,12 +232,11 @@
       hint: 'How much tyre smoke, exhaust flame, grit and spark the car throws. Every one of them is an additive sprite over the whole lower frame, so this is felt on a weak fill rate more than anywhere else.' },
 
     /* THE IMAGE GROUP. The picture, as opposed to what is in it. Separated
-       because none of these three costs anything measurable: they are taste,
-       and a player hunting for frames should not have to read past them. */
-    { where: 'launcher', tab: 1, group: 'IMAGE', key: 'look', label: 'COLOUR',
-      opts: ['NEUTRAL', 'SYNTHWAVE', 'PUNCHY'], def: 1,
-      hint: 'The grade on top of the AgX display transform. NEUTRAL is the transform on its own; SYNTHWAVE is how the game is meant to look; PUNCHY pushes contrast and saturation further.' },
-    { where: 'launcher', tab: 1, key: 'sharpness', label: 'SHARPNESS',
+       because neither of these costs anything measurable: they are taste,
+       and a player hunting for frames should not have to read past them.
+       There is no COLOUR row any more. The game has one grade - a vintage
+       print look - and it is not a choice; see VINTAGE in js/game.js. */
+    { where: 'launcher', tab: 1, group: 'IMAGE', key: 'sharpness', label: 'SHARPNESS',
       opts: ['OFF', 'LOW', 'NORMAL', 'HIGH'], def: 2,
       hint: 'Contrast-adaptive sharpening over the finished frame. It restores the bite a temporal resolve costs, and too much of it rings on the neon.' },
     { where: 'launcher', tab: 1, key: 'grain', label: 'CRT FILTER', opts: ['OFF', 'ON'], def: 1,
@@ -436,10 +435,16 @@
     /* ...and the ones that are unambiguously integrated. Intel's HD/UHD/Iris
        lines, AMD's older APU graphics, and the mobile parts that turn up in
        a Windows-on-ARM machine. */
-    const slow = /(intel.*(hd|uhd)\s*graphics)|(intel.*iris(?!.*xe))|(hd\s*graphics\s*[3-6]\d{3})|(vega\s*[3-9]\b)|(radeon\s*r[2-7]\s)|(mali)|(adreno)|(powervr)|(gma)|(mesa\s*intel)/;
-    /* Between the two: Iris Xe, an integrated 700M/800M, an older discrete
-       card. These run the game well at MEDIUM and badly at HIGH. */
-    const middling = /(iris\s*xe)|(radeon\s*(7|8)\d{2}m)|(gtx\s*[79]\d{2})|(geforce\s*mx)|(uhd\s*graphics\s*7\d{2})|(intel.*graphics)/;
+    /* `radeon(tm) graphics` with no model after it is how AMD names the
+       graphics in its APUs - Renoir, Cezanne, Barcelo, Mendocino and the
+       desktop parts' two-unit fallback - under Windows, and Mesa says
+       `radeon graphics` the same way. It matched nothing here, so the most
+       common integrated GPU on an AMD laptop fell through to the MEDIUM-at-
+       native default and opened the game at a frame rate it could not hold. */
+    const slow = /(intel.*(hd|uhd)\s*graphics)|(intel.*iris(?!.*xe))|(hd\s*graphics\s*[3-6]\d{3})|(vega\s*[3-9]\b)|(radeon\s*r[2-7]\s)|(radeon\s*(\(tm\)\s*)?graphics)|(mali)|(adreno)|(powervr)|(gma)|(mesa\s*intel)/;
+    /* Between the two: Iris Xe, an integrated 680M/780M/880M, an older
+       discrete card. These run the game well at MEDIUM and badly at HIGH. */
+    const middling = /(iris\s*xe)|(radeon\s*(\(tm\)\s*)?[6-9]\d0m)|(radeon\s*(7|8)\d{2}m)|(gtx\s*[79]\d{2})|(geforce\s*mx)|(uhd\s*graphics\s*7\d{2})|(intel.*graphics)/;
 
     if (fast.test(s)) out.tier = 3;
     else if (slow.test(s)) out.tier = 1;
@@ -524,7 +529,7 @@
     try {
       const t = guessTier(gl);
       tierDefaults(obj, t);
-      if (typeof console !== 'undefined' && console.info) {
+      if (typeof console !== 'undefined' && console.info && (global.NR || {}).DEV !== false) {
         console.info('SYNX: first launch - starting at tier ' + t.tier
           + ' (' + (t.why || '') + ')');
       }

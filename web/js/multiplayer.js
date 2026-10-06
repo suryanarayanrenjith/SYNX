@@ -1850,7 +1850,20 @@
     afterUpdate(dt) {
       const g = this.g;
       if (!this.racing || !NR.NetCore) return;
-      const now = performance.now();
+      /* ONE CLOCK FOR THE WHOLE FRAME: the display tick the simulation was
+         just stepped to (Game.frameNow), not the wall clock at this line.
+
+         Both uses below need it. The other cars are drawn at `now` minus the
+         playout delay, so a `now` that wanders by however long this frame
+         has taken so far moves every remote car back and forth along its own
+         path by speed times that wander - a few milliseconds, a few tenths
+         of a unit, every frame: the shimmer of a car that is being followed
+         closely. And this car's state goes out stamped with `now`, so the
+         stamp has to be the instant that state is true at, or every other
+         player is handed a sample a few milliseconds off its own position
+         and draws exactly the same shimmer on our car. On the frame clock a
+         remote car advances by exactly the interval the screen does. */
+      const now = g.frameNow || performance.now();
 
       NR.Net.pump();
       NR.NetCore.sample(now, dt);
@@ -1861,6 +1874,15 @@
         const left = this.untilStart(this.pending);
         g.countdown = left + (left > 0 ? 0.999 : 0);
         if (left <= 0 && g.state === 'countdown') {
+          /* THE LIGHTS GO OUT HERE, NOT IN Game.update. Online the countdown
+             is the server's and it is this line that ends it - after
+             Game.update has run - so the game's own countdown branch never
+             sees zero: it never sounded GO and never judged the launch, and
+             a perfect start on the grid of a shared race was worth exactly
+             what a lazy one was. Both are done here, at the same instant they
+             are done offline. */
+          if (g.lastBeep !== 0) { g.lastBeep = 0; g.audio.goBeep(); }
+          if (g.judgeLaunch) g.judgeLaunch();
           g.state = 'racing';
           /* Zero, rather than `g.raceTime || 0`.
 
@@ -1875,6 +1897,13 @@
       }
 
       const why = NR.NetCore.takeCorrection(g.car);
+      // the server's state replaced the whole car, FOCUS's published turn
+      // rate and the frame's carry-on with it - see Game.focusAssistUndo and
+      // Game.presentCar
+      if (why) {
+        g._assistYaw = 0;
+        if (g.car._pose) g.car._pose.on = false;
+      }
       if (why && now - this._lastCorrection > 900) {
         this._lastCorrection = now;
         g.hud.toast(CORRECTION_TEXT[why] || 'LINK CORRECTION', '#ffb400');
@@ -1915,7 +1944,7 @@
       let flags = 0;
       if (g.state !== 'racing' && g.state !== 'countdown') flags |= 1 << 6;   // IDLE
       if (g.raceModeActive) flags |= 1 << 3;                                   // RACE_MODE
-      NR.Net.publish(g.car, flags, 0);
+      NR.Net.publish(g.car, flags, 0, now);
 
       if (now - this._hudAt > 180) { this._hudAt = now; this.paintHud(); }
     }
@@ -2236,7 +2265,7 @@
       // The link is still live behind the panel, so the clock keeps tracking
       // and the room list keeps arriving.
       NR.Net.pump();
-      if (NR.NetCore && NR.Net.online) NR.NetCore.sample(performance.now(), dt);
+      if (NR.NetCore && NR.Net.online) NR.NetCore.sample(g.frameNow || performance.now(), dt);
       this.paintChrome();
     }
   }
@@ -2294,7 +2323,7 @@
     oldToMenu.call(this);
   };
 
-  global.__SYNX_MULTIPLAYER__ = {
+  if ((global.NR || {}).DEV !== false) global.__SYNX_MULTIPLAYER__ = {
     name: 'MULTIPLAYER',
     maxPlayers: MAX_PLAYERS,
     car: CAR.label,

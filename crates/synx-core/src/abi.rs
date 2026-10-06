@@ -93,6 +93,11 @@ veh_layout! {
     AIRBORNE => "airborne", AIR_Y => "airY", AIR_V => "airV", AIR_TIME => "airTime",
     AIR_PITCH => "airPitch", AIR_ROLL => "airRoll", RAMP_PITCH => "rampPitch",
     LANDING => "landing", LANDED => "landed",
+    // read-only: see Vehicle::lag. Never loaded back - it is the solver's own.
+    // Last, and found by name like every other field, so a bridge that has
+    // never heard of it is unaffected and one running a core without it
+    // reads it as absent and draws the car exactly as it always did.
+    LAG => "lag",
 }
 
 #[inline]
@@ -151,6 +156,7 @@ pub(crate) fn store_vehicle(v: &Vehicle, out: &mut [f64]) {
     p(b(v.airborne), &mut i); p(v.air_y, &mut i); p(v.air_v, &mut i); p(v.air_time, &mut i);
     p(v.air_pitch, &mut i); p(v.air_roll, &mut i); p(v.ramp_pitch, &mut i);
     p(v.landing, &mut i); p(v.landed, &mut i);
+    p(v.lag(), &mut i);
     debug_assert_eq!(i, VEH_STRIDE, "store_vehicle wrote {i} of {VEH_STRIDE} fields");
 }
 
@@ -1344,6 +1350,18 @@ pub extern "C" fn synx_net_collide(local_id: u32, remote_id: u32) -> f64 {
     let (a, b) = (local_id as usize, remote_id as usize);
     if a == b || a >= w.cars.len() || b >= w.cars.len() {
         return 0.0;
+    }
+    // The local car is loaded from its published block first, as
+    // `synx_net_pack_state` does and for the same reason: everything the game
+    // did to it after `synx_veh_update` - a launch or a tow nudging its speed,
+    // FOCUS turning it - is in the block and not yet in the struct. Resolving
+    // against the struct and publishing the result threw that frame's work
+    // away on every contact, and a car that loses its own steering for one
+    // frame each time it is touched is a car that twitches in a pack.
+    let base = a * VEH_STRIDE;
+    if w.veh_state.len() >= base + VEH_STRIDE {
+        let src: Vec<f64> = w.veh_state[base..base + VEH_STRIDE].to_vec();
+        load_vehicle(&mut w.cars[a], &src);
     }
     let remote = w.cars[b].clone();
     let mut local = w.cars[a].clone();

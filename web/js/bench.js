@@ -276,7 +276,7 @@
     /* The budget, labelled - and on a plate, because a caption drawn over a
        hundred bars is a caption nobody can read. Boxed and placed above the
        line rather than on it, at the right where the trace has finished. */
-    cx.font = '600 10px Orbitron, "Segoe UI", sans-serif';
+    cx.font = '12px "Share Tech Mono", ui-monospace, monospace';
     const label = Math.round(1000 / targetMs) + ' FPS';
     const tw = cx.measureText(label).width + 10;
     const ly = Math.max(0, Math.min(h - 15, y - 15));
@@ -760,7 +760,7 @@
      says so rather than pretending; the panel comes down either way so the
      player is not left looking at a report over a game they cannot reach. */
   function leave() {
-    const g = benchGame || global.__nr;
+    const g = benchGame || NR.game;
     const host = NR.Host;
     if (g && g.quitGame) {
       /* THE CARD STAYS UP WHILE IT GOES. quitGame fades to black over about a
@@ -782,7 +782,7 @@
   }
 
   function abort() {
-    const g = global.__nr;
+    const g = NR.game;
     if (g) g.benchDriving = false;
     run = null;
     teardown();

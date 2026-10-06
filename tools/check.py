@@ -1104,7 +1104,95 @@ def check_ramps():
                ' Game.bodyPitch - those cars climb ramps flat' % len(raw))
     else:
         s.ok('no call site composes a body orientation without it')
+
+    # --- and the server's copy --------------------------------------------
+    # The multiplayer server refuses a car that is too far above the road,
+    # except inside a ramp's window, where it allows exactly what the solver
+    # can throw a car to. It holds its own copy of this table to know where
+    # those windows are (synx-server/src/ramps.rs) - and a ramp moved here and
+    # not there is a jump that is refused in mid-air, on every race, with LINK
+    # CORRECTION on the screen of whoever took it.
+    _server_ramps(s, d['ramps'])
     return s.problems
+
+
+def _arith(expr):
+    """The value of a Rust float expression made of literals and + - * / ( )."""
+    import ast
+    tree = ast.parse(expr.replace('_', ''), mode='eval')
+
+    def ev(n):
+        if isinstance(n, ast.Expression):
+            return ev(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return float(n.value)
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub):
+            return -ev(n.operand)
+        if isinstance(n, ast.BinOp):
+            a, b = ev(n.left), ev(n.right)
+            if isinstance(n.op, ast.Add):
+                return a + b
+            if isinstance(n.op, ast.Sub):
+                return a - b
+            if isinstance(n.op, ast.Mult):
+                return a * b
+            if isinstance(n.op, ast.Div):
+                return a / b
+        raise ValueError('not plain arithmetic: ' + expr)
+    return ev(tree)
+
+
+def _server_ramps(s, ramps):
+    """Does the server's ramp table say what COURSE_RAMPS says?
+
+    SKIPPED rather than failed when the server is not checked out, as the wire
+    protocol check is: this repository builds on its own.
+    """
+    src_path = paths.ROOT / 'synx-server' / 'synx-server' / 'src' / 'ramps.rs'
+    if not src_path.is_file():
+        s.note('no server checkout beside this one - its ramp table is not compared')
+        return
+    src = paths.read(src_path)
+    rows = re.findall(
+        r'Ramp\s*\{\s*id:\s*"([^"]+)",\s*foot:\s*([^,]+),\s*end:\s*([^,]+),'
+        r'\s*top:\s*([^,]+),\s*slope:\s*([^,]+),\s*lip:\s*([^,}]+?)\s*\}', src)
+    if not rows:
+        s.fail('synx-server/src/ramps.rs no longer declares RAMPS the way this check reads')
+        return
+    server = {r[0]: [_arith(x) for x in r[1:]] for r in rows}
+    order = [r[0] for r in rows]
+    game_order = [r['id'] for r in ramps]
+    if order != game_order:
+        s.fail('the server lists %s; the game lists %s'
+               % (', '.join(order), ', '.join(game_order)))
+    bad = 0
+    for r in ramps:
+        if r['id'] not in server:
+            s.fail('%s is not in the server\'s table - a jump off it is refused as Altitude'
+                   % r['id'])
+            bad += 1
+            continue
+        # What the server must hold for it, derived the way the solver flies it
+        # (see Ramp in crates/synx-core/src/vehicle.rs): a ramp with a descent
+        # throws nothing, a crested one leaves off its straight top, and a plain
+        # wedge is h*u^2 with a lip slope of 2h/len.
+        if r['drop']:
+            slope = 0.0
+        elif r['crest']:
+            slope = (r['lip'] - r['h']) / r['crest']
+        else:
+            slope = 2.0 * r['h'] / r['len']
+        want = [r['foot'], r['end'], r['lip'], slope, r['s']]
+        names = ('foot', 'end', 'top', 'slope', 'lip')
+        for name, a, b in zip(names, want, server[r['id']]):
+            if abs(a - b) > (1e-4 if name == 'slope' else 0.01):
+                s.fail('%s: the server has %s %.4f, the game %.4f' % (r['id'], name, b, a))
+                bad += 1
+    extra = sorted(set(server) - set(game_order))
+    for x in extra:
+        s.fail('%s is in the server\'s table and not on the course' % x)
+    if not bad and not extra and order == game_order:
+        s.ok('the server\'s altitude windows match all %d ramps' % len(ramps))
 
 
 # ============================================== 9. the Aurora Forge roof ===
@@ -1892,10 +1980,15 @@ def check_ai():
 
 # ================================================== 13. the radio ==========
 
-# What a title can be before the panel has to scroll it, and what it can be
-# before scrolling stops being a courtesy. Measured against the panel's own
-# inner width at the size Hud.radio sets titles in.
+# What a title can be before the NOW PLAYING cue's plate, which is as wide as
+# its title, grows past the map it sits beside. Measured at the size
+# Hud.songCue sets titles in.
 TITLE_MAX = 26
+
+# The broadcast band the cue prints a station's frequency in ("SYNX FM 90.1").
+# There is no tuner dial on screen any more to bound it; a frequency outside
+# the band a real FM radio covers would read as a typo.
+FM_LO, FM_HI = 87.5, 108.0
 
 
 def check_radio():
@@ -1910,15 +2003,15 @@ def check_radio():
       broken and the selector quietly skips it for the rest of the session. The
       station simply never comes on.
 
-      TWO STATIONS ON ONE FREQUENCY, or one outside the dial the HUD draws. The
-      needle lands on the wrong tick or off the end of the scale.
+      TWO STATIONS ON ONE FREQUENCY, or one outside the FM band the cue prints
+      it in. Two songs announce themselves as the same station.
 
       AN ENVIRONMENT WITH ONE USABLE SONG. `_pickRadio` is asked for a track
       that is neither the one on the fader nor the one before it, and with one
       candidate that is unsatisfiable - so the rule that stops a route
       repeating the same song falls back to allowing exactly that.
 
-      A PANEL THAT KNOWS THE ANSWERS. The moment Hud.radio contains a title or
+      A CUE THAT KNOWS THE ANSWERS. The moment Hud.songCue contains a title or
       a frequency of its own it is a second copy of this table, and the two
       drift on the first edit.
     """
@@ -1958,29 +2051,23 @@ def check_radio():
     if not s.problems:
         s.ok('every track is an entry in %s' % paths.rel(paths.PAK))
 
-    # --- the dial ---------------------------------------------------------
+    # --- the band ---------------------------------------------------------
     hud = paths.read(paths.JS / 'hud.js')
-    m = re.search(r'const RAD_LO = ([\d.]+), RAD_HI = ([\d.]+);', hud)
-    if not m:
-        s.fail('js/hud.js no longer declares the tuner scale, so nothing can check'
-               ' the frequencies against it')
-    else:
-        lo, hi = float(m.group(1)), float(m.group(2))
-        before = s.problems
-        seen = {}
-        for t in sorted(radio, key=lambda t: t['freq']):
-            f = t['freq']
-            if f in seen:
-                s.fail('%s and %s are both on %.1f' % (seen[f], t['key'], f))
-            seen[f] = t['key']
-            if not (lo < f < hi):
-                s.fail('%s is on %.1f, which is outside the %.1f..%.1f dial the panel'
-                       ' draws - its needle would sit off the end of the scale'
-                       % (t['key'], f, lo, hi))
-        if s.problems == before:
-            s.ok('%d stations from %.1f to %.1f on a %.1f..%.1f dial'
-                 % (len(radio), min(t['freq'] for t in radio),
-                    max(t['freq'] for t in radio), lo, hi))
+    lo, hi = FM_LO, FM_HI
+    before = s.problems
+    seen = {}
+    for t in sorted(radio, key=lambda t: t['freq']):
+        f = t['freq']
+        if f in seen:
+            s.fail('%s and %s are both on %.1f' % (seen[f], t['key'], f))
+        seen[f] = t['key']
+        if not (lo <= f <= hi):
+            s.fail('%s is on %.1f, which is outside the %.1f..%.1f FM band the'
+                   ' cue announces it in' % (t['key'], f, lo, hi))
+    if s.problems == before:
+        s.ok('%d stations from %.1f to %.1f, all inside the %.1f..%.1f FM band'
+             % (len(radio), min(t['freq'] for t in radio),
+                max(t['freq'] for t in radio), lo, hi))
 
     # --- no environment is left with one song ----------------------------
     envs = sorted({e for t in radio for e in (t['environments'] or [])})
@@ -1999,23 +2086,23 @@ def check_radio():
     if envs and not s.problems:
         s.ok('every environment has a primary and an alternate')
 
-    # --- the panel asks rather than knows --------------------------------
-    body = re.search(r'\n    radio\(g\) \{([\s\S]*?)\n    \}\n', hud)
+    # --- the cue asks rather than knows ----------------------------------
+    body = re.search(r'\n    songCue\(g\) \{([\s\S]*?)\n    \}\n', hud)
     if not body:
-        s.fail('Hud.radio is gone, so the panel is not being drawn any more')
+        s.fail('Hud.songCue is gone, so nothing announces a new song any more')
     else:
         text = body.group(1)
         if 'a.nowPlaying()' not in text:
-            s.fail('Hud.radio no longer asks the mixer what is playing')
+            s.fail('Hud.songCue no longer asks the mixer what is playing')
         for t in tracks:
             if t['title'] and ("'" + t['title'] + "'") in text:
-                s.fail('Hud.radio has "%s" written into it - that is a second copy of'
+                s.fail('Hud.songCue has "%s" written into it - that is a second copy of'
                        ' the soundtrack table and the two will drift' % t['title'])
         for t in radio:
             if re.search(r'\b%s\b' % re.escape('%.1f' % t['freq']), text):
-                s.fail('Hud.radio has the frequency %.1f written into it' % t['freq'])
+                s.fail('Hud.songCue has the frequency %.1f written into it' % t['freq'])
         if not s.problems:
-            s.ok('the panel reads the mixer and holds no copy of the table')
+            s.ok('the cue reads the mixer and holds no copy of the table')
 
     # --- and the tap on the music is a dead end --------------------------
     # An AnalyserNode with nothing connected to its output still analyses
@@ -2032,7 +2119,79 @@ def check_radio():
         s.ok('the level meter taps the music bus without re-entering it')
     return s.problems
 
+def check_production():
+    """Does a shipped build carry no inspector, no debugging port and no hooks?
+
+    A webview is a browser underneath, and every way into a browser that a
+    developer wants - the inspector, a remote debugging port, the game's
+    internals hung on `window` - is a way into the game a player should not
+    have. All of them are now development-only, and this keeps them that way:
+    each rule below is one that a single careless line would quietly undo.
+    """
+    s = Section('production build')
+    bad0 = s.problems
+
+    # --- the page: the guard runs first, and decides once -------------------
+    for page in ('index.html', 'launcher.html'):
+        srcs = re.findall(r'<script\b[^>]*\bsrc="([^"?]+)', paths.read(paths.WEB / page))
+        if not srcs or srcs[0] != 'js/guard.js':
+            s.fail('%s: js/guard.js is not the first script (first is %s) - anything before'
+                   ' it runs before the page knows whether it is a shipped build'
+                   % (page, srcs[0] if srcs else 'nothing'))
+
+    # --- nothing hung on window by name, except in a development session ----
+    # `window.__x = ...` / `global.__x = ...`, on a line that is not gated on
+    # NR.DEV (or on the load table's own flag, which is derived from it).
+    hang = re.compile(r'\b(?:global|window)\.(__[A-Za-z0-9_]+)\s*=(?!=)')
+    hooks = 0
+    for f in sorted(paths.JS.glob('*.js')):
+        if f.name == 'guard.js':
+            continue
+        for n, line in enumerate(paths.read(f).replace('\r\n', '\n').split('\n'), 1):
+            code = line.split('//')[0]
+            for m in hang.finditer(code):
+                hooks += 1
+                if 'DEV' not in code and 'devLoad' not in code:
+                    s.fail('%s:%d puts %s on window in EVERY build - gate it on NR.DEV'
+                           % (f.name, n, m.group(1)))
+        # ...and nothing takes instructions from its own address in production
+        text = paths.read(f)
+        for m in re.finditer(r'location\.search|URLSearchParams', text):
+            before = text[max(0, m.start() - 400):m.start()]
+            if 'DEV' not in before:
+                line = text.count('\n', 0, m.start()) + 1
+                s.fail('%s:%d reads the URL query without asking NR.DEV first' % (f.name, line))
+
+    # --- the host -------------------------------------------------------------
+    cargo = paths.read(paths.SRC_TAURI / 'Cargo.toml')
+    tauri_line = re.search(r'^tauri\s*=.*$', cargo, re.M)
+    if not tauri_line or 'devtools' in tauri_line.group(0):
+        s.fail("src-tauri/Cargo.toml: tauri's `devtools` feature is on - a release build ships an inspector")
+    plat = paths.read(paths.SRC_TAURI / 'src' / 'platform.rs')
+    read = plat.find('std::env::var("SYNX_DEBUG_PORT")')
+    if read < 0 or '#[cfg(any(debug_assertions, feature = "harness"))]' not in plat[max(0, read - 200):read]:
+        s.fail('platform.rs: SYNX_DEBUG_PORT is read in a production build - anybody can open a debugging port')
+    main = paths.read(paths.SRC_TAURI / 'src' / 'main.rs')
+    builders = len(re.findall(r'WebviewWindowBuilder::new\(', main))
+    explicit = len(re.findall(r'\.devtools\(cfg!\(debug_assertions\)\)', main))
+    if explicit < builders:
+        s.fail('main.rs: %d window(s) built, %d with devtools tied to the debug build' % (builders, explicit))
+    top = re.search(r'fn main\(\) \{(.{0,400})', main, re.S)
+    if not top or 'platform::lock_down()' not in top.group(1):
+        s.fail('main.rs: platform::lock_down is not the first thing main does - a webview can be'
+               ' created with a debugging switch still in the environment')
+    for m in re.finditer(r'initialization_script\(', main):
+        if '#[cfg(any(debug_assertions, feature = "harness"))]' not in main[max(0, m.start() - 300):m.start()]:
+            s.fail('main.rs: an initialization script is injected in production builds')
+
+    if s.problems == bad0:
+        s.ok('the guard is first on both pages; %d window hook(s), every one development-only' % hooks)
+        s.ok('the host: no inspector, no debugging port, no environment switch, on %d window(s)' % builders)
+    return s.problems - bad0
+
+
 CHECKS = [
+    ('production', check_production, False),
     ('shaders', check_shaders, False),
     ('dom', check_dom, False),
     ('protocol', check_protocol, False),

@@ -597,7 +597,7 @@
 
   /* What the harnesses assert against, in the shape the other chapters
      publish theirs. */
-  global.__SYNX_FREEROAM__ = {
+  if ((global.NR || {}).DEV !== false) global.__SYNX_FREEROAM__ = {
     name: 'FREE ROAM',
     prefKey: PREF_KEY,
     recordKey: 'synx.freeroam.record.v1',

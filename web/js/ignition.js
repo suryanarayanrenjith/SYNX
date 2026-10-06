@@ -171,6 +171,10 @@
   const HOLD_BEAT = 620, MAX_MS = 12000;
 
   let rpm = 0, shownRpm = 0, shake = 0, flash = 0;
+  /* The selector's box: where it is drawn (a float, sliding between slots),
+     the gear it last settled on, when that changed, and the last frame's
+     clock so the slide is the same speed at any frame rate. */
+  let gearPos = null, gearWas = -1, shiftAt = 0, lastFrame = 0;
   let audio = null;
 
   /* ------------------------------------------------------------- audio --
@@ -308,7 +312,7 @@
        modules as hard as it caches anything, and a new engine behind an old
        URL is the old engine. */
     rig.fallback = makeFallback(ctx, master);
-    global.__ignRig = 0;
+    if ((global.NR || {}).DEV !== false) global.__ignRig = 0;
     if (ctx.audioWorklet && ctx.audioWorklet.addModule) {
       ctx.audioWorklet.addModule('js/engine-worklet.js?v=v8-2').then(() => {
         if (!rig.ctx || rig.ctx.state === 'closed') return;
@@ -321,7 +325,7 @@
         if (rig.fallback && rig.fallback.mute) rig.fallback.mute();
         rig.node = node;
         // so the harness can tell a worklet run from a fallback one
-        global.__ignRig = 1;
+        if ((global.NR || {}).DEV !== false) global.__ignRig = 1;
       }).catch(() => { /* the fallback is already playing; leave it alone */ });
     }
     return rig;
@@ -403,83 +407,97 @@
    * an end, and the only branch in it is the hold at the end that waits for
    * the loading.
    */
+  /* THE SELECTOR AND THE NEEDLE ARE ONE PERFORMANCE.
+   *
+   * The script used to return the revs alone, and the frame loop picked the
+   * gear off a clock of its own: Park, then Neutral from the catch, then
+   * first a beat into the outro. So the needle climbed and fell three times
+   * and then pinned the limiter while the selector sat in N, and the box went
+   * into gear as the revs were FALLING - the instrument saying one thing and
+   * the gearbox beside it another, which is exactly what was reported.
+   *
+   * Now every moment of the script names its gear, so the two cannot drift.
+   * Park for the self-test and the starter, Neutral when it catches, Drive as
+   * the box takes up the load (the revs dip as it does), and then the needle
+   * only ever climbs IN a gear and only ever drops BECAUSE of one: first,
+   * second, third, each pull a little longer as a taller ratio would be, each
+   * drop the step an upshift really is - down to where the next ratio picks
+   * the engine up, not back to idle. The third pull ends on the limiter, and
+   * the outro is one more upshift (see frame). Indices into GEARS. */
+  const G_P = 0, G_N = 2, G_D = 3, G_1 = 4, G_2 = 5, G_3 = 6, G_4 = 7;
+  /* Each pull: the gear it is in, when it starts, the revs it starts from and
+     reaches, and how long it takes. A shift is SHIFT_S long and happens at the
+     end of every pull but the last; the next pull starts where it lands. */
+  const PULLS = [
+    { gear: G_1, at: 2.80, from: 820, peak: 5900, up: 0.44 },
+    { gear: G_2, at: 3.36, from: 3700, peak: 6900, up: 0.52 },
+    { gear: G_3, at: 4.00, from: 4700, peak: LIMITER, up: 0.80 },
+  ];
+  const SHIFT_S = 0.12;
+  /* An engine pulling in gear: quick off the bottom of a ratio, slowing as it
+     nears the top of it - not the symmetric ease of a free-revving blip. */
+  function pull(k) {
+    k = Math.max(0, Math.min(1, k));
+    return 1 - Math.pow(1 - k, 1.55);
+  }
+
   function script(t) {
     // [0.00 .. 0.90]  the sweep: needle to the stop and back, dial self-test
-    if (t < 0.45) return { rpm: RPM_MAX * ease(t / 0.45), load: 0, crank: 0, live: false };
-    if (t < 0.95) return { rpm: RPM_MAX * (1 - ease((t - 0.45) / 0.5)), load: 0, crank: 0, live: false };
+    if (t < 0.45) return { rpm: RPM_MAX * ease(t / 0.45), load: 0, crank: 0, live: false, gear: G_P };
+    if (t < 0.95) return { rpm: RPM_MAX * (1 - ease((t - 0.45) / 0.5)), load: 0, crank: 0, live: false, gear: G_P };
     // [0.95 .. 1.75]  the starter turning it over
     if (t < 1.75) {
       const k = (t - 0.95) / 0.8;
       const chug = Math.sin(t * 44) * 0.5 + 0.5;
-      return { rpm: 180 + chug * 190 * k, load: 0, crank: 0.3 + k * 0.7, live: false };
+      return { rpm: 180 + chug * 190 * k, load: 0, crank: 0.3 + k * 0.7, live: false, gear: G_P };
     }
-    // [1.75 .. 2.35]  it catches, overshoots, and settles
+    // [1.75 .. 2.35]  it catches, overshoots, and settles - out of Park
     if (t < 2.35) {
       const k = (t - 1.75) / 0.6;
       const flare = Math.sin(Math.PI * Math.min(1, k * 1.4)) * 1750;
       /* ...and the first few firings are the loudest thing the engine does
          until the limiter: a cold V8 catches on a rich charge and barks. */
       const bark = Math.max(0, 1 - k * 1.15);
-      return { rpm: 900 + flare * (1 - k * 0.55), load: 0.95 * Math.pow(bark, 1.4), crank: 0, live: true };
+      return { rpm: 900 + flare * (1 - k * 0.55), load: 0.95 * Math.pow(bark, 1.4), crank: 0, live: true, gear: G_N };
     }
-    // ...and from here on it is idling unless something says otherwise
-    const idle = () => 900 + Math.sin(t * 9.3) * 32 + Math.sin(t * 23.7) * 14;
+    const idle = 900 + Math.sin(t * 9.3) * 32 + Math.sin(t * 23.7) * 14;
+    // [2.35 .. 2.55]  idling in neutral
+    if (t < 2.55) return { rpm: idle, load: 0, crank: 0, live: true, gear: G_N };
+    /* [2.55 .. 2.80]  into Drive. The box takes up the load and the idle dips
+       under it - the clunk every automatic makes - before the first pull. */
+    if (t < PULLS[0].at) {
+      const k = Math.min(1, (t - 2.55) / 0.08);
+      return { rpm: idle - 90 * k, load: 0.18, crank: 0, live: true, gear: G_D };
+    }
 
-    /* THE THREE BLIPS. Each is a rise and a fall, and the fall is slower than
-       the rise - an engine accelerates against its own inertia and decelerates
-       against nothing but friction, and getting that backwards is the single
-       most obvious way to make a rev sound synthetic. */
-    /* TIGHTENED, because it can no longer be skipped.
-       Every one of these is a third of a second earlier than it was and the
-       falls are a little quicker. It is the same performance - three blips,
-       each harder than the last, the third off the limiter - and it reaches
-       its hold half a second sooner, which on a machine that has already
-       finished loading is half a second of a screen nobody can leave. */
-    const BLIP = [
-      { at: 2.35, up: 0.30, down: 0.44, peak: 4300 },
-      { at: 3.15, up: 0.26, down: 0.48, peak: 6400 },
-      { at: 3.95, up: 0.30, down: 0.52, peak: LIMITER },
-    ];
-    for (const b of BLIP) {
-      if (t < b.at) break;
-      if (t < b.at + b.up + b.down) {
-        const base = idle();
-        if (t < b.at + b.up) {
-          const k = (t - b.at) / b.up;
-          return { rpm: base + (b.peak - base) * ease(k), load: 1, crank: 0, live: true };
-        }
-        const k = (t - b.at - b.up) / b.down;
-        /* ...and off the limiter on the way. A limiter does not hold a needle
-           still, it cuts the ignition and lets it fall a hundred revs and
-           catches it again, twelve or fifteen times a second. */
-        const bounce = (b.peak >= LIMITER && k < 0.22) ? Math.abs(Math.sin(t * 82)) * 340 : 0;
+    for (let i = 0; i < PULLS.length; i++) {
+      const p = PULLS[i];
+      const last = i === PULLS.length - 1;
+      const top = p.at + p.up;
+      if (t < top || last) {
+        const k = (t - p.at) / p.up;
+        const rpm = p.from + (p.peak - p.from) * pull(k);
+        if (!last) return { rpm, load: 1, crank: 0, live: true, gear: p.gear };
+        /* THE LAST PULL ends on the limiter, and a limiter does not hold a
+           needle still: it cuts the ignition and lets it fall a few hundred
+           revs and catches it again, twelve or fifteen times a second.
+           `holding` tells the frame loop the script has arrived; HOLD_BEAT is
+           how long it may sit there before the outro takes it. */
+        const on = k >= 1;
+        const bounce = on ? Math.abs(Math.sin(t * 78)) * 380 : 0;
+        return { rpm: rpm - bounce, load: 1, crank: 0, live: true, gear: p.gear, holding: on };
+      }
+      // the upshift: off the top of this ratio, down to where the next one lands
+      if (t < top + SHIFT_S) {
+        const k = (t - top) / SHIFT_S;
+        const next = PULLS[i + 1];
         return {
-          rpm: b.peak - bounce - (b.peak - base) * ease(k),
-          load: k < 0.22 ? 1 : 0,
-          crank: 0, live: true,
+          rpm: p.peak + (next.from - p.peak) * ease(k),
+          load: 0.25, crank: 0, live: true, gear: next.gear,
         };
       }
     }
-
-    /* THE PULL. The last movement, and it is on a clock now.
-     *
-     * It used to be the one part of this that was NOT: the engine went to the
-     * limiter and stayed there, bouncing, until the game said it had finished
-     * loading. That was the right shape for a loading screen and it is the
-     * wrong shape for a cold open - a machine that had already loaded sat on
-     * the limiter anyway waiting for a floor to pass, and a slow one sat on it
-     * for twenty seconds, which is not a performance, it is a wait with a
-     * noise over it.
-     *
-     * The load is finished before this screen is ever shown now (see
-     * js/preload.js), so the last movement can do what it was always trying
-     * to: one hard pull to the stop, a beat of it bouncing off the cut, and
-     * then the outro takes it. `holding` is what tells the frame loop the
-     * script has arrived; HOLD_BEAT is how long it is allowed to sit there. */
-    const k = Math.min(1, (t - 4.80) / 0.52);
-    const held = 2200 + (LIMITER - 2200) * ease(Math.max(0, k));
-    const bounce = k >= 1 ? Math.abs(Math.sin(t * 78)) * 380 : 0;
-    return { rpm: held - bounce, load: 1, crank: 0, live: true, holding: k >= 1 };
+    return { rpm: idle, load: 0, crank: 0, live: true, gear: G_N };
   }
 
   function ease(k) {
@@ -489,22 +507,43 @@
 
   /* --------------------------------------------------------- the drawing --
    *
-   * WHAT IS CACHED AND WHAT IS NOT, which is the whole performance story.
+   * THE CLUSTER, AFTER THE REFERENCE.
    *
-   * The INSTRUMENT is drawn once into a square offscreen canvas and blitted:
-   * the bezel, the dish, the glass, forty-one ticks, eleven numerals and the
-   * empty progress track. It matters here more than anywhere else in the game,
-   * because this screen shares its thread with the thing it is covering the
-   * wait for - every millisecond spent re-rasterising a numeral that has not
-   * changed is a millisecond the course is not being built in, and the tick
-   * loop alone was forty-one passes through `glow`, which is three stroked
-   * paths with a shadow blur on each, sixty times a second.
+   * The art direction for this screen is an instrument cluster: a deep blue
+   * glass dial in the middle with white figures and a red needle, a ring of
+   * orange light round it that blooms where a low sun would catch it, and
+   * cyan instrument arcs either side - a column of figures on the left, the
+   * gear selector on the right. This used to be a single violet tachometer on
+   * a dark floor, which said "a gauge"; the cluster says "a car, waking up".
    *
-   * Everything else is live, and deliberately: the ground is three gradient
-   * fills, the floor is two stroked paths, the wordmark is two fillTexts and
-   * the frame is one. None of them is worth a second full-screen bitmap held
-   * at the moment the process is already holding the archive, the blobs cut
-   * out of it and the canvas that bitmap would be a copy of. See dialFace.
+   * EVERY PART OF IT IS DOING SOMETHING, because a cold open that is only
+   * decoration is a screen people wait through.
+   *
+   *   THE DIAL       the revs - the same script, the same needle with mass,
+   *                  the same two warning lamps as before.
+   *   THE RING       the engine. Cold and dim while the dial self-tests and
+   *                  the starter turns, it LIGHTS on the frame the engine
+   *                  catches and then breathes with the revs, white-hot at the
+   *                  limiter. It is the brightest thing on the screen exactly
+   *                  when the engine is the loudest.
+   *   BOOST, LEFT    the reserve arming - it fills across the crank and the
+   *                  catch the way the progress ring used to, and then rides
+   *                  the throttle, so it reads as pressure building.
+   *   GEAR, RIGHT    the selector: P through the self-test, N once the engine
+   *                  is running, and it drops into first on the outro - the
+   *                  last thing that happens before the cut is the car being
+   *                  put in gear.
+   *
+   * WHAT IS CACHED AND WHAT IS NOT. Three layers are painted once per window
+   * size - the ROOM (ground, glows, the floor's fixed rays), the CLUSTER (the
+   * dial face, its ticks and figures, both side gauges and every line and
+   * label on them) and the RING with all of its bloom - and each is one
+   * drawImage a frame. What moves is drawn live and drawn cheaply: the needle
+   * is a sprite rotated into place, the flares are sprites whose opacity
+   * rides the revs, the boost column is sixteen short strokes and the gear is
+   * one box. There is no shadow blur anywhere on the live path, which on the
+   * integrated graphics this game is most often played on is the difference
+   * between this screen running at the display's rate and not.
    */
 
   /** Device pixels per CSS pixel, capped - a 4K loading screen is not worth it. */
@@ -518,113 +557,43 @@
     cv.style.width = w + 'px';
     cv.style.height = h + 'px';
     cx.setTransform(d, 0, 0, d, 0, 0);
-    // the cached instrument is sized off the dial's radius, which just moved
-    dialFace = null;
+    // every cached layer is sized off the dial's radius, which just moved
+    cache = null;
   }
 
   /* ------------------------------------------------------- the geometry --
    *
-   * One function, so the live layer and the cached layer cannot disagree about
-   * where the dial is. Everything on this screen is placed off `L`.
-   */
-  /* ONE COORDINATE SYSTEM, AND EVERYTHING HUNG OFF THE DIAL.
-   *
-   * This screen was laid out twice. The dial, its ring and the outro stamp
-   * were positioned off the INSTRUMENT - `cy + r * 1.60` and the like - while
-   * the wordmark, the caption, the rail and the count were positioned off the
-   * FRAME, as fractions of its height. Those two agree at exactly one aspect
-   * ratio and drift apart everywhere else.
-   *
-   * On a 2:1 window they collided outright: `r` is clamped by height, so the
-   * stamp landed at y = 564 and the rail sat at y = 565, and the last thing
-   * the player saw before the game opened was SYSTEMS NOMINAL printed straight
-   * through the progress bar with the caption of the same name a row above it.
-   *
-   * So the block under the instrument is now stacked from the bottom of the
-   * BEZEL downward, in units of the dial's own radius. The gaps are fixed
-   * proportions of the thing they sit under, which is what keeps them apart at
-   * any shape of window - and `stampY` is in the table with the rest of them
-   * rather than being computed at the point of use.
+   * ONE COORDINATE SYSTEM, AND EVERYTHING HUNG OFF THE DIAL. Every part of
+   * the cluster is placed in units of the dial's radius from its centre, and
+   * the two lines under it - the name and what the machine is doing - are
+   * stacked from the bottom of the ring downward, so nothing can collide with
+   * anything at any shape of window. (It used to be laid out twice, once off
+   * the instrument and once off the frame, and the two agreed at exactly one
+   * aspect ratio.)
    */
   function layout(w, h) {
-    /* Height-limited at 0.265 rather than 0.30. The progress RING reaches
-       1.34 radii, so at 0.30 the instrument owned down to 82% of a 2:1 window
-       and the four lines under it had a tenth of the screen to share - which
-       is how they ended up on top of each other. */
-    const r = Math.min(w * 0.30, h * 0.265);
+    /* The side gauges reach 1.70 radii either side and the ring's bloom 1.35
+       above and below, so the dial is limited by both axes. */
+    const R = Math.max(48, Math.min(w * 0.155, h * 0.235));
     const cy = h * 0.42;
-    const ring = r * 1.34;
-    /* The first line clears the progress ring, not just the bezel - the ring
-       is the outermost thing the instrument draws and the wordmark used to be
-       laid over the bottom of it. */
-    const top = cy + ring + Math.max(14, r * 0.10);
-    const step = Math.max(13, r * 0.115);
-    /* THE STACK IS MEASURED OFF THE NAME, not off a step the name ignores.
-       The wordmark is sized by the frame and every line under it was placed in
-       steps of the dial, so at 1920x1080 the caption's line ran two pixels
-       inside the bottom of the letters: SYSTEMS NOMINAL printed on the SYNX
-       it is supposed to sit under. Each line now starts where the thing above
-       it ENDS.
-       ...and in the preloader's order, which this screen dissolves out of:
-       the name, the rail, and under the rail one row with what is happening
-       on the left and how far along on the right. The two screens used to
-       set the same four things in two different arrangements. */
-    const size = markSize(w, r);
-    const markY = top + size * 0.5;
-    const railY = markY + size * 0.5 + step * 1.05;
-    const capY = railY + Math.max(12, step * 0.58);
-    const detailY = capY + Math.max(12, step * 0.58);
-    /* ...and if the window is short enough that the stack would run off the
-       bottom, the whole block slides up rather than falling off the screen. */
-    const lastY = detailY + step * 0.4;
-    const lift = Math.max(0, lastY - h * 0.965);
+    const size = markSize(w, R);
+    const markY = cy + R * 1.52 + size * 0.5;
+    const capY = markY + size * 0.5 + Math.max(16, R * 0.11);
+    const lift = Math.max(0, capY + 14 - h * 0.965);
     return {
-      w, h, r,
+      w, h, R,
+      r: R,                       // the old name, for anything that reads it
       cx: w * 0.5,
-      cy,
-      ring,                    // the progress arc, outside the bezel
+      cy: cy - lift * 0.5,
       markSize: size,
-      markY: markY - lift,     // the wordmark
-      railY: railY - lift,     // the bar
-      railW: Math.min(w * 0.74, 560),
-      capY: capY - lift,       // what is being worked on, and how far along
-      detailY: detailY - lift, // the count, when a phase has one
-      /* The outro stamp REPLACES the rail and the row under it - by the time
-         it lands the bar is at a hundred per cent and has nothing left to say
-         - so it sits across the two rather than looking for a line of its own.
-         See the fade in `progress`. */
-      stampY: (railY + capY) * 0.5 - lift,
+      markY: markY - lift,
+      capY: capY - lift,
+      stampY: capY - lift,
     };
   }
 
-  /** How big the name is under the dial: a tenth-ish of the frame, and never
-      bigger than the dial can carry. One function, because the layout has to
-      know it to stack the lines under it. */
-  function markSize(w, r) { return Math.max(16, Math.min(w * 0.042, r * 0.30)); }
-
-  /** A stroked path drawn three times, wide and faint to thin and bright.
-      Canvas has no bloom; three passes and a shadow is what it has instead,
-      and it is the difference between a neon line and a coloured one. */
-  function glow(c, colour, width, alpha, path) {
-    const passes = [[width * 3.4, alpha * 0.12], [width * 1.9, alpha * 0.22], [width, alpha]];
-    c.lineCap = 'round';
-    c.lineJoin = 'round';
-    for (const [w, a] of passes) {
-      c.save();
-      c.globalAlpha = a;
-      c.strokeStyle = colour;
-      c.lineWidth = w;
-      c.shadowColor = colour;
-      c.shadowBlur = w * 2.2;
-      path(c);
-      c.stroke();
-      c.restore();
-    }
-  }
-
-  function arcPath(r, from, to) {
-    return (c) => { c.beginPath(); c.arc(0, 0, r, from, to); };
-  }
+  /** How big the name is under the dial. */
+  function markSize(w, R) { return Math.max(16, Math.min(w * 0.036, R * 0.26)); }
 
   /** Where a rev value sits on the scale, in radians. */
   function aOf(v) {
@@ -633,40 +602,77 @@
 
   const font = (px, weight) =>
     (weight || 600) + ' ' + Math.round(px) + 'px Orbitron, "Segoe UI", sans-serif';
-
-  /* ------------------------------------------------------ the cached half */
-
-  /** The side of the cached square, in CSS pixels. */
-  function dialSide(L) { return L.r * 2 * DIAL_PAD; }
-
-  function buildDial(L) {
-    const d = dpr();
-    const side = dialSide(L);
-    if (!dialFace) dialFace = doc.createElement('canvas');
-    dialFace.width = Math.max(1, Math.round(side * d));
-    dialFace.height = Math.max(1, Math.round(side * d));
-    const c = dialFace.getContext('2d');
-    if (!c) { dialFace = null; return; }
-    c.setTransform(d, 0, 0, d, 0, 0);
-    c.clearRect(0, 0, side, side);
-    c.translate(side / 2, side / 2);
-    bezel(c, L);
-    scale(c, L);
-    dialR = L.r;
+  /* The instrument face. The in-game cluster (js/hud.js, FACE) sets its
+     figures in Orbitron's black and its legends in Orbitron's semibold,
+     tracked - the site's display face at its two jobs - so the two
+     instruments read as the same car. */
+  const ORB = 'Orbitron, Rajdhani, "Segoe UI", sans-serif';
+  const num = (px, w) => ((w || 800) >= 800 ? '900 ' : '600 ') + Math.round(px) + 'px ' + ORB;
+  const lab = (px) => '600 ' + Math.round(px) + 'px ' + ORB;
+  /* Orbitron's figures are proportional - a '1' is under half an '8' - so a
+     readout that changes is set in cells as wide as the widest figure, each
+     figure centred in its own: the tabular setting the face does not have. */
+  function fillTabular(c, txt, cx, cy) {
+    let cell = 0;
+    for (let d = 0; d <= 9; d++) cell = Math.max(cell, c.measureText(String(d)).width);
+    const align = c.textAlign;
+    c.textAlign = 'center';
+    const x0 = cx - (cell * txt.length) / 2 + cell / 2;
+    for (let i = 0; i < txt.length; i++) c.fillText(txt.charAt(i), x0 + i * cell, cy);
+    c.textAlign = align;
   }
 
-  /* The place the dial is standing in. A flat black rectangle is not a place;
-     a horizon with a grid running off it is, and it is four strokes. */
-  function ground(c, L) {
-    const w = L.w, h = L.h;
-    /* THE PRELOADER'S ROOM, because this screen is what the preloader
-       dissolves INTO: the same base, the same violet wash high in the middle
-       and the same magenta coming up off the horizon (see #preload::before in
-       index.html, which is where these numbers come from). It used to have a
-       palette of its own - a lighter centre and a magenta and a cyan pooled
-       in the two top corners - so the dissolve crossed from one room into a
-       different one, and the opening read as two programs in a row. */
-    c.fillStyle = '#04010c';
+  /* The side gauges, as angles in radians and radii in dial radii. Both run
+     from their BOTTOM end to their TOP end. */
+  const BOOST_A = [Math.PI * (139 / 180), Math.PI * (221 / 180)];
+  const GEAR_A = [Math.PI * (41 / 180), Math.PI * (-41 / 180)];
+  const GEARS = ['P', 'R', 'N', 'D', '1', '2', '3', '4', '5', '6'];
+  const SIDE = { num: 1.40, arc: 1.52, dash: 1.585, outer: 1.68 };
+  const RING_R = 1.18;
+  /* Orange into red round the ring, hottest at the lower right where the
+     flare sits - by angle, clockwise from the right. */
+  const RING_RAMP = [
+    [0 / 360, '#ff7a1c'], [40 / 360, '#ffd07a'], [95 / 360, '#ff4a1a'],
+    [180 / 360, '#d4122e'], [230 / 360, '#a80c34'], [275 / 360, '#ff3a1e'],
+    [320 / 360, '#ff6a1c'], [1, '#ff7a1c'],
+  ];
+
+  /* The layers, built on first use and thrown away on a resize. */
+  let cache = null;
+
+  function surface(wCss, hCss) {
+    const d = dpr();
+    const s = doc.createElement('canvas');
+    s.width = Math.max(1, Math.ceil(wCss * d));
+    s.height = Math.max(1, Math.ceil(hCss * d));
+    const c = s.getContext('2d');
+    if (!c) return null;
+    c.setTransform(d, 0, 0, d, 0, 0);
+    return { cv: s, c, w: wCss, h: hCss };
+  }
+
+  function ensureCache(L) {
+    const key = L.w + 'x' + L.h + '@' + dpr();
+    if (cache && cache.key === key) return cache;
+    cache = { key };
+    cache.room = buildRoom(L);
+    cache.cluster = buildCluster(L);
+    cache.ring = buildRing(L);
+    cache.needle = buildNeedle(L);
+    cache.flare = buildFlare(L, 'warm');
+    cache.glint = buildFlare(L, 'cool');
+    return cache;
+  }
+
+  /* THE ROOM - the preloader's, so the dissolve from it is one continuous
+     picture: the same base, the same magenta coming up off the horizon, with
+     a blue pool behind the dial (the dial's own light on the air) and the
+     floor's rays, which never move. */
+  function buildRoom(L) {
+    const S = surface(L.w, L.h);
+    if (!S) return null;
+    const c = S.c, w = L.w, h = L.h;
+    c.fillStyle = '#03010a';
     c.fillRect(0, 0, w, h);
     const ellipse = (x, y, rx, ry, stops) => {
       c.save();
@@ -678,164 +684,356 @@
       c.fillRect(-x / rx, -y / ry, w / rx, h / ry);
       c.restore();
     };
-    /* magenta up off the horizon, then violet high in the middle - the CSS's
-       `ellipse 120% 70% at 50% 108%` and `ellipse 90% 60% at 50% 34%`, whose
-       sizes are the two RADII as fractions of the frame */
     ellipse(w * 0.5, h * 1.08, w * 1.2, h * 0.7,
-      [[0, 'rgba(255,46,136,0.30)'], [0.6, 'rgba(255,46,136,0)'], [1, 'rgba(255,46,136,0)']]);
-    ellipse(w * 0.5, h * 0.34, w * 0.9, h * 0.6,
-      [[0, 'rgba(90,40,190,0.28)'], [0.7, 'rgba(90,40,190,0)'], [1, 'rgba(90,40,190,0)']]);
-
-    // the verticals of the floor, which never move
-    const hz = h * 0.74;
+      [[0, 'rgba(255,46,136,0.24)'], [0.6, 'rgba(255,46,136,0)'], [1, 'rgba(255,46,136,0)']]);
+    ellipse(L.cx, L.cy, L.R * 2.6, L.R * 2.0,
+      [[0, 'rgba(40,70,235,0.30)'], [0.45, 'rgba(60,40,200,0.12)'], [1, 'rgba(60,40,200,0)']]);
+    ellipse(L.cx + L.R * 1.1, L.cy + L.R * 0.9, L.R * 1.6, L.R * 1.1,
+      [[0, 'rgba(255,90,30,0.10)'], [1, 'rgba(255,90,30,0)']]);
+    const hz = h * 0.78;
     c.save();
-    c.globalAlpha = 0.26;
+    c.globalAlpha = 0.20;
     c.strokeStyle = '#6a2bff';
     c.lineWidth = 1;
     c.beginPath();
-    for (let i = -14; i <= 14; i++) {
-      c.moveTo(w * 0.5 + i * w * 0.055, hz);
-      c.lineTo(w * 0.5 + i * w * 0.42, h + 2);
+    for (let i = -16; i <= 16; i++) {
+      c.moveTo(w * 0.5 + i * w * 0.05, hz);
+      c.lineTo(w * 0.5 + i * w * 0.40, h + 2);
     }
     c.stroke();
+    // the horizon itself, one faint lit line
+    const hl = c.createLinearGradient(0, 0, w, 0);
+    hl.addColorStop(0, 'rgba(255,70,170,0)');
+    hl.addColorStop(0.5, 'rgba(255,70,170,0.9)');
+    hl.addColorStop(1, 'rgba(255,70,170,0)');
+    c.globalAlpha = 0.5;
+    c.fillStyle = hl;
+    c.fillRect(0, hz - 0.5, w, 1);
     c.restore();
+    return S;
   }
 
-  /* The instrument's body: a machined ring, a glass face and a highlight
-     across it. Three gradients, and they are what stop this reading as a
-     circle with lines in it. */
-  /* Both of these draw about the origin: the cache translates to the middle
-     of its own square before calling them, and nothing else does. */
-  function bezel(c, L) {
-    const r = L.r;
+  /* THE CLUSTER: the dial's face and everything printed on it, and both
+     side gauges with every line and figure that does not move. */
+  function buildCluster(L) {
+    const R = L.R;
+    const side = R * 3.6;
+    const S = surface(side, side);
+    if (!S) return null;
+    const c = S.c;
+    c.translate(side / 2, side / 2);
+    const TAU = Math.PI * 2;
+
+    /* --- the glass ---------------------------------------------------- */
+    const face = c.createRadialGradient(-R * 0.12, -R * 0.20, R * 0.05, 0, 0, R * 1.10);
+    face.addColorStop(0, '#3f63ff');
+    face.addColorStop(0.32, '#2c33d4');
+    face.addColorStop(0.68, '#24147e');
+    face.addColorStop(1, '#0a0526');
     c.save();
-
-    // the outer ring, lit from above like a turned metal bezel
-    const metal = c.createLinearGradient(0, -r * 1.3, 0, r * 1.3);
-    metal.addColorStop(0.00, '#6b5ca8');
-    metal.addColorStop(0.18, '#2a1f4e');
-    metal.addColorStop(0.50, '#150d2c');
-    metal.addColorStop(0.84, '#392c66');
-    metal.addColorStop(1.00, '#0d0720');
-    c.fillStyle = metal;
+    c.shadowColor = 'rgba(30,60,255,0.55)';
+    c.shadowBlur = R * 0.30;
+    c.fillStyle = face;
     c.beginPath();
-    c.arc(0, 0, r * 1.235, 0, Math.PI * 2);
+    c.arc(0, 0, R * 1.10, 0, TAU);
     c.fill();
-
-    // the face itself, darker at the rim than at the centre
-    const dish = c.createRadialGradient(0, -r * 0.34, r * 0.08, 0, 0, r * 1.18);
-    dish.addColorStop(0, 'rgba(34,22,68,0.96)');
-    dish.addColorStop(0.62, 'rgba(14,8,34,0.97)');
-    dish.addColorStop(1, 'rgba(4,2,14,0.99)');
-    c.fillStyle = dish;
-    c.beginPath();
-    c.arc(0, 0, r * 1.16, 0, Math.PI * 2);
-    c.fill();
-
-    glow(c, '#3a2a70', 8, 0.85, arcPath(r * 1.195, 0, Math.PI * 2));
-    glow(c, CYAN, 2, 0.5, arcPath(r * 1.05, A0, A1));
-
-    // the redline, which is a band on the scale rather than a number on it
-    glow(c, RED, 7, 0.72, arcPath(r * 1.00, aOf(REDLINE), aOf(RPM_MAX)));
-
-    /* The glass. One soft ellipse across the upper left, clipped to the face -
-       the single cheapest thing that turns a drawn circle into an object with
-       a cover on it. */
+    c.restore();
+    // a darker band at the rim, so the figures stand on a ring of their own
     c.save();
     c.beginPath();
-    c.arc(0, 0, r * 1.15, 0, Math.PI * 2);
-    c.clip();
-    const sheen = c.createLinearGradient(-r, -r * 1.1, r * 0.4, r * 0.5);
-    sheen.addColorStop(0, 'rgba(255,255,255,0.085)');
-    sheen.addColorStop(0.45, 'rgba(255,255,255,0.018)');
-    sheen.addColorStop(1, 'rgba(255,255,255,0)');
-    c.fillStyle = sheen;
-    c.beginPath();
-    c.ellipse(-r * 0.24, -r * 0.52, r * 1.05, r * 0.62, -0.38, 0, Math.PI * 2);
+    c.arc(0, 0, R * 1.10, 0, TAU);
+    c.arc(0, 0, R * 0.86, 0, TAU, true);
+    c.fillStyle = 'rgba(6,4,30,0.42)';
     c.fill();
     c.restore();
 
-    c.restore();
-  }
-
-  /* Ticks and numerals: one major per thousand, three minors between. */
-  function scale(c, L) {
-    const r = L.r;
-    c.save();
+    /* --- the scale ---------------------------------------------------- */
     for (let i = 0; i <= RPM_MAX; i += 250) {
       const major = i % 1000 === 0;
+      const half = i % 500 === 0;
       const a = aOf(i);
-      const inner = major ? r * 0.85 : r * 0.915;
-      const col = i >= REDLINE ? RED : '#cfe6ff';
+      const red = i >= REDLINE;
+      const r0 = major ? R * 0.885 : half ? R * 0.925 : R * 0.950;
       c.save();
-      c.globalAlpha = major ? 0.95 : 0.38;
-      c.strokeStyle = col;
-      c.lineWidth = major ? Math.max(2, r * 0.016) : Math.max(1, r * 0.007);
-      c.lineCap = major ? 'butt' : 'round';
-      c.shadowColor = col;
-      c.shadowBlur = major ? 10 : 0;
+      c.strokeStyle = red ? '#ff3a4e' : '#f2f4ff';
+      c.globalAlpha = major ? 1 : half ? 0.75 : 0.45;
+      c.lineWidth = major ? Math.max(2, R * 0.022) : Math.max(1, R * 0.010);
+      c.shadowColor = red ? '#ff2a3c' : 'rgba(170,200,255,0.9)';
+      c.shadowBlur = major ? R * 0.05 : 0;
       c.beginPath();
-      c.moveTo(Math.cos(a) * inner, Math.sin(a) * inner);
-      c.lineTo(Math.cos(a) * r * 0.99, Math.sin(a) * r * 0.99);
+      c.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
+      c.lineTo(Math.cos(a) * R * 1.035, Math.sin(a) * R * 1.035);
       c.stroke();
       c.restore();
       if (!major) continue;
-      const rr = r * 0.70;
       c.save();
-      c.globalAlpha = 0.94;
-      c.fillStyle = i >= REDLINE ? RED : '#eaf6ff';
-      c.font = font(r * 0.15, 600);
+      c.font = num(R * 0.155, 700);
       c.textAlign = 'center';
       c.textBaseline = 'middle';
-      c.shadowColor = i >= REDLINE ? RED : CYAN;
-      c.shadowBlur = 12;
-      c.fillText(String(i / 1000), Math.cos(a) * rr, Math.sin(a) * rr);
+      c.fillStyle = red ? '#ffb0bb' : '#ffffff';
+      c.shadowColor = red ? 'rgba(255,40,60,0.9)' : 'rgba(120,170,255,0.95)';
+      c.shadowBlur = R * 0.06;
+      c.fillText(String(i / 1000), Math.cos(a) * R * 0.745, Math.sin(a) * R * 0.745);
       c.restore();
     }
-
-    /* The unit, under the readout, and it is the READOUT's unit.
-       It said "x1000 r/min" directly beneath a four-digit number showing the
-       actual crank speed, so the face read 8974 x1000 r/min - nine million
-       revs a minute. The x1000 belongs to the NUMERALS on the scale, which
-       run 0 to 10; the readout is already in r/min and needs no multiplier.
-       The scale carries its own legend now, next to the numbers it applies to.
-
-       Under the readout because the needle sweeps the whole dial and the one
-       place it can never reach is the gap at the bottom, which is where the
-       scale starts and ends - anything written anywhere else on the face gets
-       a needle through it twice a second. */
+    // the redline as a band outside the ticks
     c.save();
-    c.globalAlpha = 0.5;
-    c.fillStyle = '#9fb6d8';
-    c.font = font(r * 0.095, 600);
-    c.textAlign = 'center';
-    c.fillText('r/min', 0, r * 0.60);
-    /* ...and the scale's multiplier, UP ON THE SCALE, where a tachometer
-       prints it: over the hub, under the 5. It was moved to "level with the 0
-       and the 10" and landed directly under r/min instead, so the face still
-       read 5980 / r/min / x1000 - the same nine million revs a minute, one line
-       lower. The needle crosses it on every sweep, which is exactly what it
-       does on a real one. Short, because the two warning lamps stand either
-       side of it at a third of a radius out. */
-    c.globalAlpha = 0.38;
-    c.font = font(r * 0.074, 600);
-    c.fillText('×1000', 0, -r * 0.30);
-    c.restore();
-
-    /* The track the progress arc fills, so the ring reads as an empty gauge
-       before anything has loaded rather than as nothing at all. */
-    c.save();
-    c.strokeStyle = 'rgba(126,152,208,0.20)';
-    c.lineWidth = Math.max(2, r * 0.026);
-    c.lineCap = 'round';
+    c.strokeStyle = '#ff2a3c';
+    c.lineWidth = Math.max(2, R * 0.030);
+    c.shadowColor = '#ff2a3c';
+    c.shadowBlur = R * 0.10;
     c.beginPath();
-    c.arc(0, 0, L.ring, A0, A1);
+    c.arc(0, 0, R * 1.06, aOf(REDLINE), aOf(RPM_MAX));
     c.stroke();
     c.restore();
 
+    /* The ring of light inside the figures - a dashed circle, white into
+       blue, which is most of what makes the reference's dial read as lit
+       glass rather than as a printed face. */
+    c.save();
+    c.strokeStyle = 'rgba(225,235,255,0.85)';
+    c.lineWidth = Math.max(1.5, R * 0.016);
+    c.shadowColor = 'rgba(140,190,255,1)';
+    c.shadowBlur = R * 0.06;
+    c.setLineDash([R * 0.040, R * 0.026]);
+    c.beginPath();
+    c.arc(0, 0, R * 0.585, A0, A1);
+    c.stroke();
+    c.setLineDash([]);
+    c.strokeStyle = 'rgba(150,180,255,0.22)';
+    c.lineWidth = Math.max(1, R * 0.008);
+    c.shadowBlur = 0;
+    c.beginPath();
+    c.arc(0, 0, R * 0.36, 0, TAU);
+    c.stroke();
     c.restore();
+
+    // the scale's legend, up on the scale where a tachometer prints it
+    c.save();
+    c.font = lab(R * 0.068);
+    if ('letterSpacing' in c) c.letterSpacing = (R * 0.068 * 0.2).toFixed(2) + 'px';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillStyle = 'rgba(200,215,255,0.55)';
+    c.fillText('×1000 R/MIN', 0, -R * 0.24);
+    c.restore();
+
+    // the glass: a soft crescent of light across the upper left
+    c.save();
+    c.beginPath();
+    c.arc(0, 0, R * 1.09, 0, TAU);
+    c.clip();
+    const sh = c.createLinearGradient(-R * 0.9, -R * 1.0, R * 0.3, R * 0.3);
+    sh.addColorStop(0, 'rgba(255,255,255,0.16)');
+    sh.addColorStop(0.5, 'rgba(255,255,255,0.03)');
+    sh.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = sh;
+    c.beginPath();
+    c.ellipse(-R * 0.32, -R * 0.60, R * 1.05, R * 0.56, -0.45, 0, TAU);
+    c.fill();
+    c.restore();
+
+    /* --- the side gauges ---------------------------------------------- */
+    const CY = '#3fe6ff';
+    const arc = (r, a0, a1, w, alpha, ccw) => {
+      c.save();
+      c.strokeStyle = CY;
+      c.globalAlpha = alpha;
+      c.lineWidth = w;
+      c.shadowColor = CY;
+      c.shadowBlur = R * 0.05;
+      c.beginPath();
+      c.arc(0, 0, r, a0, a1, !!ccw);
+      c.stroke();
+      c.restore();
+    };
+    const sideGauge = (A, labels, title, sub, mirror) => {
+      const [a0, a1] = A;
+      const ccw = a1 < a0;
+      arc(R * SIDE.arc, a0, a1, Math.max(1.5, R * 0.014), 0.9, ccw);
+      arc(R * SIDE.outer, a0 + (a1 - a0) * -0.10, a1 + (a1 - a0) * 0.10, Math.max(1, R * 0.007), 0.45, ccw);
+      // the dashes' sockets
+      for (let i = 0; i < 16; i++) {
+        const a = a0 + (a1 - a0) * ((i + 0.5) / 16);
+        c.save();
+        c.strokeStyle = CY;
+        c.globalAlpha = 0.16;
+        c.lineWidth = Math.max(2, R * 0.022);
+        c.beginPath();
+        c.arc(0, 0, R * SIDE.dash, a - 0.012, a + 0.012);
+        c.stroke();
+        c.restore();
+      }
+      // ticks and figures
+      const n = labels.length;
+      for (let i = 0; i < n; i++) {
+        const a = a0 + (a1 - a0) * (i / (n - 1));
+        const hot = !mirror && i >= n - 2;
+        c.save();
+        c.strokeStyle = hot ? '#ff3a4e' : CY;
+        c.lineWidth = Math.max(1.5, R * 0.014);
+        c.shadowColor = hot ? '#ff2a3c' : CY;
+        c.shadowBlur = R * 0.04;
+        c.beginPath();
+        c.moveTo(Math.cos(a) * R * (SIDE.arc - 0.06), Math.sin(a) * R * (SIDE.arc - 0.06));
+        c.lineTo(Math.cos(a) * R * SIDE.arc, Math.sin(a) * R * SIDE.arc);
+        c.stroke();
+        c.restore();
+        c.save();
+        c.font = num(R * 0.120, 700);
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillStyle = hot ? '#ff9aa8' : 'rgba(235,245,255,0.62)';
+        c.shadowColor = hot ? 'rgba(255,40,60,0.8)' : 'rgba(80,200,255,0.6)';
+        c.shadowBlur = R * 0.04;
+        c.fillText(labels[i], Math.cos(a) * R * SIDE.num, Math.sin(a) * R * SIDE.num);
+        c.restore();
+      }
+      // the title, under the gauge's bottom end
+      const ab = a0 + (a1 - a0) * -0.16;
+      const tx = Math.cos(ab) * R * SIDE.arc, ty = Math.sin(ab) * R * SIDE.arc;
+      c.save();
+      c.font = lab(R * 0.072);
+      if ('letterSpacing' in c) c.letterSpacing = (R * 0.072 * 0.22).toFixed(2) + 'px';
+      c.textAlign = mirror ? 'right' : 'left';
+      c.textBaseline = 'middle';
+      c.fillStyle = 'rgba(120,230,255,0.85)';
+      c.fillText(title, tx + (mirror ? R * 0.05 : -R * 0.05), ty + R * 0.05);
+      c.fillStyle = 'rgba(160,190,230,0.45)';
+      c.font = lab(R * 0.056);
+      c.fillText(sub, tx + (mirror ? R * 0.05 : -R * 0.05), ty + R * 0.15);
+      c.restore();
+      // and three small points of light along the outer rail
+      c.save();
+      c.fillStyle = 'rgba(120,230,255,0.75)';
+      for (const k of [0.2, 0.5, 0.8]) {
+        const a = a0 + (a1 - a0) * k;
+        c.beginPath();
+        c.arc(Math.cos(a) * R * SIDE.outer, Math.sin(a) * R * SIDE.outer, R * 0.012, 0, TAU);
+        c.fill();
+      }
+      c.restore();
+    };
+    sideGauge(BOOST_A, ['0', '1', '2', '3', '4', '5', '6', '7', '8'], 'BOOST', 'RESERVE ×12.5%', false);
+    sideGauge(GEAR_A, GEARS, 'GEAR', 'SELECTOR', true);
+    return S;
   }
 
+  /* THE RING: an orange tube round the dial, its colour running round it
+     and its bloom baked in. Drawn at an opacity that is the engine's. */
+  function buildRing(L) {
+    const R = L.R;
+    const side = R * 3.2;
+    const S = surface(side, side);
+    if (!S) return null;
+    const c = S.c;
+    c.translate(side / 2, side / 2);
+    let col;
+    if (c.createConicGradient) {
+      col = c.createConicGradient(0, 0, 0);
+      for (const [k, v] of RING_RAMP) col.addColorStop(k, v);
+    } else col = '#ff5a1a';
+    const stroke = (w, alpha, blur) => {
+      c.save();
+      c.strokeStyle = col;
+      c.globalAlpha = alpha;
+      c.lineWidth = w;
+      c.shadowColor = '#ff4a12';
+      c.shadowBlur = blur;
+      c.beginPath();
+      c.arc(0, 0, R * RING_R, 0, Math.PI * 2);
+      c.stroke();
+      c.restore();
+    };
+    stroke(R * 0.20, 0.16, R * 0.34);
+    stroke(R * 0.085, 0.45, R * 0.18);
+    stroke(R * 0.045, 1.0, R * 0.08);
+    // the white-hot filament down its middle
+    c.save();
+    c.strokeStyle = '#fff1dc';
+    c.globalAlpha = 0.55;
+    c.lineWidth = Math.max(1, R * 0.012);
+    c.beginPath();
+    c.arc(0, 0, R * RING_R, 0, Math.PI * 2);
+    c.stroke();
+    c.restore();
+    // and a second, thin red ring outside it
+    c.save();
+    c.strokeStyle = '#ff2a3c';
+    c.globalAlpha = 0.40;
+    c.lineWidth = Math.max(1, R * 0.008);
+    c.shadowColor = '#ff2a3c';
+    c.shadowBlur = R * 0.06;
+    c.beginPath();
+    c.arc(0, 0, R * 1.28, Math.PI * 0.62, Math.PI * 2.38);
+    c.stroke();
+    c.restore();
+    return S;
+  }
+
+  /* The needle, along +x with its pivot `pivot` in from the left. */
+  function buildNeedle(L) {
+    const R = L.R;
+    const len = R * 1.25, hgt = R * 0.32;
+    const S = surface(len, hgt);
+    if (!S) return null;
+    const c = S.c;
+    const pivot = R * 0.22;
+    c.translate(pivot, hgt / 2);
+    c.shadowColor = '#ff3a2a';
+    c.shadowBlur = R * 0.10;
+    const g = c.createLinearGradient(-R * 0.2, 0, R, 0);
+    g.addColorStop(0, '#b0102a');
+    g.addColorStop(0.5, '#ff2a3c');
+    g.addColorStop(1, '#ff6a4a');
+    c.fillStyle = g;
+    c.beginPath();
+    c.moveTo(-R * 0.18, -R * 0.030);
+    c.lineTo(R * 1.00, -R * 0.008);
+    c.lineTo(R * 1.00, R * 0.008);
+    c.lineTo(-R * 0.18, R * 0.030);
+    c.closePath();
+    c.fill();
+    c.shadowBlur = 0;
+    c.fillStyle = '#fff3ee';
+    c.beginPath();
+    c.moveTo(R * 0.30, -R * 0.009);
+    c.lineTo(R * 1.00, -R * 0.0045);
+    c.lineTo(R * 1.00, R * 0.0045);
+    c.lineTo(R * 0.30, R * 0.009);
+    c.closePath();
+    c.fill();
+    S.pivot = pivot;
+    return S;
+  }
+
+  /* A lens flare: a hot core, a coloured halo and a horizontal streak - the
+     anamorphic signature the bloom in the game itself carries. */
+  function buildFlare(L, kind) {
+    const R = L.R;
+    const sz = R * (kind === 'warm' ? 1.5 : 0.9);
+    const S = surface(sz, sz);
+    if (!S) return null;
+    const c = S.c, m = sz / 2;
+    const warm = kind === 'warm';
+    const g = c.createRadialGradient(m, m, 0, m, m, m);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.06, warm ? 'rgba(255,236,200,0.95)' : 'rgba(220,250,255,0.95)');
+    g.addColorStop(0.20, warm ? 'rgba(255,140,50,0.45)' : 'rgba(80,200,255,0.40)');
+    g.addColorStop(0.55, warm ? 'rgba(255,60,20,0.10)' : 'rgba(60,120,255,0.08)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = g;
+    c.fillRect(0, 0, sz, sz);
+    const st = c.createLinearGradient(0, 0, sz, 0);
+    st.addColorStop(0, 'rgba(255,255,255,0)');
+    st.addColorStop(0.5, warm ? 'rgba(255,220,180,0.85)' : 'rgba(200,245,255,0.85)');
+    st.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = st;
+    c.fillRect(0, m - Math.max(1, R * 0.006), sz, Math.max(2, R * 0.012));
+    c.globalAlpha = 0.5;
+    c.fillRect(m - Math.max(1, R * 0.004), m - sz * 0.18, Math.max(2, R * 0.008), sz * 0.36);
+    return S;
+  }
   /* The name, once, small, under the instrument. The first version of this
      screen had no wordmark on it at all, on the grounds that it should say
      "this is a car" rather than "this is SYNX". It can do both: the dial is
@@ -954,17 +1152,17 @@
 
   /** The floor lines, which are the only part of the ground that moves. */
   function floorLines(c, L, t) {
-    const hz = L.h * 0.74;
+    const hz = L.h * 0.78;
     c.save();
-    c.globalAlpha = 0.28;
+    c.globalAlpha = 0.22;
     c.strokeStyle = '#7a3bff';
     c.lineWidth = 1;
     c.beginPath();
     /* Exponential spacing, so they crowd at the horizon the way perspective
        does, and they scroll towards the viewer. */
     const scroll = (t * 0.45) % 1;
-    for (let i = 0; i < 16; i++) {
-      const k = (i + scroll) / 16;
+    for (let i = 0; i < 14; i++) {
+      const k = (i + scroll) / 14;
       const y = hz + (L.h - hz) * (k * k * k);
       c.moveTo(0, y);
       c.lineTo(L.w, y);
@@ -973,225 +1171,218 @@
     c.restore();
   }
 
-  /** Everything on the dial that changes: the sweep, the needle, the lamps. */
-  function dial(c, L, value, live, t) {
-    const r = L.r;
-    c.save();
-    c.translate(L.cx, L.cy);
-
-    /* THE SWEPT ARC. Everything the needle has already passed is lit, so the
-       dial reads at a glance even at the speed the needle moves here - and it
-       turns from cyan through amber to red as the engine runs out of room. */
-    const lit = value >= REDLINE ? RED : (value >= REDLINE * 0.72 ? AMBER : CYAN);
-    if (value > 40) glow(c, lit, 9, 0.85, arcPath(r * 0.79, A0, aOf(value)));
-
-    /* THE READOUT. Four digits under the hub, with the actual number - a dial
-       with a fake number under it is a dial nobody believes. */
-    c.save();
-    c.textAlign = 'center';
-    c.textBaseline = 'middle';
-    c.font = font(r * 0.19, 700);
-    const txt = String(Math.max(0, Math.round(value))).padStart(4, '0');
-    c.globalAlpha = 0.16;
-    c.fillStyle = '#20304a';
-    c.fillText('8888', 0, r * 0.40);
-    c.globalAlpha = 1;
-    c.fillStyle = value >= REDLINE ? RED : AMBER;
-    c.shadowColor = value >= REDLINE ? RED : AMBER;
-    c.shadowBlur = 16;
-    c.fillText(txt, 0, r * 0.40);
-    c.restore();
-
-    /* THE NEEDLE. Tapered, counterweighted, and with its own light: the
-       glowing tip is what the eye actually tracks at these speeds, and a
-       needle drawn as a plain line reads as a clock hand. */
-    const a = aOf(value);
-    c.save();
-    c.rotate(a);
-    /* Its shadow on the face, a touch off-axis, which is what puts the needle
-       ABOVE the dial rather than printed on it. */
-    c.save();
-    c.globalAlpha = 0.45;
-    c.fillStyle = '#05020f';
-    c.beginPath();
-    c.moveTo(-r * 0.20, -r * 0.026 + r * 0.02);
-    c.lineTo(r * 0.98, -r * 0.008 + r * 0.02);
-    c.lineTo(r * 0.98, r * 0.010 + r * 0.02);
-    c.lineTo(-r * 0.20, r * 0.030 + r * 0.02);
-    c.closePath();
-    c.fill();
-    c.restore();
-    c.shadowColor = value >= REDLINE ? RED : MAG;
-    c.shadowBlur = 26;
-    c.fillStyle = value >= REDLINE ? RED : MAG;
-    c.beginPath();
-    c.moveTo(-r * 0.20, -r * 0.028);
-    c.lineTo(r * 0.985, -r * 0.009);
-    c.lineTo(r * 0.985, r * 0.009);
-    c.lineTo(-r * 0.20, r * 0.028);
-    c.closePath();
-    c.fill();
-    c.globalAlpha = 0.9;
-    c.fillStyle = '#ffffff';
-    c.beginPath();
-    c.moveTo(r * 0.80, -r * 0.010);
-    c.lineTo(r * 0.985, -r * 0.006);
-    c.lineTo(r * 0.985, r * 0.006);
-    c.lineTo(r * 0.80, r * 0.010);
-    c.closePath();
-    c.fill();
-    c.restore();
-
-    // the hub, over the tail of the needle
-    c.save();
-    const hub = c.createRadialGradient(0, -r * 0.05, 0, 0, 0, r * 0.14);
-    hub.addColorStop(0, '#5a4898');
-    hub.addColorStop(1, '#100920');
-    c.fillStyle = hub;
-    c.beginPath();
-    c.arc(0, 0, r * 0.125, 0, Math.PI * 2);
-    c.fill();
-    c.strokeStyle = live ? MAG : '#2a1b52';
-    c.lineWidth = 2;
-    c.shadowColor = MAG;
-    c.shadowBlur = live ? 14 : 0;
-    c.stroke();
-    c.restore();
-
-    /* A pair of warning lamps either side of the hub, because a rev counter
-       on its own is an instrument and a rev counter with lamps is a CAR. They
-       are real: one is on while the starter is turning and goes out when the
-       engine catches, the other comes on at the limiter. */
-    const lamp = (x, on, colour) => {
+  function blit(c, S, x, y, alpha) {
+    if (!S) return;
+    if (alpha !== undefined) {
+      if (alpha <= 0.002) return;
       c.save();
-      c.globalAlpha = on ? 1 : 0.16;
-      c.fillStyle = on ? colour : '#26304a';
-      c.shadowColor = colour;
-      c.shadowBlur = on ? 18 : 0;
-      c.beginPath();
-      c.arc(x, -r * 0.42, r * 0.035, 0, Math.PI * 2);
-      c.fill();
+      c.globalAlpha *= alpha;
+      c.drawImage(S.cv, x - S.w / 2, y - S.h / 2, S.w, S.h);
       c.restore();
-    };
-    lamp(-r * 0.30, !live && t > 0.95, AMBER);
-    lamp(r * 0.30, value >= REDLINE, RED);
-
-    c.restore();
+    } else {
+      c.drawImage(S.cv, x - S.w / 2, y - S.h / 2, S.w, S.h);
+    }
   }
 
-  /* -------------------------------------------------------- the progress --
+  /**
+   * Everything on the cluster that moves.
    *
-   * The ring, the caption, the rail and the count. All four used to read
-   * NR.Boot; all four are the script's own clock now, because the load is
-   * over before this screen exists. See the note at the top of the file.
+   *   value   the needle's revs, already damped
+   *   live    the engine is running
+   *   ring    how lit the ring is, 0..1+ (see the frame loop)
+   *   boost   how much of the boost column is lit, 0..1
+   *   gear    index into GEARS
+   *   intro   0..1, the side gauges drawing themselves on
    */
-  function progress(c, L, p, label, detail, stamp, k) {
-    const r = L.ring;
-    /* The caption, the rail and the count all belong to WAITING. Once the
-       outro stamp is landing there is nothing left to wait for, so they go -
-       which is also what stops the stamp being printed through them. */
-    const waitK = (1 - Math.min(1, Math.max(0, (stamp || 0) * 1.6)))
-      * (k === undefined ? 1 : k);
-    if (p > 0.0015) {
-      c.save();
-      c.translate(L.cx, L.cy);
-      const end = A0 + (A1 - A0) * p;
-      /* Violet into cyan, which is neither of the colours the dial itself uses
-         at any point in its sweep - so the ring can never be mistaken for a
-         second reading off the instrument. */
-      const g = c.createLinearGradient(-r, -r, r, r);
-      g.addColorStop(0, '#8b5cf6');
-      g.addColorStop(1, CYAN);
-      c.save();
-      c.strokeStyle = g;
-      c.lineWidth = Math.max(2, L.r * 0.026);
-      c.lineCap = 'round';
-      c.shadowColor = CYAN;
-      c.shadowBlur = 18;
-      c.globalAlpha = 0.95;
-      c.beginPath();
-      c.arc(0, 0, r, A0, end);
-      c.stroke();
-      c.restore();
-      /* The head of it, so the eye can find where it has got to - while it
-         is still GOING somewhere. A full ring has no head: left on at a
-         hundred per cent it was one bright dot on one end of a symmetrical
-         gauge, which read as a fault in the ring rather than as its end. */
-      const head = Math.max(0, Math.min(1, (1 - p) * 10));
-      if (head > 0.01) {
+  function cluster(c, L, value, live, t, ring, boost, gear, intro, gearPos, kick) {
+    const R = L.R;
+    const K = ensureCache(L);
+    const heat = Math.max(0, (value - 2000) / (RPM_MAX - 2000));
+
+    // the ring, at the engine's own brightness, with a flicker at the cut
+    blit(c, K.ring, L.cx, L.cy, Math.min(1.15, ring));
+
+    /* The face and the side gauges. The gauges DRAW ON across the dial's
+       self-test: a sweep from the bottom of each arc to the top, so the
+       instruments come up with the needle rather than being there before
+       it. A clip, not a redraw - it is the same cached layer. */
+    if (K.cluster) {
+      if (intro >= 0.999) {
+        blit(c, K.cluster, L.cx, L.cy);
+      } else {
+        // the dial itself is up from the first frame...
         c.save();
-        c.globalAlpha = head;
-        c.fillStyle = '#eaffff';
-        c.shadowColor = CYAN;
-        c.shadowBlur = 20;
         c.beginPath();
-        c.arc(Math.cos(end) * r, Math.sin(end) * r, Math.max(2.4, L.r * 0.020), 0, Math.PI * 2);
-        c.fill();
+        c.arc(L.cx, L.cy, R * 1.25, 0, Math.PI * 2);
+        c.clip();
+        blit(c, K.cluster, L.cx, L.cy);
         c.restore();
+        // ...and each side gauge sweeps on from its bottom end
+        const sweep = (A) => {
+          const [a0, a1] = A;
+          const end = a0 + (a1 - a0) * Math.min(1, intro * 1.15);
+          c.save();
+          // the wedge swept so far - padded past both ends so the labels
+          // under the arcs come with them...
+          c.beginPath();
+          c.moveTo(L.cx, L.cy);
+          const pad = (a1 - a0) * 0.35;
+          c.arc(L.cx, L.cy, R * 1.9, a0 - pad, end, a1 < a0);
+          c.closePath();
+          c.clip();
+          // ...intersected with everything that is not the dial, which is
+          // already drawn and must not be drawn twice
+          c.beginPath();
+          c.rect(0, 0, L.w, L.h);
+          c.arc(L.cx, L.cy, R * 1.25, 0, Math.PI * 2);
+          c.clip('evenodd');
+          blit(c, K.cluster, L.cx, L.cy, Math.min(1, intro * 1.6));
+          c.restore();
+        };
+        sweep(BOOST_A);
+        sweep(GEAR_A);
+      }
+    }
+
+    /* THE BOOST COLUMN: sixteen cells along the left arc, cyan into magenta,
+       and the last two the warning colour. */
+    {
+      const [a0, a1] = BOOST_A;
+      const lit = boost * 16;
+      c.save();
+      c.lineCap = 'butt';
+      for (let i = 0; i < 16; i++) {
+        const k = Math.max(0, Math.min(1, lit - i));
+        if (k <= 0.001) continue;
+        const a = a0 + (a1 - a0) * ((i + 0.5) / 16);
+        const col = i >= 14 ? '#ff3a4e' : i >= 10 ? '#ff4fb8' : '#3fe6ff';
+        c.globalAlpha = (0.35 + 0.65 * k) * Math.min(1, intro * 1.4);
+        c.strokeStyle = col;
+        c.lineWidth = Math.max(2, R * 0.030);
+        c.beginPath();
+        c.arc(L.cx, L.cy, R * SIDE.dash, a - 0.014, a + 0.014);
+        c.stroke();
       }
       c.restore();
     }
 
-    /* THE RAIL AND THE ROW UNDER IT, set exactly as the preloader sets them -
-       the same measure, a two-pixel bar, and one row beneath it with the
-       phase on the left and the count on the right - because this screen
-       takes over from that one mid-dissolve and the eye should not see the
-       furniture rearrange itself. */
-    const rw = L.railW, rh = 2;
-    const x = L.cx - rw / 2, y = L.railY - rh / 2;
-    c.save();
-    c.globalAlpha = waitK;
-    c.fillStyle = 'rgba(122,158,210,0.16)';
-    c.fillRect(x, y, rw, rh);
-    if (p > 0.001) {
-      const g = c.createLinearGradient(x, 0, x + rw, 0);
-      g.addColorStop(0, CYAN);
-      g.addColorStop(0.58, '#b46cff');
-      g.addColorStop(1, MAG);
-      c.fillStyle = g;
-      c.shadowColor = 'rgba(57,230,255,0.7)';
-      c.shadowBlur = 16;
-      c.fillRect(x, y, rw * p, rh);
-    }
-    c.restore();
-
-    // what is being worked on right now, from the rail's left end
-    c.save();
-    c.textAlign = 'left';
-    c.textBaseline = 'middle';
-    c.font = font(10, 600);
-    track(c, 10 * 0.24);
-    c.globalAlpha = 0.66 * waitK;
-    c.fillStyle = 'rgb(150,184,220)';
-    c.fillText(tracked(c, label || ''), x, L.capY);
-    c.restore();
-
-    // ...and how far along, on the same row, to the rail's right end
-    c.save();
-    c.textAlign = 'right';
-    c.textBaseline = 'middle';
-    c.font = font(13, 900);
-    track(c, 13 * 0.12);
-    c.fillStyle = CYAN;
-    c.shadowColor = 'rgba(57,230,255,0.6)';
-    c.shadowBlur = 14;
-    c.globalAlpha = waitK;
-    c.fillText(tracked(c, Math.round(p * 100) + '%'), x + rw, L.capY);
-    c.restore();
-
-    if (detail) {
+    /* THE SELECTOR: the engaged gear boxed and lit, the rest printed dim on
+       the cached layer underneath. */
+    {
+      const [a0, a1] = GEAR_A;
+      /* Drawn where the lever IS on its way to the new slot, lit hard for the
+         moment of the change and settling back - and its letter is always
+         the gear it is going to, so it never shows a gear the box is not in. */
+      const pos = gearPos === undefined || gearPos === null ? gear : gearPos;
+      const kk = kick || 0;
+      const a = a0 + (a1 - a0) * (pos / (GEARS.length - 1));
+      const gx = L.cx + Math.cos(a) * R * SIDE.num, gy = L.cy + Math.sin(a) * R * SIDE.num;
+      const bw = R * (0.19 + 0.03 * kk), bh = R * (0.15 + 0.02 * kk);
       c.save();
-      c.textAlign = 'left';
+      c.globalAlpha *= Math.min(1, intro * 1.4);
+      c.fillStyle = 'rgba(63,230,255,' + (0.22 + 0.38 * kk).toFixed(3) + ')';
+      c.strokeStyle = kk > 0.02 ? '#e9fdff' : '#7ff4ff';
+      c.lineWidth = Math.max(1.5, R * (0.010 + 0.006 * kk));
+      c.beginPath();
+      if (c.roundRect) c.roundRect(gx - bw / 2, gy - bh / 2, bw, bh, R * 0.03);
+      else c.rect(gx - bw / 2, gy - bh / 2, bw, bh);
+      c.fill();
+      c.stroke();
+      c.font = num(R * 0.125, 800);
+      c.textAlign = 'center';
       c.textBaseline = 'middle';
-      c.font = font(9, 600);
-      track(c, 9 * 0.24);
-      c.globalAlpha = 0.46 * waitK;
-      c.fillStyle = 'rgb(130,160,196)';
-      c.fillText(tracked(c, detail), x, L.detailY);
+      c.fillStyle = '#ffffff';
+      c.fillText(GEARS[gear], gx, gy + R * 0.004);
       c.restore();
     }
+
+    /* THE READOUT. Four digits under the hub, with the actual number - a dial
+       with a fake number under it is a dial nobody believes. Cyan, in the
+       instrument face, in the gap at the bottom where the needle never
+       points. */
+    c.save();
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.font = num(R * 0.22, 800);
+    const txt = String(Math.max(0, Math.round(value))).padStart(4, '0');
+    c.fillStyle = value >= REDLINE ? '#ff8a96' : '#86f6ff';
+    fillTabular(c, txt, L.cx, L.cy + R * 0.40);
+    c.font = lab(R * 0.060);
+    if ('letterSpacing' in c) c.letterSpacing = (R * 0.06 * 0.24).toFixed(2) + 'px';
+    c.fillStyle = 'rgba(180,215,255,0.60)';
+    c.fillText('R/MIN', L.cx, L.cy + R * 0.585);
+    c.restore();
+
+    /* A pair of warning lamps either side of the legend, because a rev
+       counter on its own is an instrument and a rev counter with lamps is a
+       CAR. They are real: one is on while the starter is turning and goes
+       out when the engine catches, the other comes on at the limiter. */
+    const lamp = (x, on, colour) => {
+      c.save();
+      c.globalAlpha = on ? 1 : 0.22;
+      c.fillStyle = on ? colour : '#2a3560';
+      c.beginPath();
+      c.arc(L.cx + x, L.cy - R * 0.40, R * 0.032, 0, Math.PI * 2);
+      c.fill();
+      if (on) {
+        c.globalAlpha = 0.45;
+        c.beginPath();
+        c.arc(L.cx + x, L.cy - R * 0.40, R * 0.065, 0, Math.PI * 2);
+        c.fill();
+      }
+      c.restore();
+    };
+    lamp(-R * 0.30, !live && t > 0.95, AMBER);
+    lamp(R * 0.30, value >= REDLINE, RED);
+
+    // the needle, then the hub over its tail
+    if (K.needle) {
+      c.save();
+      c.translate(L.cx, L.cy);
+      c.rotate(aOf(value));
+      c.drawImage(K.needle.cv, -K.needle.pivot, -K.needle.h / 2, K.needle.w, K.needle.h);
+      c.restore();
+    }
+    c.save();
+    const hub = c.createRadialGradient(L.cx, L.cy - R * 0.03, 0, L.cx, L.cy, R * 0.10);
+    hub.addColorStop(0, '#4a5cff');
+    hub.addColorStop(1, '#0b0828');
+    c.fillStyle = hub;
+    c.beginPath();
+    c.arc(L.cx, L.cy, R * 0.085, 0, Math.PI * 2);
+    c.fill();
+    c.strokeStyle = live ? '#ff6a4a' : '#8fa2ff';
+    c.lineWidth = Math.max(1.5, R * 0.018);
+    c.stroke();
+    c.restore();
+
+    /* THE FLARES. A warm one on the ring at the lower right, which is the
+       engine - it brightens with the revs and burns at the limiter - and a
+       cool glint on the glass at the upper left, which is the lamp the
+       instrument is lit by and does not care what the engine is doing. */
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    const fa = Math.PI * (36 / 180);
+    blit(c, K.flare, L.cx + Math.cos(fa) * R * RING_R, L.cy + Math.sin(fa) * R * RING_R,
+      Math.min(1, ring) * (0.30 + 0.70 * heat));
+    blit(c, K.glint, L.cx - R * 0.56, L.cy - R * 0.66, 0.40 + 0.10 * Math.sin(t * 2.3));
+    c.restore();
   }
 
+  /* WHAT THE MACHINE IS DOING, one line under the name - the phase of the
+     script, in the face the in-game labels are set in. */
+  function status(c, L, label, k) {
+    if (k <= 0.002 || !label) return;
+    c.save();
+    c.globalAlpha = 0.78 * k;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.font = lab(Math.max(10, L.R * 0.058));
+    track(c, Math.max(10, L.R * 0.058) * 0.42);
+    c.fillStyle = 'rgb(150,200,240)';
+    c.fillText(tracked(c, label), L.cx, L.capY);
+    c.restore();
+  }
   /* LETTER-SPACING. The context has it natively now (`letterSpacing`), and
      where it does not the old spaced-out string stands in. `tracked` returns
      the string to draw for whichever of the two is in force, so a caller
@@ -1216,26 +1407,38 @@
   function stampOut(c, L, k) {
     if (k <= 0) return;
     const e = ease(k);
-    const size = Math.max(14, Math.min(L.w * 0.026, L.r * 0.22));
+    /* In the instrument face, the size of the status line it replaces, and
+       it arrives wide and closes up - a word landing rather than appearing.
+       Its glow is two wide faint strokes, not a blur: this is the frame the
+       cold open hands over on, and it must be the cheapest one it draws. */
+    const size = Math.max(12, L.R * 0.085);
     const text = 'SYSTEMS NOMINAL';
-    const gap = (1 - e) * size * 0.55;
+    const gap = size * 0.42 + (1 - e) * size * 0.65;
     c.save();
     c.globalAlpha = Math.min(1, e * 1.4);
     c.textBaseline = 'middle';
     c.textAlign = 'left';
-    c.font = font(size, 900);
+    c.font = num(size, 800);
+    c.lineJoin = 'round';
     c.translate(L.cx, L.stampY);
     let total = 0;
     for (let i = 0; i < text.length; i++) total += c.measureText(text.charAt(i)).width + gap;
     total -= gap;
-    let x = -total / 2;
-    c.shadowColor = CYAN;
-    c.shadowBlur = 24;
-    c.fillStyle = '#d9fbff';
-    for (let i = 0; i < text.length; i++) {
-      c.fillText(text.charAt(i), x, 0);
-      x += c.measureText(text.charAt(i)).width + gap;
-    }
+    const draw = (stroke) => {
+      let x = -total / 2;
+      for (let i = 0; i < text.length; i++) {
+        const ch = text.charAt(i);
+        if (stroke) c.strokeText(ch, x, 0); else c.fillText(ch, x, 0);
+        x += c.measureText(ch).width + gap;
+      }
+    };
+    const base = c.globalAlpha;
+    c.strokeStyle = CYAN;
+    c.globalAlpha = base * 0.14; c.lineWidth = size * 0.55; draw(true);
+    c.globalAlpha = base * 0.30; c.lineWidth = size * 0.20; draw(true);
+    c.globalAlpha = base;
+    c.fillStyle = '#ecfdff';
+    draw(false);
     c.restore();
   }
 
@@ -1273,7 +1476,6 @@
     const t = (now - t0) / 1000;
     const vw = parseFloat(cv.style.width), vh = parseFloat(cv.style.height);
     const L = layout(vw, vh);
-    if (!dialFace || dialR !== L.r) buildDial(L);
 
     /* THE SCRIPT, OR THE OUTRO IF THE WAIT IS OVER.
        Once the game is ready the performance stops being a loop on a limiter
@@ -1283,9 +1485,15 @@
        have, because it reads as the screen having been interrupted. */
     let s;
     if (outroAt) {
+      /* THE LAST SHIFT. Off the limiter the box goes up one more - the revs
+         drop the step every shift before it dropped, into fourth - and the
+         engine pulls again as the stamp lands and the flash takes the screen:
+         the cut is to a car that is driving, in the gear the selector says. */
       const k = Math.min(1, (now - outroAt) / OUTRO_MS);
-      const fall = ease(Math.min(1, k / 0.62));
-      s = { rpm: LIMITER - (LIMITER - 820) * fall, load: 0, crank: 0, live: true, holding: false };
+      const SH = 0.14;
+      const rpmO = k < SH ? LIMITER - (LIMITER - 5600) * ease(k / SH)
+        : 5600 + 800 * pull((k - SH) / (1 - SH));
+      s = { rpm: rpmO, load: k < SH ? 0.25 : 1, crank: 0, live: true, holding: false, gear: G_4 };
       stamp = Math.min(1, k / 0.30);
       /* The cut, late. The flash decays about a twentieth per frame and the
          veil behind it takes half a second to fade, so firing it early means
@@ -1305,10 +1513,46 @@
     const lag = 1 - Math.exp(-18 * Math.min(0.05, 1 / 60));
     shownRpm += (rpm - shownRpm) * lag;
 
-    // the whole screen shakes with the engine, and hard at the limiter
+    /* The whole screen shakes with the engine, and harder at the limiter -
+       half what it was: a cluster this detailed reads as an instrument when
+       it trembles and as a broken picture when it jumps. */
     const heat = Math.max(0, (shownRpm - 2000) / (RPM_MAX - 2000));
-    shake = heat * heat * 7;
+    shake = heat * heat * 3.4;
     const sx = (Math.random() - 0.5) * shake, sy = (Math.random() - 0.5) * shake;
+
+    /* THE RING IS THE ENGINE. Dim and cold through the self-test and the
+       crank; on the frame the engine catches it LIGHTS - a flare to full and
+       a settle - and from then on it breathes with the revs, overdriven at the
+       limiter where the fuel cut makes it flicker. On the outro it stays lit
+       as the revs fall away, because the engine is still running. */
+    const catchAt = 1.75;
+    let ringLvl;
+    if (t < catchAt && !outroAt) {
+      ringLvl = 0.16 + 0.12 * Math.max(0, Math.min(1, (t - 0.95) / 0.8));
+    } else {
+      const since = outroAt ? 9 : t - catchAt;
+      const ignite = since < 0.5 ? Math.max(0, 1 - since / 0.5) * 0.55 : 0;
+      ringLvl = 0.55 + 0.45 * heat + ignite;
+      if (s.live && !outroAt && shownRpm >= LIMITER - 400) ringLvl *= 0.86 + 0.14 * Math.abs(Math.sin(t * 61));
+    }
+    /* BOOST arms across the crank and the catch - the job the progress ring
+       used to do - and once armed it reads the throttle, so a blip pushes it
+       up the column and the limiter pins it in the red. */
+    const arm = Math.max(0, Math.min(1, (t - 0.95) / 1.45));
+    const boostLvl = outroAt ? arm * (0.45 + 0.55 * heat) : arm * (0.42 + 0.58 * Math.min(1, heat * 1.15));
+    /* THE SELECTOR is whatever the script says the box is in - the same row
+       of the table the revs came from (see script). The box SLIDES to a new
+       gear over a few frames rather than jumping, and is lit hard for the
+       moment of the change, so a shift reads as a movement of the lever that
+       the needle's drop is the result of. */
+    const gear = s.gear === undefined ? G_N : s.gear;
+    const dtF = lastFrame ? Math.min(0.05, (now - lastFrame) / 1000) : 1 / 60;
+    lastFrame = now;
+    if (gear !== gearWas) { gearWas = gear; shiftAt = now; }
+    gearPos = gearPos === null ? gear : gearPos + (gear - gearPos) * (1 - Math.exp(-30 * dtF));
+    const kick = Math.max(0, 1 - (now - shiftAt) / 220);
+    // the instruments either side draw themselves on across the self-test
+    const intro = Math.max(0, Math.min(1, (t - 0.10) / 0.85));
 
     /* THE RING IS PART OF THE PERFORMANCE NOW, not a progress bar.
      *
@@ -1323,11 +1567,15 @@
      * the needle rather than as a bar that was finished before you looked.
      * It is a function of the script's own clock and of nothing else. */
     const p = Math.max(0, Math.min(1, (t - 0.95) / 1.45));
-    const capLine = t < 0.95 ? 'DIAL SELF TEST'
+    /* The caption reads the same table: what the box is doing is what the
+       line says, so it cannot announce a pull the selector is not in. */
+    const capLine = outroAt ? 'SYSTEMS NOMINAL'
+      : t < 0.95 ? 'DIAL SELF TEST'
       : t < 1.78 ? 'CRANKING'
-      : t < 2.40 ? 'IGNITION'
-      : t < 4.30 ? 'THROTTLE RESPONSE'
-      : 'SYSTEMS NOMINAL';
+      : gear === G_N ? 'IGNITION'
+      : gear === G_D ? 'DRIVE ENGAGED'
+      : s.holding ? 'SYSTEMS NOMINAL'
+      : 'GEAR ' + GEARS[gear] + '  //  PULLING';
 
     cx.save();
     cx.clearRect(0, 0, vw, vh);
@@ -1336,13 +1584,10 @@
        it, then the instrument standing on both, then everything the
        instrument is saying, then the name under it and the frame around the
        lot. */
-    ground(cx, L);
+    const K = ensureCache(L);
+    blit(cx, K.room, L.w / 2, L.h / 2);
     floorLines(cx, L, t);
-    if (dialFace) {
-      const side = dialSide(L);
-      cx.drawImage(dialFace, L.cx - side / 2, L.cy - side / 2, side, side);
-    }
-    dial(cx, L, shownRpm, s.live, t);
+    cluster(cx, L, shownRpm, s.live, t, ringLvl, boostLvl, gear, intro, gearPos, kick);
     /* ================= THE HANDOVER OFF THE PRELOADER ==================
      *
      * This screen and the preloader say the SAME FOUR THINGS - a SYNX
@@ -1371,7 +1616,8 @@
      * rather than as a slide changing. */
     const riseT = Math.max(0, Math.min(1, (t - 0.42) / 0.55));
     const rise = riseT * riseT * (3 - 2 * riseT);
-    progress(cx, L, p, capLine, '', stamp, rise);
+    void p;
+    status(cx, L, capLine, rise * (1 - Math.min(1, stamp * 1.6)));
     wordmark(cx, L, rise);
     edging(cx, L, rise);
     stampOut(cx, L, stamp);
@@ -1425,6 +1671,7 @@
     for (const type of EVENTS) doc.removeEventListener(type, swallow, true);
     if (audio) { audio.stop(); audio = null; }
     dialFace = null;
+    cache = null;
     if (veil) {
       veil.classList.add('ign-out');
       const el = veil;

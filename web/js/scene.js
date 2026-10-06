@@ -384,10 +384,10 @@
   uniform vec3 uSunDir;        // toward the sunset sun
   uniform vec3 uSunCol;
   uniform float uWet;          // road wetness, sharpens the reflection
+  uniform float uDamp;         // how much of the dry road is damp, glossy asphalt
   uniform float uAmbInt;       // sky irradiance strength
   uniform float uDetailNrm;    // near-field normal detail, 0 on the low preset
   uniform float uSunInt;       // key light strength
-  uniform int uDebug;          // 0 off, 1 albedo, 2 ambient, 3 diffuse, 4 env
   uniform samplerCube uEnv;    // the sky cubemap
   uniform float uEnvLevels;
   uniform float uHasEnv;
@@ -464,6 +464,22 @@
     if (w.z > 0.0) n += rippleLayer(p * 0.91 + vec2(0.6, 0.85), t * 0.93 + 0.45, w.z, lod) * w.z;
     if (w.w > 0.0) n += rippleLayer(p * 1.07 + vec2(0.5, -0.75), t * 1.13 + 0.7, w.w, lod) * w.w;
     return n;
+  }
+  /* Value noise for the damp asphalt below. The hash is arithmetic rather
+     than sin()-based on purpose: the road runs a hundred and seventy
+     kilometres, world coordinates reach the tens of thousands, and sin() of
+     a number that size has lost every bit that made it random - the patches
+     would turn to stripes a few kilometres out. (Hoskins' hash12.) */
+  float dampHash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+  }
+  float dampNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(dampHash(i), dampHash(i + vec2(1.0, 0.0)), f.x),
+               mix(dampHash(i + vec2(0.0, 1.0)), dampHash(i + vec2(1.0, 1.0)), f.x), f.y);
   }
   /* How low this spot of road is, 0..1 - where standing water gathers first.
      Two reads of one tiling map at unrelated scales and a rotation, so the
@@ -1401,6 +1417,39 @@
           }
         }
       }
+
+      /* ------------------------------------------------- DAMP ASPHALT --
+       *
+       * A night road is never one surface. Dew settles in the low spots and
+       * rubber and oil polish the stretches the traffic wears, and those
+       * patches go DARK and GLOSSY while the rest stays dry grain - which is
+       * why the neon over a real road lies on it in broken streaks instead of
+       * as one even haze. The road used to be a single dry gloss of 0.34, so
+       * it handed the reflection pass a twelfth of what it could take
+       * (uReflect * smoothness squared) and every light over it came back as
+       * the same soft glow.
+       *
+       * Two octaves of value noise in world space, so the patches are fixed
+       * to the tarmac and slide under the car. Kept PATCHY on purpose - a road
+       * that is glossy everywhere is a mirror of a lilac sky (see the flood
+       * line above) - and only where the road faces the sky, out of tunnels,
+       * and not where the rain has already put standing water. The paint
+       * does not soak: porosity spares the bright lines, as it does for rain. */
+      float damp = 0.0;
+      if (uRoad > 0.5 && uDamp > 0.001) {
+        vec3 dN = normalize(vNrm);
+        if (dN.y < 0.0) dN = -dN;
+        float open = smoothstep(0.80, 0.96, dN.y)
+                   * clamp((uSkyOcc - 0.25) / 0.75, 0.0, 1.0) * (1.0 - uTunnel);
+        if (open > 0.001) {
+          float n = dampNoise(vWorld.xz * 0.075) * 0.68
+                  + dampNoise(vWorld.xz * 0.27 + vec2(7.3, 1.9)) * 0.32;
+          damp = smoothstep(0.46, 0.68, n) * open * uDamp * (1.0 - water);
+          float dl = dot(albedo * baseCol, vec3(0.2126, 0.7152, 0.0722));
+          float porousD = 1.0 - smoothstep(0.10, 0.40, dl);
+          albedo *= mix(1.0, 0.46, damp * porousD);
+        }
+      }
       vec3 L = normalize(uSunDir);
       vec3 H = normalize(L + V);
       float ndl = max(dot(N, L), 0.0);
@@ -1447,6 +1496,8 @@
       smoothness = mix(smoothness, 0.86, soak * 0.45);
       smoothness = mix(smoothness, 0.95, margin);
       smoothness = mix(smoothness, 0.985, water);
+      // ...and a damp patch: glossy enough to mirror the neon, not a puddle
+      smoothness = mix(smoothness, 0.90, damp);
       float coat = uClearcoat;
 
       /* --- the paint, after the crash ------------------------------------
@@ -1615,10 +1666,6 @@
         rimCol += uFillCol * rim * uFillOn * uSkyOcc * 0.55;
       }
 
-      if (uDebug == 1) { outColor = vec4(albedo * baseCol, 1.0); return; }
-      if (uDebug == 2) { outColor = vec4(ambient, 1.0); return; }
-      if (uDebug == 3) { outColor = vec4(diffuse, 1.0); return; }
-      if (uDebug == 4) { outColor = vec4(env, 1.0); return; }
       col = diffuse + specular + env + rimCol;
       /* the neon under the sills, landing on whatever is beneath the car -
          and not on the inside of it: the pool is cut by height above the
@@ -1805,6 +1852,23 @@
     return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
                mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
   }
+  /* ...and in three dimensions, for anything laid round the dome: noise read
+     off an azimuth ANGLE has a seam where the angle wraps, straight down the
+     sky behind the camera, and noise read off the direction itself has none. */
+  float hash31(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+  }
+  float vnoise3(vec3 p) {
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = mix(mix(hash31(i), hash31(i + vec3(1.0, 0.0, 0.0)), f.x),
+                  mix(hash31(i + vec3(0.0, 1.0, 0.0)), hash31(i + vec3(1.0, 1.0, 0.0)), f.x), f.y);
+    float b = mix(mix(hash31(i + vec3(0.0, 0.0, 1.0)), hash31(i + vec3(1.0, 0.0, 1.0)), f.x),
+                  mix(hash31(i + vec3(0.0, 1.0, 1.0)), hash31(i + vec3(1.0, 1.0, 1.0)), f.x), f.y);
+    return mix(a, b, f.z);
+  }
 
   /* THE CLOUD DECK. Rain does not fall out of a clear sky: under a storm the
      stars go, the sun goes, and the sky is a low ceiling lit from beneath by
@@ -1913,6 +1977,103 @@
     float band = exp(-abs(d.y) * 9.0);
     c += vec3(0.02, 0.10, 0.15) * band * 0.5;
 
+    /* ================================ THE SYNTHWAVE SKY ===================
+     *
+     * The cubemap is a pastel gradient - pale blue into lavender over a cyan
+     * line - and dimmed per route it reads as a flat violet wash with nothing
+     * in it: no top to the dome, no light at the horizon, and no sun. The
+     * genre's sky is the opposite of flat, and three things make it.
+     *
+     * A DEEPER DOME. The top third goes down toward black, so the stars and
+     * the neon have something to be brighter than.
+     *
+     * LIGHT AT THE HORIZON, in the route's own sunlight - coral on the coast,
+     * amber in the canyon, violet over the mesa - so the sky is warmest
+     * exactly where the road is heading into it.
+     *
+     * THE SUN, the one the genre is named for in everybody's head: a big disc
+     * graded gold into hot magenta, cut by horizontal bars that thicken
+     * toward its foot, with a halo round it. It stands where the scene's sun
+     * actually is (uSunDir - the same light the shafts, the flare and the
+     * shadows use) and is HDR, so it blooms like every other source. Only on
+     * the routes with daylight left in them - the night routes keep their
+     * stars - and it goes behind the rain's cloud with the rest of the sun. */
+    float dusk = smoothstep(0.24, 0.42, uSkyDim) * (1.0 - uOvercast);
+    c = mix(c, vec3(0.006, 0.004, 0.024), smoothstep(0.34, 0.95, d.y) * 0.75);
+    if (dusk > 0.001) {
+      float hb = exp(-abs(d.y - 0.010) * 15.0);
+      c += mix(uSunCol, vec3(1.0, 0.25, 0.55), 0.35) * hb * 0.085 * dusk;
+      vec3 sdir = normalize(uSunDir);
+      float facing = dot(d, sdir);
+      if (facing > 0.93) {
+        vec3 rt = normalize(cross(vec3(0.0, 1.0, 0.0), sdir));
+        vec3 upl = cross(sdir, rt);
+        const float SR = 0.155;                 // the disc's angular radius
+        vec2 q = vec2(dot(d, rt), dot(d, upl)) / SR;
+        float r = length(q);
+        float aa = max(fwidth(r) * 1.25, 0.004);
+        float disc = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);
+        /* The bars: none in the top half, then thicker with every one toward
+           the foot, the way the airbrushed suns were cut. */
+        /* They start above the middle: the sun sits on the horizon, so its
+           lower third is usually behind the road, and bars that only began
+           at the middle were mostly hidden. */
+        float yb = (0.42 - q.y) / 1.42;          // 0 where the bars start, 1 at the foot
+        float period = 0.215;
+        float ph = fract((q.y + 1.0) / period);
+        float thick = mix(0.14, 0.66, clamp(yb, 0.0, 1.0));
+        float pw = max(fwidth(ph) * 1.2, 0.02);
+        float cut = q.y < 0.42 ? smoothstep(thick - pw, thick + pw, ph) : 1.0;
+        vec3 top = mix(uSunCol, vec3(1.0, 0.84, 0.30), 0.75);
+        vec3 foot = mix(uSunCol, vec3(1.0, 0.12, 0.50), 0.66);
+        /* Bright enough to bloom, not so bright the display transform takes
+           its colour away: at two and a half times white it came out of AgX
+           pale yellow from top to foot, and the grade was the whole point. */
+        vec3 face = mix(foot, top, smoothstep(-0.90, 0.80, q.y)) * 1.55;
+        /* The cuts show the sky DARKENED. Behind the disc's lower half is the
+           warm horizon band, as bright as the face, and a cut that shows it
+           is a cut nobody can see - so inside the disc the gaps are pulled
+           down, and the bars read through the haze. */
+        c *= 1.0 - disc * (1.0 - cut) * 0.82 * dusk;
+        c = mix(c, face, disc * cut * dusk);
+        // the halo, outside the rim
+        float halo = exp(-max(r - 1.0, 0.0) * 3.2) * (1.0 - disc);
+        c += mix(foot, top, 0.35) * halo * 0.22 * dusk;
+      }
+
+      /* THE STRATUS. A sunset sky in this genre is never empty: long thin
+         bands of cloud lie across the low sky and cut straight through the
+         sun, dark plum where they are against the dome and lit warm from
+         behind where they cross the light. Drawn AFTER the disc so they sit in
+         front of it. Wide and thin - the noise is stretched thirty to one
+         across the dome - with a slow drift, held to a layer around the sun's
+         own height and gone in the rain, which has a deck of its own. */
+      float layer = smoothstep(0.012, 0.055, d.y) * (1.0 - smoothstep(0.17, 0.33, d.y));
+      if (layer > 0.001) {
+        /* Thick enough to survive the far-field depth of field, which softens
+           everything at the sky's distance: a band two degrees tall blurred
+           into a smudge nobody could name. */
+        vec3 q = vec3(d.x * 2.0 + uTime * 0.004, d.y * 21.0, d.z * 2.0);
+        float n = vnoise3(q) * 0.64 + vnoise3(q * vec3(2.9, 2.4, 2.9) + 5.1) * 0.36;
+        float mask = smoothstep(0.50, 0.70, n) * layer * dusk * (1.0 - uOvercast);
+        if (mask > 0.001) {
+          vec3 sdir2 = normalize(uSunDir);
+          float toward = max(dot(d, sdir2), 0.0);
+          /* The body is the sky behind it with most of the light taken out -
+             a silhouette, so it reads against any route's sky - and a little
+             plum of its own. */
+          vec3 body = c * 0.26 + vec3(0.020, 0.008, 0.038);
+          /* forward scatter: thin cloud between the eye and a low sun glows
+             in the sun's colour, hottest right across the disc - and its
+             underside catches the horizon's warmth everywhere else */
+          vec3 lit = uSunCol * (pow(toward, 5.0) * 0.70 + pow(toward, 36.0) * 1.1)
+                   + vec3(0.16, 0.04, 0.12) * smoothstep(0.22, 0.04, d.y);
+          vec3 cloud = body + lit * (0.45 + 0.55 * smoothstep(0.58, 0.78, n));
+          c = mix(c, cloud, mask * 0.92);
+        }
+      }
+    }
+
     if (uOvercast > 0.001) c = cloudSky(d, c);
 
     c = mix(c, vec3(0.004, 0.006, 0.016), uTunnel * 0.94);
@@ -1957,6 +2118,10 @@
       this.progress = 0;
       this.time = 0;
       this.wet = 0;
+      /* How much of a dry road is damp asphalt - see DAMP ASPHALT in the
+         surface shader. Half the tarmac's patches, at most; the rest stays
+         grain so the gloss has something to be glossier than. */
+      this.damp = 0.85;
       this.fogDensity = 1 / 4200;
       this.fogTint = [1, 1, 1];
       /* Dipped beams, described the way a real one is: a hot inner cone, a
@@ -2067,9 +2232,11 @@
       await breathe();
 
       this.man = manifest;
-      const T = (window.__synxLoad = window.__synxLoad || {});
+      // the load-timing table: on window only in a development session
+      const devLoad = (window.NR || {}).DEV !== false;
+      const T = devLoad ? (window.__synxLoad = window.__synxLoad || {}) : {};
       const mark = (k, fn) => { const a = performance.now(); const r = fn(); T[k] = +(performance.now() - a).toFixed(1); return r; };
-      window.__synxMark = mark;
+      if (devLoad) window.__synxMark = mark;
       mark('tuneMaterials', () => this.tuneMaterials());
       const vBytes = manifest.vertexBytes;
       const verts = new Float32Array(bin, 0, vBytes / 4);
@@ -8340,6 +8507,7 @@
       const sc = this.sunColor || [1.00, 0.42, 0.36];
       U.v3(gl, this.prog.u.uSunCol, sc[0], sc[1], sc[2]);
       U.f(gl, this.prog.u.uWet, o.wet === undefined ? this.wet : o.wet);
+      U.f(gl, this.prog.u.uDamp, this.damp);
       U.f(gl, this.prog.u.uAmbInt, this.ambInt === undefined ? 1.9 : this.ambInt);
       /* THE WORLD IS OUTDOORS, and it says so once a frame.
          The car and the driver figure each put this back when they have
@@ -8359,7 +8527,6 @@
       const oc = this.uploadCloud(this.prog.u);
       this.sunVeil = 1 - 0.92 * oc;
       U.f(gl, this.prog.u.uSunInt, (this.sunInt === undefined ? 1.5 : this.sunInt) * (1 - 0.55 * oc));
-      U.i(gl, this.prog.u.uDebug, this.debug || 0);
       /* Kept, because drawWorld needs it: how far scenery can be culled
          without the player seeing it go is a question about the fog, and this
          is where the fog for the frame arrives. */
@@ -10026,29 +10193,29 @@
         c.fillRect(x, y, 8, 20 + f * 6);
       }
       c.textBaseline = 'alphabetic';
-      c.font = '600 11px Orbitron, "Segoe UI", sans-serif';
+      c.font = '600 11px Orbitron, Rajdhani, "Segoe UI", sans-serif';
       c.fillStyle = 'rgba(159,182,216,0.7)'; c.textAlign = 'left';
       c.fillText('RPM x1000', 96, 76);
       // road speed, the biggest thing on the dash
       c.textAlign = 'right';
-      c.font = '900 64px Orbitron, "Segoe UI", sans-serif';
+      c.font = '900 64px Orbitron, Rajdhani, "Segoe UI", sans-serif';
       c.fillStyle = '#39e6ff';
       c.fillText(String(v), 330, 142);
-      c.font = '600 14px Orbitron, "Segoe UI", sans-serif';
+      c.font = '600 13px Orbitron, Rajdhani, "Segoe UI", sans-serif';
       c.fillStyle = 'rgba(57,230,255,0.75)'; c.textAlign = 'left';
       c.fillText(g.unit || 'MPH', 338, 142);
       // the gear, in the box the eye goes to on a shift
       c.strokeStyle = 'rgba(255,61,139,0.85)'; c.lineWidth = 2;
       c.strokeRect(22, 30, 58, 74);
       c.textAlign = 'center'; c.fillStyle = '#ff3d8b';
-      c.font = '900 52px Orbitron, "Segoe UI", sans-serif';
+      c.font = '900 50px Orbitron, Rajdhani, "Segoe UI", sans-serif';
       c.fillText(String(g.gear > 0 ? g.gear : 'N'), 51, 88);
-      c.font = '600 10px Orbitron, "Segoe UI", sans-serif';
+      c.font = '600 10px Orbitron, Rajdhani, "Segoe UI", sans-serif';
       c.fillStyle = 'rgba(255,61,139,0.8)'; c.fillText('GEAR', 51, 122);
       // the boost reserve, and it flashes solid while it is being spent
       c.textAlign = 'left';
       c.fillStyle = g.boosting ? '#ffffff' : 'rgba(255,61,139,0.85)';
-      c.font = '600 11px Orbitron, "Segoe UI", sans-serif';
+      c.font = '600 11px Orbitron, Rajdhani, "Segoe UI", sans-serif';
       c.fillText('BOOST', 420, 38);
       for (let i = 0; i < 12; i++) {
         c.fillStyle = i < boost ? (g.boosting ? '#ffd1e4' : '#ff3d8b') : 'rgba(255,61,139,0.14)';
@@ -10092,10 +10259,11 @@
     c.stroke();
     c.fillStyle = '#ff3d8b';
     c.beginPath(); c.moveTo(78, 80); c.lineTo(88, 96); c.lineTo(68, 96); c.closePath(); c.fill();
-    c.font = '600 11px Orbitron, "Segoe UI", sans-serif';
+    c.font = '600 12px Orbitron, Rajdhani, "Segoe UI", sans-serif';
     c.fillStyle = 'rgba(159,182,216,0.85)'; c.textAlign = 'left';
     c.fillText('SYNX NAV', 10, 18);
     c.textAlign = 'right'; c.fillStyle = '#ffb347';
+    c.font = '14px "Share Tech Mono", ui-monospace, monospace';
     c.fillText('173 KM', 246, 150);
     cabUploadTex(scene, 'cab_nav', 0, cv, true, 256, 160, true);
   }

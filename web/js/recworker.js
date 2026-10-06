@@ -31,8 +31,9 @@
  * a few buffers in the system and they circulate; nothing allocates per frame
  * in the steady state.
  *
- *   -> begin  {w,h,fps,quality,windowMs,budgetMb}   <- ready {ok,frameLen,step}
+ *   -> begin  {w,h,fps,quality,windowMs,budgetMb,mark} <- ready {ok,frameLen,step}
  *   -> frame  {px,ms,fmt,score}                     <- spent {px}
+ *   -> watermark {mark}                             (the SYNX artwork, redrawn)
  *   -> mark   {label,ms}
  *   -> save   {kind,ms,tag}                         <- clip  {tag,frames,name,bytes}
  *   -> clear | end | stats                          <- stats {...}
@@ -46,6 +47,22 @@
 let mod = null;          // the wasm instance's exports
 let live = false;
 let fmtDefault = 4;
+/* The newest SYNX artwork the page sent: {x, y, w, h, px}. Kept because it can
+   arrive while `begin` is still waiting for the module, and the newest one is
+   the one to lay on. Until any arrives the encoder stamps its own lettering -
+   see crates/synx-rec/src/watermark.rs. */
+let art = null;
+
+/** Hand the artwork to the encoder. Through the frame buffer, like a label:
+    it is already mapped, and the next frame overwrites it anyway. */
+function applyArt() {
+  if (!live || !mod || !art || !mod.synx_rec_set_watermark) return;
+  const f = frameView();
+  const src = new Uint8Array(art.px);
+  if (!f || src.length > f.length || src.length !== art.w * art.h * 4) return;
+  f.set(src);
+  mod.synx_rec_set_watermark(art.x >>> 0, art.y >>> 0, art.w >>> 0, art.h >>> 0);
+}
 
 /* THE RULE ABOUT VIEWS, which is the same here as everywhere else in this
    codebase: anything that can grow a Vec can grow linear memory, and growing
@@ -112,11 +129,14 @@ self.onmessage = async (ev) => {
 
   switch (m.t) {
     case 'begin': {
+      // taken BEFORE the wait: a sharper one sent during it must win
+      art = m.mark || null;
       if (!(await load())) return;
       fmtDefault = m.fmt === 3 ? 3 : 4;
       const ok = !!mod.synx_rec_begin(
         m.w | 0, m.h | 0, m.fps | 0, m.quality | 0, m.windowMs | 0, m.budgetMb | 0);
       live = ok;
+      applyArt();
       self.postMessage({
         t: 'ready',
         ok,
@@ -189,6 +209,11 @@ self.onmessage = async (ev) => {
         [out.buffer]);
       return;
     }
+
+    case 'watermark':
+      art = m.mark || art;
+      applyArt();
+      return;
 
     case 'clear':
       if (live && mod) mod.synx_rec_clear();

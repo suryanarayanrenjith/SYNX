@@ -42,6 +42,7 @@ pub mod avi;
 pub mod bits;
 pub mod jpeg;
 pub mod reel;
+pub mod watermark;
 
 pub use reel::Reel;
 
@@ -426,7 +427,7 @@ mod roundtrip {
         let mut r = crate::Reel::new(w, h, 20, 80, 60_000, 64 << 20);
         for i in 0..40u32 {
             let v = (i * 6) as u8;
-            r.push(&vec![v; w * h * 3], 3, i * 50);
+            r.push(&mut vec![v; w * h * 3], 3, i * 50);
         }
         let mut out = Vec::new();
         let n = r.save_all(&mut out);
@@ -442,6 +443,64 @@ mod roundtrip {
             let off = u32::from_le_bytes([out[e + 8], out[e + 9], out[e + 10], out[e + 11]]) as usize;
             let at = movi + off + 8;
             assert_eq!(&out[at..at + 2], &[0xff, 0xd8], "frame {i} is not a JPEG");
+        }
+    }
+
+    /// Every JPEG a clip indexes, decoded.
+    fn frames_of(clip: &[u8]) -> Vec<(usize, usize, Vec<u8>)> {
+        let idx = clip.windows(4).position(|x| x == b"idx1").unwrap();
+        let movi = clip.windows(4).position(|x| x == b"movi").unwrap();
+        let count = u32::from_le_bytes([clip[idx + 4], clip[idx + 5], clip[idx + 6], clip[idx + 7]]) as usize / 16;
+        (0..count)
+            .map(|i| {
+                let e = idx + 8 + i * 16;
+                let rd = |o: usize| u32::from_le_bytes([clip[e + o], clip[e + o + 1], clip[e + o + 2], clip[e + o + 3]]) as usize;
+                let at = movi + rd(8) + 8;
+                decode(&clip[at..at + rd(12)])
+            })
+            .collect()
+    }
+
+    /// THE MARK IS IN EVERY RECORDING. Black frames go in; every frame of
+    /// every kind of save that comes out - the whole ring, the last stretch,
+    /// the stitched highlights, the automatic best moment - must have the
+    /// SYNX mark lit in its corner and nothing else changed.
+    #[test]
+    fn every_frame_of_every_save_carries_the_mark() {
+        let (w, h) = (320, 180);
+        let mut r = crate::Reel::new(w, h, 20, 85, 60_000, 64 << 20);
+        let (mx, my, mw, mh) = r.watermark_rect();
+        for i in 0..60u32 {
+            r.push_scored(&mut vec![0u8; w * h * 3], 3, i * 50, (i * 13 % 1000) as u16);
+            if i == 30 {
+                r.mark(i * 50, "TEST");
+            }
+        }
+        let mut saves: Vec<(&str, Vec<u8>)> = Vec::new();
+        let mut out = Vec::new();
+        r.save_all(&mut out);
+        saves.push(("all", core::mem::take(&mut out)));
+        r.save_last(1_000, &mut out);
+        saves.push(("last", core::mem::take(&mut out)));
+        r.save_reel(&mut out);
+        saves.push(("reel", core::mem::take(&mut out)));
+        r.save_best(1_000, &mut out);
+        saves.push(("best", core::mem::take(&mut out)));
+        for (kind, clip) in &saves {
+            let frames = frames_of(clip);
+            assert!(!frames.is_empty(), "the {kind} save is empty");
+            for (n, (fw, fh, px)) in frames.iter().enumerate() {
+                assert_eq!((*fw, *fh), (w, h));
+                let lum = |x: usize, y: usize| px[(y * w + x) * 3] as u32;
+                let lit = (my..my + mh)
+                    .flat_map(|y| (mx..mx + mw).map(move |x| (x, y)))
+                    .filter(|&(x, y)| lum(x, y) > 150)
+                    .count();
+                assert!(lit > mw * mh / 10, "{kind} frame {n}: the mark is missing ({lit} lit)");
+                // the rest of the frame is still the black that went in
+                let stray = (0..h / 2).flat_map(|y| (0..w / 2).map(move |x| (x, y))).filter(|&(x, y)| lum(x, y) > 24).count();
+                assert_eq!(stray, 0, "{kind} frame {n}: the mark leaked across the picture");
+            }
         }
     }
 }

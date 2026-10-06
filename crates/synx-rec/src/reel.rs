@@ -27,6 +27,7 @@
 
 use crate::avi;
 use crate::jpeg;
+use crate::watermark::Watermark;
 
 pub struct Frame {
     pub t_ms: u32,
@@ -74,6 +75,9 @@ pub struct Reel {
     pub offered: u64,
     pub taken: u64,
     last_ms: u32,
+    /// Laid over every frame before it is encoded. Never absent: the block
+    /// lettering until the page's own artwork replaces it. See watermark.rs.
+    watermark: Watermark,
 }
 
 impl Reel {
@@ -94,7 +98,25 @@ impl Reel {
             offered: 0,
             taken: 0,
             last_ms: 0,
+            watermark: Watermark::builtin(w, h),
         }
+    }
+
+    /// Replace the mark with the page's artwork. Returns false - and keeps the
+    /// one it has - when the artwork does not fit this frame size.
+    pub fn set_watermark(&mut self, x: usize, y: usize, w: usize, h: usize, rgba: &[u8]) -> bool {
+        match Watermark::from_rgba(self.w, self.h, x, y, w, h, rgba) {
+            Some(m) => {
+                self.watermark = m;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Where the mark is on the frame, `(x, y, w, h)`.
+    pub fn watermark_rect(&self) -> (usize, usize, usize, usize) {
+        self.watermark.rect()
     }
 
     pub fn held_frames(&self) -> usize {
@@ -126,17 +148,20 @@ impl Reel {
         t_ms.saturating_sub(self.last_ms) + 1 >= step
     }
 
-    /// Encode one frame and put it in the ring.
+    /// Stamp one frame, encode it and put it in the ring.
     ///
-    /// `src` is `w * h * px` bytes, top row first. Returns the encoded size,
-    /// or zero when the frame was declined.
-    pub fn push(&mut self, src: &[u8], px: usize, t_ms: u32) -> usize {
+    /// `src` is `w * h * px` bytes, top row first, and the SYNX mark is laid
+    /// onto it IN PLACE before it is encoded - which is why it is taken
+    /// mutably. This is the only way into the ring, so every clip any save
+    /// makes is cut from marked frames. Returns the encoded size, or zero when
+    /// the frame was declined.
+    pub fn push(&mut self, src: &mut [u8], px: usize, t_ms: u32) -> usize {
         self.push_scored(src, px, t_ms, 0)
     }
 
     /// The same, carrying the caller's opinion of the frame. See `Frame::score`
     /// and `save_best`.
-    pub fn push_scored(&mut self, src: &[u8], px: usize, t_ms: u32, score: u16) -> usize {
+    pub fn push_scored(&mut self, src: &mut [u8], px: usize, t_ms: u32, score: u16) -> usize {
         self.offered += 1;
         if !self.wants(t_ms) {
             return 0;
@@ -144,6 +169,7 @@ impl Reel {
         if src.len() < self.w * self.h * px {
             return 0;
         }
+        self.watermark.apply(src, self.w, px);
         jpeg::encode(src, self.w, self.h, px, &self.tables, &mut self.scratch);
         if self.scratch.is_empty() {
             return 0;
@@ -381,7 +407,7 @@ mod tests {
         let mut r = Reel::new(w, h, 20, 60, 600_000, 64 << 20);
         for i in 0..len {
             let t = i * 50;
-            r.push_scored(&frame(w, h, (i % 255) as u8), 3, t, f(t));
+            r.push_scored(&mut frame(w, h, (i % 255) as u8), 3, t, f(t));
         }
         r
     }
@@ -511,7 +537,7 @@ mod tests {
         let (w, h) = (32, 32);
         let mut r = Reel::new(w, h, 30, 60, 1_000, 64 << 20);
         for i in 0..200u32 {
-            r.push(&frame(w, h, (i % 255) as u8), 3, i * 33);
+            r.push(&mut frame(w, h, (i % 255) as u8), 3, i * 33);
         }
         assert!(r.held_frames() > 0);
         assert!(
@@ -527,7 +553,7 @@ mod tests {
         // a budget of one megabyte, and a window long enough not to be the limit
         let mut r = Reel::new(w, h, 60, 90, 600_000, 1 << 20);
         for i in 0..400u32 {
-            r.push(&frame(w, h, (i * 7 % 255) as u8), 3, i * 16);
+            r.push(&mut frame(w, h, (i * 7 % 255) as u8), 3, i * 16);
         }
         assert!(
             r.held_bytes() <= (1 << 20) + 200_000,
@@ -542,7 +568,7 @@ mod tests {
         let mut r = Reel::new(w, h, 10, 60, 60_000, 64 << 20);
         // offered at 100 Hz against a 10 fps target
         for i in 0..100u32 {
-            r.push(&frame(w, h, 128), 3, i * 10);
+            r.push(&mut frame(w, h, 128), 3, i * 10);
         }
         assert_eq!(r.offered, 100);
         assert!(r.taken <= 12, "took {} of 100 frames at a tenth the rate", r.taken);
@@ -556,7 +582,7 @@ mod tests {
         r.pre_ms = 500;
         r.post_ms = 500;
         for i in 0..200u32 {
-            r.push(&frame(w, h, 90), 3, i * 50); // 0..10_000 ms
+            r.push(&mut frame(w, h, 90), 3, i * 50); // 0..10_000 ms
         }
         r.mark(2_000, "ONE");
         r.mark(8_000, "TWO");
@@ -574,7 +600,7 @@ mod tests {
         r.pre_ms = 2_000;
         r.post_ms = 2_000;
         for i in 0..200u32 {
-            r.push(&frame(w, h, 90), 3, i * 50);
+            r.push(&mut frame(w, h, 90), 3, i * 50);
         }
         r.mark(4_000, "A");
         r.mark(5_500, "B");
@@ -597,7 +623,7 @@ mod tests {
         let (w, h) = (16, 16);
         let mut r = Reel::new(w, h, 20, 60, 600_000, 64 << 20);
         for i in 0..40u32 {
-            r.push(&frame(w, h, 20), 3, i * 50);
+            r.push(&mut frame(w, h, 20), 3, i * 50);
         }
         let mut out = Vec::new();
         assert_eq!(r.save_reel(&mut out), 0);
@@ -609,7 +635,7 @@ mod tests {
         let (w, h) = (16, 16);
         let mut r = Reel::new(w, h, 20, 60, 600_000, 64 << 20);
         for i in 0..200u32 {
-            r.push(&frame(w, h, 20), 3, i * 50);
+            r.push(&mut frame(w, h, 20), 3, i * 50);
         }
         let mut out = Vec::new();
         let n = r.save_last(2_000, &mut out);
@@ -619,7 +645,7 @@ mod tests {
     #[test]
     fn a_frame_shorter_than_the_picture_is_refused() {
         let mut r = Reel::new(64, 64, 30, 60, 60_000, 1 << 20);
-        assert_eq!(r.push(&[0u8; 16], 3, 0), 0, "a short buffer must not be read past");
+        assert_eq!(r.push(&mut [0u8; 16], 3, 0), 0, "a short buffer must not be read past");
         assert_eq!(r.held_frames(), 0);
     }
 }

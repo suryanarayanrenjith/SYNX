@@ -364,6 +364,8 @@ pub struct Peer {
     /// The pose interpolation asked for, before smoothing. Kept so the
     /// smoother knows what it is chasing.
     target: CarState,
+    /// The server time `target` was resolved at, last frame. See `jump`.
+    drawn_t: f64,
     /// The part of the last discontinuity that has not been smoothed out yet.
     err_x: f64,
     err_y: f64,
@@ -402,6 +404,7 @@ impl Default for Peer {
             newest_t: 0,
             render: CarState::default(),
             target: CarState::default(),
+            drawn_t: 0.0,
             err_x: 0.0,
             err_y: 0.0,
             err_z: 0.0,
@@ -519,6 +522,32 @@ impl Peer {
         true
     }
 
+    /// How far what is known now moves the path at the moment last drawn.
+    ///
+    /// Re-resolved at last frame's time against the history as it stands
+    /// this frame, and compared with what was actually resolved there then.
+    /// With nothing new, or with a new state that agrees with what was being
+    /// dead-reckoned, the two are the same point and the answer is zero. When
+    /// a late packet lands and the car turns out to have been somewhere else,
+    /// the difference is exactly how far it was wrong. Returns
+    /// `[x, y, z, yaw]`, the old pose minus the new; `None` the first time.
+    fn jump(&mut self) -> Option<[f64; 4]> {
+        if !self.visible {
+            return None;
+        }
+        let before = self.target;
+        if !self.resolve(self.drawn_t) {
+            return None;
+        }
+        let then = self.target;
+        Some([
+            before.x as f64 - then.x as f64,
+            before.y as f64 - then.y as f64,
+            before.z as f64 - then.z as f64,
+            ang_diff(then.yaw as f64, before.yaw as f64),
+        ])
+    }
+
     /// Move the drawn pose toward the resolved one, absorbing discontinuities.
     ///
     /// A car whose packets stopped for four hundred milliseconds and then
@@ -527,9 +556,21 @@ impl Peer {
     /// immediately in the TARGET and paid back gradually in the RENDER, by
     /// carrying the difference as an error that decays - which is the same
     /// trick the local car's correction path uses below, for the same reason.
-    fn smooth(&mut self, dt: f64) {
+    ///
+    /// ONLY THE JUMP. This used to take "render minus target" afresh every
+    /// frame - and last frame's render is behind this frame's target by
+    /// however far the car has DRIVEN in a frame, a unit and more at speed.
+    /// That ordinary motion went into the error and was decayed like one, so
+    /// every remote car was drawn trailing its own interpolated path by a
+    /// low-pass lag: about fifty milliseconds, three to four units at seventy
+    /// units a second, more the faster it went and different at every frame
+    /// rate. A car that was beside you on your screen was a bonnet behind on
+    /// its own. Now the error is only ever what new information changed
+    /// (`jump`), and a car whose packets arrive as predicted is drawn exactly
+    /// on its path.
+    fn smooth(&mut self, dt: f64, jump: Option<[f64; 4]>) {
         let t = self.target;
-        if !self.visible {
+        let Some([jx, jy, jz, jyaw]) = jump.filter(|_| self.visible) else {
             self.visible = true;
             self.render = t;
             self.err_x = 0.0;
@@ -537,15 +578,12 @@ impl Peer {
             self.err_z = 0.0;
             self.err_yaw = 0.0;
             return;
-        }
+        };
 
-        // Fold the frame's motion into the error rather than into the render,
-        // so the error is always "render minus target" and one decay handles
-        // both the jump and the ordinary tracking.
-        self.err_x += self.render.x as f64 - t.x as f64 - self.err_x;
-        self.err_y += self.render.y as f64 - t.y as f64 - self.err_y;
-        self.err_z += self.render.z as f64 - t.z as f64 - self.err_z;
-        self.err_yaw = ang_diff(t.yaw as f64, self.render.yaw as f64);
+        self.err_x += jx;
+        self.err_y += jy;
+        self.err_z += jz;
+        self.err_yaw = ang_diff(0.0, self.err_yaw + jyaw);
 
         let d = (self.err_x * self.err_x + self.err_y * self.err_y + self.err_z * self.err_z).sqrt();
         if d > SNAP_DISTANCE {
@@ -927,9 +965,13 @@ impl NetClient {
                 p.visible = false;
                 continue;
             }
+            // what this frame's packets changed about where the car was last
+            // frame - measured before the target moves on to this frame
+            let jump = p.jump();
             if p.resolve(render_t) {
+                p.drawn_t = render_t;
                 p.last_gap_ms = p.newest().map_or(0.0, |n| render_t - n.t_ms as f64);
-                p.smooth(dt);
+                p.smooth(dt, jump);
                 if p.extrapolated {
                     any_starved = true;
                 } else {
@@ -952,14 +994,25 @@ impl NetClient {
     /// memory and hands them to the socket without copying.
     pub fn pack_state(&mut self, car: &Vehicle, now_client_ms: f64, flags: u8, checkpoint: u8) -> usize {
         let t = if self.clock.have { self.clock.server_now(now_client_ms) } else { now_client_ms };
+        let t = t.max(0.0);
+        let t_ms = t as u32;
+        // THE STAMP IS WHOLE MILLISECONDS AND THE POSE IS NOT. The wire drops
+        // whatever fraction of a millisecond `t` carries, which is a different
+        // fraction every packet - so every receiver was handed a pose up to a
+        // millisecond younger than its stamp, a tenth of a unit at a hundred
+        // units a second, scattered at random. Interpolated at thirty packets
+        // a second that scatter is a car trembling along its own line. The
+        // pose is carried back over the fraction instead, so it is the pose
+        // AT the stamp; under a millisecond, a straight line is exact.
+        let back = (t - t_ms as f64) / 1000.0;
         let state = CarState {
-            t_ms: t.max(0.0) as u32,
-            x: car.x as f32,
+            t_ms,
+            x: (car.x - car.vx * back) as f32,
             y: car.y as f32,
-            z: car.z as f32,
-            s: car.s_track as f32,
+            z: (car.z - car.vz * back) as f32,
+            s: (car.s_track - car.v_long * back) as f32,
             lateral: car.lateral as f32,
-            yaw: car.yaw as f32,
+            yaw: (car.yaw - car.yaw_rate * back) as f32,
             pitch: (car.pitch + car.road_pitch) as f32,
             roll: car.roll as f32,
             v_long: car.v_long as f32,
@@ -1294,13 +1347,78 @@ mod tests {
         p.render = state(0, 0.0, 0.0, 0.0, 0.0);
         p.visible = true;
         p.target = state(0, 0.0, 400.0, 0.0, 0.0);
-        p.smooth(1.0 / 60.0);
+        p.smooth(1.0 / 60.0, Some([0.0, 0.0, -400.0, 0.0]));
         assert!((p.render.z - 400.0).abs() < 1e-3, "a 400 unit jump was smoothed");
 
         p.render = state(0, 0.0, 0.0, 0.0, 0.0);
         p.target = state(0, 0.0, 2.0, 0.0, 0.0);
-        p.smooth(1.0 / 60.0);
+        p.smooth(1.0 / 60.0, Some([0.0, 0.0, -2.0, 0.0]));
         assert!(p.render.z > 0.0 && p.render.z < 2.0, "a 2 unit error was not smoothed: {}", p.render.z);
+    }
+
+    /// One frame of `NetClient::sample` for one car, as it does it.
+    fn frame(p: &mut Peer, t: f64, dt: f64) {
+        let jump = p.jump();
+        assert!(p.resolve(t));
+        p.drawn_t = t;
+        p.smooth(dt, jump);
+    }
+
+    /// A CAR THAT IS WHERE IT SAID IT WOULD BE IS DRAWN THERE. Seventy units
+    /// a second down a straight, thirty packets a second, drawn at sixty and
+    /// at a hundred and forty-four frames a second. The smoother used to fold
+    /// each frame's DRIVING into its error and decay it, and drew this car
+    /// three to four units behind its own path - a different distance at
+    /// every frame rate.
+    #[test]
+    fn a_car_on_its_path_is_drawn_on_its_path() {
+        for hz in [60.0, 144.0] {
+            let mut p = Peer::default();
+            let dt = 1.0 / hz;
+            let mut worst = 0.0f64;
+            let mut t = 1100.0;
+            let mut next = 0u32;
+            while t < 3800.0 {
+                // packets land a playout delay ahead of what is drawn
+                while 1000.0 + (next * 33) as f64 <= t + 120.0 {
+                    p.push(state(1000 + next * 33, 0.0, 70.0 * (next * 33) as f32 / 1000.0, 0.0, 70.0));
+                    next += 1;
+                }
+                frame(&mut p, t, dt);
+                let truth = 70.0 * (t - 1000.0) / 1000.0;
+                worst = worst.max((p.render.z as f64 - truth).abs());
+                t += dt * 1000.0;
+            }
+            assert!(worst < 0.01, "at {hz} Hz the car was drawn {worst:.3} units off its path");
+        }
+    }
+
+    /// ...and a car that turns out to have been somewhere else is moved
+    /// there over a few frames, not in one.
+    #[test]
+    fn a_late_surprise_is_eased_in() {
+        let mut p = Peer::default();
+        for i in 0..10u32 {
+            p.push(state(1000 + i * 33, 0.0, 2.31 * i as f32, 0.0, 70.0));
+        }
+        // drawn past the newest state: dead reckoned straight on
+        let mut t = 1300.0;
+        for _ in 0..4 {
+            frame(&mut p, t, 1.0 / 60.0);
+            t += 1000.0 / 60.0;
+        }
+        assert!(p.render.x.abs() < 1e-3);
+        // the packet that was late: it was two units to the side all along
+        p.push(state(1330, 2.0, 2.31 * 10.0, 0.0, 70.0));
+        p.push(state(1363, 2.0, 2.31 * 11.0, 0.0, 70.0));
+        p.push(state(1396, 2.0, 2.31 * 12.0, 0.0, 70.0));
+        frame(&mut p, t, 1.0 / 60.0);
+        assert!(p.render.x > 0.05 && p.render.x < 1.0, "not eased in: x {}", p.render.x);
+        for _ in 0..40 {
+            t += 1000.0 / 60.0;
+            frame(&mut p, t, 1.0 / 60.0);
+        }
+        assert!((p.render.x - 2.0).abs() < 0.02, "never arrived: x {}", p.render.x);
     }
 
     #[test]
@@ -1354,5 +1472,30 @@ mod tests {
             p.starve();
         }
         assert!(p.delay_ms() > before, "three starved frames did not widen the buffer");
+    }
+
+    /// A pose packed at a fraction of a millisecond goes out as the pose AT
+    /// the whole millisecond its stamp says, not the fraction after it.
+    #[test]
+    fn the_pose_is_the_pose_at_its_stamp() {
+        let mut c = NetClient::default();
+        let mut car = Vehicle::default();
+        (car.x, car.z, car.vx, car.vz, car.v_long) = (100.0, -40.0, 60.0, -80.0, 100.0);
+        (car.s_track, car.yaw, car.yaw_rate) = (5000.0, 0.5, 0.9);
+        let n = c.pack_state(&car, 1234.75, 0, 0);
+        assert!(n > 0);
+        let m = synx_net::msg::read_state(&c.out[1..n]).expect("a state that decodes");
+        let back = 0.75e-3;
+        assert_eq!(m.car.t_ms, 1234);
+        assert!((m.car.x as f64 - (100.0 - 60.0 * back)).abs() < 1e-3, "x {}", m.car.x);
+        assert!((m.car.z as f64 - (-40.0 + 80.0 * back)).abs() < 1e-3, "z {}", m.car.z);
+        assert!((m.car.s as f64 - (5000.0 - 100.0 * back)).abs() < 2e-3, "s {}", m.car.s);
+        assert!((m.car.yaw as f64 - (0.5 - 0.9 * back)).abs() < 1.2e-4, "yaw {}", m.car.yaw);
+        // ...and on a whole millisecond nothing moves at all
+        let n = c.pack_state(&car, 1300.0, 0, 0);
+        let m = synx_net::msg::read_state(&c.out[1..n]).expect("a state that decodes");
+        assert_eq!(m.car.t_ms, 1300);
+        assert_eq!(m.car.x, 100.0);
+        assert_eq!(m.car.z, -40.0);
     }
 }

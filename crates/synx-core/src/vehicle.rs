@@ -503,6 +503,21 @@ impl Vehicle {
         Vehicle { lift, ..Default::default() }
     }
 
+    /// How far, in seconds, the car's state is behind the time it has been
+    /// given: the part of the frames so far that has not yet made up a whole
+    /// FIXED_DT slice. Between zero and one slice, and different every frame.
+    ///
+    /// The solver keeps it, rather than stepping the remainder, so that the
+    /// integration is the same at every frame rate - every slice is exactly
+    /// 1/240 s, and a car at 144 Hz finishes a run where the same car at 60 Hz
+    /// does. What it costs is that the state a frame ends on is up to a slice
+    /// short of that frame. The game shows and sends the car carried on over
+    /// this (`Game.presentCar`), so what is drawn and what is broadcast is the
+    /// car AT the frame, while the solver keeps integrating from its own.
+    pub fn lag(&self) -> f64 {
+        self.accum
+    }
+
     /// Put the car on the track at arc length `s`, `lateral` units off centre.
     ///
     /// Everything that remembers where the car has *been* is reset with it, or

@@ -227,16 +227,73 @@
     return src.slice(0, nl + 1) + lines + '\n' + src.slice(nl + 1);
   }
 
+  /* ================================ SHADERS COMPILE IN PARALLEL ==========
+   *
+   * WHAT THE BOOT WAS WAITING FOR. Measured on a cold start, the archive took
+   * a quarter of a second and this function took five and a half: every
+   * program was compiled, ASKED whether it had compiled, linked and ASKED
+   * whether it had linked, one after another - and every one of those
+   * questions is a synchronous round trip that stalls the page until the
+   * driver has finished. Twenty-odd programs in series, with the main thread
+   * blocked for every one.
+   *
+   * Nothing needs the answer that early. So a program is now SUBMITTED here
+   * - both stages compiled, attached and linked, with no question asked - and
+   * the questions wait until something first needs the program's uniforms.
+   * Everything the constructors create is therefore in flight at once, and
+   * KHR_parallel_shader_compile, where the driver has it, lets ANGLE spread
+   * the work over its own worker threads; where it does not, the compiles
+   * still overlap the course being built on the main thread rather than
+   * running in front of it.
+   *
+   * A FAILURE IS STILL A FAILURE, AND STILL LOUD. The first read of `.u`
+   * checks the program and throws exactly the message the old path threw,
+   * stage and driver log included, and `settleAll` - called once the load
+   * has finished, see js/main.js - checks every program nothing has touched
+   * yet, so a broken shader reaches the fatal card on the same promise chain
+   * it always did. */
+  let parallelExt = null;
+  const pendingPrograms = [];
+
   function program(gl, vs, fs, label, defines) {
+    if (parallelExt === null) {
+      try { parallelExt = gl.getExtension('KHR_parallel_shader_compile') || false; }
+      catch (e) { parallelExt = false; }
+    }
+    const vsrc = withDefines(vs, defines), fsrc = withDefines(fs, defines);
     const p = gl.createProgram();
-    const a = compile(gl, gl.VERTEX_SHADER, withDefines(vs, defines), label + '.vert');
-    const b = compile(gl, gl.FRAGMENT_SHADER, withDefines(fs, defines), label + '.frag');
+    const a = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(a, vsrc);
+    gl.compileShader(a);
+    const b = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(b, fsrc);
+    gl.compileShader(b);
     gl.attachShader(p, a); gl.attachShader(p, b);
     gl.linkProgram(p);
+    const P = { prog: p, label };
+    const hidden = { gl, a, b, vsrc, fsrc, u: null };
+    Object.defineProperty(P, 'u', {
+      enumerable: true,
+      get() { return hidden.u || settle(P, hidden); },
+    });
+    pendingPrograms.push({ P, hidden });
+    return P;
+  }
+
+  /* Ask the questions the submit deferred, once, and resolve the uniforms. */
+  function settle(P, H) {
+    if (H.u) return H.u;
+    const gl = H.gl;
+    const p = P.prog;
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-      throw new Error('link failed [' + label + ']: ' + gl.getProgramInfoLog(p));
+      // which stage, with the same report the synchronous path gave
+      if (!gl.getShaderParameter(H.a, gl.COMPILE_STATUS)) compileError(gl, H.a, H.vsrc, P.label + '.vert');
+      if (!gl.getShaderParameter(H.b, gl.COMPILE_STATUS)) compileError(gl, H.b, H.fsrc, P.label + '.frag');
+      throw new Error('link failed [' + P.label + ']: ' + gl.getProgramInfoLog(p));
     }
-    gl.deleteShader(a); gl.deleteShader(b);
+    gl.deleteShader(H.a); gl.deleteShader(H.b);
+    H.a = H.b = null;
+    H.vsrc = H.fsrc = null;
     const u = {};
     const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
     for (let i = 0; i < n; i++) {
@@ -244,7 +301,27 @@
       const name = info.name.replace(/\[0\]$/, '');
       u[name] = gl.getUniformLocation(p, name);
     }
-    return { prog: p, u, label };
+    H.u = u;
+    for (let i = 0; i < pendingPrograms.length; i++) {
+      if (pendingPrograms[i].P === P) { pendingPrograms.splice(i, 1); break; }
+    }
+    return u;
+  }
+
+  function compileError(gl, s, src, label) {
+    const log = gl.getShaderInfoLog(s);
+    const numbered = src.split('\n').map((l, i) => (i + 1) + ': ' + l).join('\n');
+    console.error('shader failed [' + label + ']\n' + log + '\n' + numbered);
+    throw new Error('shader compile failed: ' + label + ' -- ' +
+      String(log || '').trim().split('\n').slice(0, 4).join(' | '));
+  }
+
+  /** Check every program nothing has used yet; throws the first failure. */
+  function settleAll() {
+    while (pendingPrograms.length) {
+      const { P, hidden } = pendingPrograms[0];
+      settle(P, hidden);
+    }
   }
 
   function target(gl, w, h, opts) {
@@ -486,5 +563,5 @@
 
   global.NR = global.NR || {};
   Object.assign(global.NR, { M, V3, M4 });
-  global.NR.gl = { compile, program, target, FS_VERT, U };
+  global.NR.gl = { compile, program, settleAll, target, FS_VERT, U };
 })(window);

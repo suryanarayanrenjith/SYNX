@@ -264,7 +264,7 @@
 
   function lift() {
     if (done) return;
-    const g = global.__nr;
+    const g = NR.game;
     const ready = g && g.startIntro && g.scene && g.scene.ready;
     if (!ready) {
       if (!waitedFrom) waitedFrom = Date.now();
@@ -323,7 +323,7 @@
     /* WHEREVER THIS ENDED, THE MUSIC STARTS. The lift has usually done it
        already and releaseMusic is a no-op then; what this catches is the
        player who skipped, for whom nothing else ever would. */
-    const gm = global.__nr;
+    const gm = NR.game;
     if (gm && gm.releaseMusic) gm.releaseMusic();
     if (writer) writer.stop();
     global.clearTimeout(timer);
@@ -376,7 +376,7 @@
   /** Take the whole sequence down and settle the title screen at once. */
   function skip() {
     if (!running && done) return;
-    const g = global.__nr;
+    const g = NR.game;
     if (g && g.endIntro) g.endIntro();
     finish();
   }
@@ -390,7 +390,7 @@
       /* ...and the score still starts. There is no veil to lift here and so
          nothing that would otherwise have released the hold, which left a
          reduced-motion player on a silent title screen. */
-      const gm = global.__nr;
+      const gm = NR.game;
       if (gm && gm.releaseMusic) gm.releaseMusic();
       // ...and the gate still shuts, or reduced motion becomes a fast path
       // into the mode terminal for anybody holding ENTER. See finish().

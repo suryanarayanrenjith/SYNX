@@ -373,6 +373,61 @@ fn open_in_browser(u: &tauri::Url) -> bool {
     site::is_web(u) && open_with_system(std::ffi::OsStr::new(u.as_str()))
 }
 
+/// The script that marks a page as running in a development build: read once
+/// by js/guard.js, before anything else on the page. Never compiled into a
+/// shipped build.
+#[cfg(any(debug_assertions, feature = "harness"))]
+fn dev_flag() -> &'static str {
+    "Object.defineProperty(window, 'SYNX_DEV', { value: true });"
+}
+
+/// THE GAME WINDOW SHOWS THE GAME, and nothing else.
+///
+/// Its pages are this app's own, served from the bundle: `tauri://localhost`
+/// on macOS and Linux, `http(s)://tauri.localhost` on Windows. Anything else
+/// it is asked to load - a link in a page, a redirect, a script setting
+/// `location` - is not the game, and a window holding the game's IPC bridge
+/// has no business rendering it. A web address goes to the desktop's browser
+/// instead, the way the site window treats a link off the site; anything
+/// that is not one goes nowhere.
+fn is_app_page(u: &tauri::Url) -> bool {
+    match u.scheme() {
+        "tauri" => u.host_str() == Some("localhost"),
+        "http" | "https" => u.host_str() == Some("tauri.localhost"),
+        "about" => u.path() == "blank",
+        _ => false,
+    }
+}
+
+/// WebView2's own browser furniture, off: the right-click menu (back,
+/// reload, save as, print) and the browser's keys - F5 and Ctrl+R reload,
+/// Ctrl+F finds, Ctrl+P prints, F12 and Ctrl+Shift+I would look for an
+/// inspector - none of which a game has any use for, and several of which
+/// throw the race away mid-lap. Release builds only: a debug build keeps all
+/// of it, inspector included. Tauri does not expose these two settings, so
+/// they are set through the same WebView2 bindings it is built on. The page
+/// blocks the same keys and the menu itself (see js/guard.js), which is what
+/// covers WebKitGTK and WKWebView.
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
+fn lock_webview2(window: &WebviewWindow) {
+    let _ = window.with_webview(|wv| {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+        use windows_core::Interface;
+        // SAFETY: COM calls on the webview's own controller, made on the
+        // thread `with_webview` runs them on, which is the one that owns it.
+        unsafe {
+            let Ok(core) = wv.controller().CoreWebView2() else { return };
+            let Ok(s) = core.Settings() else { return };
+            let _ = s.SetAreDevToolsEnabled(false);
+            let _ = s.SetAreDefaultContextMenusEnabled(false);
+            let _ = s.SetIsStatusBarEnabled(false);
+            if let Ok(s3) = s.cast::<ICoreWebView2Settings3>() {
+                let _ = s3.SetAreBrowserAcceleratorKeysEnabled(false);
+            }
+        }
+    });
+}
+
 /// Open the SYNX site in a window of its own, at one of its sections.
 ///
 /// ASYNC ON PURPOSE. A window built from a synchronous command deadlocks on
@@ -424,6 +479,8 @@ async fn open_site(app: tauri::AppHandle, section: Option<String>) -> Result<boo
         .center()
         .focused(true)
         .theme(Some(tauri::Theme::Dark))
+        // no inspector here either in a shipped build - see the game window
+        .devtools(cfg!(debug_assertions))
         .on_navigation(|u| {
             if site::on_site(u) {
                 return true;
@@ -848,6 +905,10 @@ fn startup_vsync() -> bool {
 }
 
 fn main() {
+    /* FIRST OF ALL, in a build that ships: no debugging switch arrives through
+       the environment. See platform::lock_down. */
+    platform::lock_down();
+
     /* Before anything else.
 
        The graphics backend and, on Linux, the compositing mode are read by the
@@ -960,7 +1021,35 @@ fn main() {
             .theme(Some(tauri::Theme::Dark))
             // hidden until the page says it has drawn - see `ready`
             .visible(false)
-            .disable_drag_drop_handler();
+            .disable_drag_drop_handler()
+            /* NO INSPECTOR IN A SHIPPED BUILD, on any platform. Without
+               Tauri's `devtools` feature - which this crate does not enable -
+               a release webview has none anyway; saying so here makes it a
+               decision rather than a default, and the one place to read it. */
+            .devtools(cfg!(debug_assertions))
+            // ...and the game window stays on the game - see is_app_page
+            .on_navigation(|u| {
+                if is_app_page(u) {
+                    return true;
+                }
+                open_in_browser(u);
+                false
+            })
+            .on_new_window(|u, _features| {
+                open_in_browser(&u);
+                tauri::webview::NewWindowResponse::Deny
+            });
+
+            /* A DEVELOPMENT SESSION SAYS SO, and only one does. A debug build,
+               or a test build made with `--features harness`, tells the page
+               before any of its scripts run - which is what lets js/guard.js
+               keep the development hooks the tools drive the game through. A
+               shipped build says nothing, and the page treats it as what it
+               is. */
+            #[cfg(any(debug_assertions, feature = "harness"))]
+            {
+                b = b.initialization_script(dev_flag());
+            }
 
             if start_at_game {
                 b = b
@@ -994,6 +1083,8 @@ fn main() {
             diag::begin_step(dir2.as_deref(), "creating the game window and its webview");
             let window = b.build()?;
             diag::end_step(dir2.as_deref(), "creating the game window and its webview");
+            #[cfg(all(target_os = "windows", not(debug_assertions)))]
+            lock_webview2(&window);
 
             /* ONE GAME, ONE PROCESS. The site window is a side trip (see
                open_site), and closing the game must not leave it open on its
@@ -1069,5 +1160,40 @@ fn dirs_app_data() -> Option<std::path::PathBuf> {
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(ID))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The game window loads the game's own pages and nothing else, on every
+    /// platform's spelling of "the bundle".
+    #[test]
+    fn only_the_apps_own_pages_load_in_the_game_window() {
+        let ok = [
+            "tauri://localhost/index.html",
+            "tauri://localhost/launcher.html#AUDIO",
+            "http://tauri.localhost/index.html",
+            "https://tauri.localhost/launcher.html",
+            "about:blank",
+        ];
+        let refused = [
+            "https://example.com/",
+            "http://localhost:9222/",
+            "http://127.0.0.1/index.html",
+            "https://tauri.localhost.example.com/",
+            "tauri://evil/index.html",
+            "file:///C:/Windows/win.ini",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "about:config",
+        ];
+        for u in ok {
+            assert!(is_app_page(&tauri::Url::parse(u).unwrap()), "{u} was refused");
+        }
+        for u in refused {
+            assert!(!is_app_page(&tauri::Url::parse(u).unwrap()), "{u} was let in");
+        }
     }
 }

@@ -604,7 +604,7 @@
     oldUpdate.call(this, dt);
   };
 
-  global.__SYNX_MODESELECT__ = {
+  if ((global.NR || {}).DEV !== false) global.__SYNX_MODESELECT__ = {
     name: 'DRIVER TERMINAL',
     modes: ['STORY MODE', 'MULTIPLAYER', 'FREE ROAM'],
     gate: 'campaign complete (FREE ROAM only)',

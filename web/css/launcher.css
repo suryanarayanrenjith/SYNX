@@ -36,6 +36,38 @@
   font-display: block;
   src: url("../fonts/Orbitron-900.ttf") format("truetype");
 }
+/* The site's other two faces. Orbitron is the display face - names,
+   headlines, kickers, PLAY - Rajdhani is everything that is read: labels,
+   values, hints - and Share Tech Mono is data: versions, sizes, progress.
+   The same files the game ships; see the note in css/style.css. */
+@font-face {
+  font-family: "Rajdhani";
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url("../fonts/Rajdhani-500.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Rajdhani";
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url("../fonts/Rajdhani-600.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Rajdhani";
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url("../fonts/Rajdhani-700.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Share Tech Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("../fonts/ShareTechMono-Regular.ttf") format("truetype");
+}
 
 :root {
   --pink: #ff2e88;
@@ -58,7 +90,25 @@
   --t-base: 200ms;
   --t-slow: 420ms;
 
-  --font: "Orbitron", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font: "Rajdhani", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-display: "Orbitron", "Rajdhani", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Share Tech Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --gold: #ffd977;
+  --gold-ink: #ffe9a8;
+  /* The selected state, copied from the game's theme block, which is the
+     site's primary button: violet glass lit from inside, a pink edge, a gold
+     hairline along its foot, gold type with light round it. */
+  --sel-rim: linear-gradient(150deg, #ff2e88, rgba(255,95,176,.86) 55%, #ff2e88);
+  --sel-body: linear-gradient(180deg, rgba(90,40,190,.90), rgba(30,10,70,.95));
+  --sel-gloss:
+    linear-gradient(90deg, rgba(255,217,119,0), rgba(255,217,119,.88), rgba(255,217,119,0)) 0 100% / 100% 1px no-repeat,
+    radial-gradient(ellipse 55% 110% at 50% 55%, rgba(255,180,0,.15), rgba(255,180,0,0) 70%),
+    radial-gradient(ellipse 40% 140% at 0% 50%, rgba(255,46,136,.24), rgba(255,46,136,0) 70%),
+    linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,0) 46%);
+  --sel-ink: 0 0 10px rgba(255,217,119,.75), 0 0 28px rgba(255,180,0,.4);
+  --glass-grad: repeating-linear-gradient(0deg, rgba(255,255,255,.03) 0 1px, transparent 1px 4px),
+    linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,0) 40%),
+    linear-gradient(150deg, rgba(22,8,52,.93), rgba(10,2,26,.86) 62%, rgba(5,1,16,.92));
   --glass: rgba(10, 2, 26, .82);
   --glass-hi: rgba(19, 6, 44, .92);
   --cut: 14px;
@@ -142,7 +192,7 @@ html, body {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
   gap: clamp(10px, 1.6vh, 18px);
   height: 100%;
   padding: clamp(18px, 3vh, 30px) clamp(22px, 3.4vw, 44px) clamp(14px, 2vh, 22px);
@@ -155,12 +205,32 @@ html, body {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: none; }
 }
+/* EVERY BAND IS PLACED, NOT POURED IN. The rows used to be filled in source
+   order, so the alert band - which is only there when something went wrong -
+   landed in the row meant for the settings panel: it got the panel's
+   flexible height, the panel got pushed into an `auto` row, and since the
+   flexible row had nothing left to give, the band collapsed to a red hairline
+   with its words spilling over the panel underneath. Now each band has its
+   row, and the alert opens one of its own above the panel when it is shown.
+   The update notice shares the tab row, in the space the tabs leave. */
+#head { grid-row: 1; }
+#tabs, #update { grid-row: 2; grid-column: 1; }
+#panel { grid-row: 3; }
+#foot { grid-row: 4; }
+#note { grid-row: 5; }
+#diag { grid-row: 6; }
+#shell:has(> #alert:not([hidden])) { grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto; }
+#shell:has(> #alert:not([hidden])) #alert { grid-row: 3; }
+#shell:has(> #alert:not([hidden])) #panel { grid-row: 4; }
+#shell:has(> #alert:not([hidden])) #foot { grid-row: 5; }
+#shell:has(> #alert:not([hidden])) #note { grid-row: 6; }
+#shell:has(> #alert:not([hidden])) #diag { grid-row: 7; }
 
 /* ----------------------------------------------------------------- head -- */
 #head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
 .brand h1 {
   margin: 0;
-  font: 900 clamp(38px, 6.2vw, 74px)/.92 var(--font);
+  font: 900 clamp(38px, 6.2vw, 74px)/.92 var(--font-display);
   letter-spacing: -.045em;
 }
 /* Lifted verbatim from the game's title treatment so the two screens are
@@ -178,10 +248,10 @@ html, body {
   filter: drop-shadow(0 0 18px rgba(255,46,136,.34)) drop-shadow(0 2px 0 rgba(0,0,0,.8));
 }
 .tag {
-  margin: 8px 0 0;
+  margin: 10px 0 0;
   color: var(--cyan);
-  font: 800 clamp(8px, .95vw, 11px)/1 var(--font);
-  letter-spacing: .34em;
+  font: 600 clamp(9px, .95vw, 12px)/1 var(--font-display);
+  letter-spacing: .5em;
   text-shadow: 0 0 12px rgba(57, 230, 255, .55);
 }
 .build {
@@ -191,8 +261,8 @@ html, body {
   text-align: right;
   align-items: baseline;
 }
-.build span { color: var(--ink-faint); font: 700 8px/1.5 var(--font); letter-spacing: .18em; }
-.build b { color: var(--ink-body); font: 700 9.5px/1.5 var(--font); letter-spacing: .08em; }
+.build span { color: var(--ink-faint); font: 600 9.5px/1.7 var(--font-display); letter-spacing: .26em; }
+.build b { color: var(--ink-body); font: 13px/1.5 var(--font-mono); letter-spacing: .04em; }
 /* What the connectivity monitor last proved. Faint while it is still asking,
    so "checking" never reads as an answer. */
 #network { transition: color var(--t-base) var(--ease); }
@@ -201,53 +271,57 @@ html, body {
 #network[data-state="offline"] { color: #ff5a78; text-shadow: 0 0 10px rgba(255, 90, 120, .4); }
 
 /* --------------------------------------------------------------- update --
-   The notice for a build that is behind the newest release. Fixed in the top
-   corner, over the sky and clear of the header's build block, so appearing
-   moves nothing on the screen. Same glass and cut as the panel, lit in the
-   PLAY button's colours: it is the one other thing here worth pressing. */
+   The notice for a build that is behind the newest release. ONE LINE, in the
+   tab row's empty right-hand side, so appearing moves nothing on the screen.
+   It used to be fixed in the top corner, which was clear of the header's
+   build block only while that block's type was small - at the launcher's
+   minimum height the two were drawn on top of each other. Same glass and cut
+   as the panel with the accent in pink, and GET IT is lit the way PLAY is:
+   it is the one other thing here worth pressing. Above the tab strip, which
+   spans the row, so the strip cannot take its clicks. */
 #update {
-  position: fixed;
-  /* Slim, and high in the corner: the header's build block starts about
-     fifty pixels down, and the notice has to clear it with room to spare. */
-  top: 9px;
-  right: 16px;
-  z-index: 5;
+  justify-self: end;
+  align-self: center;
+  z-index: 2;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 5px 6px 5px 14px;
+  gap: 12px;
+  padding: 5px 6px 5px 18px;
   --cut: 10px;
-  --edge: rgba(255, 46, 136, .65);
-  box-shadow: 0 0 26px rgba(255, 46, 136, .22);
+  --edge: var(--pink);
   animation: update-in var(--t-slow) var(--ease-out) both;
 }
 #update[hidden] { display: none; }
 @keyframes update-in {
-  from { opacity: 0; transform: translateY(-8px); }
+  from { opacity: 0; transform: translateX(10px); }
   to   { opacity: 1; transform: none; }
 }
-.up-text { display: grid; gap: 3px; position: relative; z-index: 1; }
+.up-text { display: flex; align-items: baseline; gap: 14px; position: relative; z-index: 1; }
 .up-text b {
-  color: var(--pink);
-  font: 900 8.5px/1 var(--font);
-  letter-spacing: .24em;
+  color: #ff5aa8;
+  font: 600 10.5px/1 var(--font-display);
+  letter-spacing: .26em;
   text-shadow: 0 0 10px rgba(255, 46, 136, .55);
 }
-.up-text span { display: flex; align-items: center; gap: 7px; color: var(--ink-mute); font: 700 9.5px/1 var(--font); letter-spacing: .08em; }
+.up-text span { display: flex; align-items: baseline; gap: 7px; color: var(--ink-mute); font: 13px/1 var(--font-mono); letter-spacing: .02em; }
 .up-text i { font-style: normal; }
-.up-text i + em + i { color: var(--ink-key); }
-.up-text em { color: var(--amber); font-style: normal; font-size: 9px; }
+.up-text i + em + i { color: var(--gold); }
+.up-text em { color: var(--ink-faint); font-style: normal; font-size: 11px; }
 #update .ui-btn {
   position: relative;
   z-index: 1;
-  padding: 7px 12px;
-  font-size: 8.5px;
+  padding: 8px 18px;
+  font-size: 12.5px;
   --cut: 8px;
-  --edge: var(--amber);
-  background: linear-gradient(120deg, rgba(255, 46, 136, .30), rgba(139, 92, 246, .22));
-  color: var(--ink-key);
+  --rim: var(--sel-rim);
+  --ring: 1.5px;
+  background: var(--sel-gloss), var(--sel-body);
+  color: var(--gold-ink);
+  font: 900 11px/1 var(--font-display);
+  letter-spacing: .24em;
+  text-shadow: var(--sel-ink);
 }
-#update .ui-btn:hover, #update .ui-btn:focus-visible { background: linear-gradient(120deg, rgba(255, 46, 136, .46), rgba(139, 92, 246, .32)); }
+#update .ui-btn:hover, #update .ui-btn:focus-visible { filter: brightness(1.12) saturate(1.06); }
 .up-x {
   position: relative;
   z-index: 1;
@@ -272,20 +346,23 @@ html, body {
 .tab {
   appearance: none;
   border: 0;
-  padding: 10px 18px;
-  background: rgba(10, 14, 30, .5);
+  padding: 10px 30px 10px 26px;
+  background: var(--glass-grad);
+  box-shadow: inset 0 0 0 1px rgba(200,190,255,.28);
   color: var(--ink-mute);
-  font: 900 9.5px/1 var(--font);
-  letter-spacing: .18em;
+  font: 600 11.5px/1 var(--font-display);
+  letter-spacing: .24em;
   cursor: pointer;
-  clip-path: polygon(9px 0, 100% 0, 100% 100%, 0 100%, 0 9px);
+  clip-path: polygon(12px 0, 100% 0, calc(100% - 12px) 100%, 0 100%);
   transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
 }
-.tab:hover { color: var(--ink-body); background: rgba(57, 230, 255, .08); }
+.tab:hover { color: var(--ink-key); box-shadow: inset 0 0 0 1px rgba(255,46,136,.55); }
 .tab[aria-selected="true"] {
-  color: #0a0018;
-  background: linear-gradient(180deg, var(--cyan), #12b6d8);
-  text-shadow: none;
+  color: var(--gold-ink);
+  font-weight: 900;
+  background: var(--sel-gloss), var(--sel-body);
+  box-shadow: inset 0 0 0 1.5px rgba(255,46,136,.95);
+  text-shadow: var(--sel-ink);
 }
 .tab:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 
@@ -293,8 +370,8 @@ html, body {
 .synx-cut {
   position: relative;
   background:
-    repeating-linear-gradient(0deg, rgba(255,255,255,.030) 0 1px, transparent 1px 4px),
-    linear-gradient(150deg, var(--glass-hi), var(--glass) 62%);
+    linear-gradient(var(--edge, var(--cyan)), var(--edge, var(--cyan))) var(--cut) 0 / min(22%, 150px) 2px no-repeat,
+    var(--glass-grad);
   clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
 /* THE EDGE FOLLOWS THE CUT. It was a rectangular one-pixel ring - a mask of
@@ -310,9 +387,9 @@ html, body {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  --w: 1px;
+  --w: var(--ring, 1px);
   --d: calc(var(--cut) + var(--w) * .414);
-  background: linear-gradient(150deg, var(--edge, var(--cyan)), rgba(139,92,246,.42) 55%, var(--edge, var(--cyan)));
+  background: var(--rim, linear-gradient(150deg, var(--edge, var(--cyan)), rgba(139,92,246,.48) 55%, var(--edge, var(--cyan))));
   clip-path: polygon(evenodd,
     var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut), var(--cut) 0,
     var(--d) var(--w), var(--w) var(--d), var(--w) calc(100% - var(--w)),
@@ -348,9 +425,19 @@ html, body {
   margin: 14px 0 6px;
   padding-bottom: 5px;
   border-bottom: 1px solid rgba(139, 92, 246, .28);
-  color: var(--cyan);
-  font: 800 8.5px/1 var(--font);
-  letter-spacing: .26em;
+  color: rgba(120, 225, 255, .9);
+  font: 600 10.5px/1 var(--font-display);
+  letter-spacing: .42em;
+}
+.grp::before {
+  content: "";
+  display: inline-block;
+  width: 32px;
+  height: 1px;
+  margin: 0 12px 0 0;
+  vertical-align: middle;
+  background: currentColor;
+  opacity: .7;
 }
 .grp:first-child { margin-top: 0; }
 
@@ -363,7 +450,7 @@ html, body {
   width: 100%;
   /* Tight, because the graphics page is twelve rows and a launcher that
      scrolls to reach the preset is a launcher that hides it. */
-  padding: 8px 12px;
+  padding: 7px 12px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -373,13 +460,20 @@ html, body {
   border-left: 2px solid transparent;
   transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
 }
-.row:hover, .row.on {
-  background: linear-gradient(90deg, rgba(57, 230, 255, .10), transparent 72%);
-  border-left-color: var(--cyan);
+/* The lit row, as the game's settings screen draws it: violet at the label
+   end dying away before the value, pink light at the edge, a gloss across
+   the top, gold on the edge. */
+.row:hover, .row.on, .row:focus-visible {
+  outline: 0;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,0) 46%),
+    radial-gradient(ellipse 28% 150% at 0% 50%, rgba(255,46,136,.26), rgba(255,46,136,0) 70%),
+    linear-gradient(90deg, rgba(98,46,206,.62), rgba(70,30,170,.28) 34%, rgba(46,18,120,.08) 70%, transparent);
+  border-left-color: var(--gold);
 }
-.row:focus-visible { outline: 0; background: linear-gradient(90deg, rgba(255,180,0,.12), transparent 72%); border-left-color: var(--amber); }
-.row .lbl { display: block; color: var(--ink-key); font: 700 11px/1.25 var(--font); letter-spacing: .12em; }
-.row .sub { display: block; margin-top: 4px; color: var(--ink-faint); font: 500 9px/1.35 var(--font); letter-spacing: .04em; }
+.row .lbl { display: block; color: var(--ink-key); font: 700 16px/1.2 var(--font); letter-spacing: .06em; }
+.row:hover .lbl, .row.on .lbl, .row:focus-visible .lbl { color: var(--gold-ink); text-shadow: var(--sel-ink); }
+.row .sub { display: block; margin-top: 3px; color: var(--ink-faint); font: 600 11.5px/1.35 var(--font); letter-spacing: .02em; }
 
 /* The value, and the two arrows that change it. The arrows are real buttons
    rather than decoration on a click-anywhere row: a value with two directions
@@ -388,26 +482,27 @@ html, body {
 .val { display: flex; align-items: center; gap: 4px; }
 .val button {
   appearance: none;
-  width: 26px;
+  width: 28px;
   height: 26px;
   border: 0;
-  background: rgba(139, 92, 246, .16);
+  background: var(--glass-grad);
+  box-shadow: inset 0 0 0 1px rgba(200,190,255,.32);
   color: var(--ink-body);
-  font: 700 12px/1 var(--font);
+  font: 700 17px/1 var(--font);
   cursor: pointer;
-  border-radius: 3px;
+  clip-path: polygon(6px 0, 100% 0, calc(100% - 6px) 100%, 0 100%);
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
-.val button:hover { background: var(--cyan); color: #06121a; }
+.val button:hover { background: var(--sel-gloss), var(--sel-body); box-shadow: inset 0 0 0 1px rgba(255,46,136,.9); color: var(--gold-ink); }
 .val button:disabled { opacity: .22; cursor: default; background: rgba(139,92,246,.10); }
 .val button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 .val .txt {
   min-width: 152px;
   text-align: center;
-  color: var(--amber);
-  font: 900 11px/1 var(--font);
-  letter-spacing: .1em;
-  text-shadow: 0 0 14px rgba(255, 180, 0, .40);
+  color: var(--gold);
+  font: 600 12.5px/1 var(--font-display);
+  letter-spacing: .14em;
+  text-shadow: 0 0 10px rgba(255, 217, 119, .45), 0 0 24px rgba(255, 180, 0, .18);
 }
 .row.is-off .val .txt { color: var(--ink-faint); text-shadow: none; }
 
@@ -423,16 +518,16 @@ html, body {
   padding-top: 11px;
   border-top: 1px solid rgba(139, 92, 246, .24);
   min-height: 2.9em;
-  color: var(--ink-mute);
-  font: 500 10px/1.5 var(--font);
-  letter-spacing: .03em;
+  color: var(--ink-body);
+  font: 600 12.5px/1.45 var(--font);
+  letter-spacing: .01em;
 }
 
 /* ---------------------------------------------------------------- foot --- */
 #foot { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
 /* The footer legend. A line of keys, not a control - see launcher.html. */
-#legend { margin: 0; color: var(--ink-faint); font: 700 8.5px/1.5 var(--font); letter-spacing: .16em; }
-#legend b { color: var(--ink-mute); font-weight: 900; }
+#legend { margin: 0; color: var(--ink-faint); font: 600 9.5px/1.6 var(--font-display); letter-spacing: .22em; }
+#legend b { color: var(--ink-body); font-weight: 700; }
 
 .acts { display: flex; gap: 10px; align-items: center; }
 .ui-btn {
@@ -443,20 +538,22 @@ html, body {
   --edge: rgba(139, 92, 246, .5);
   /* Near-opaque glass. At .55 the sun's bands ran straight through BENCHMARK
      and DEFAULTS in hot pink, so the row read as stripes with words on them. */
-  background: rgba(10, 8, 26, .84);
+  background: var(--glass-grad);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   color: var(--ink-body);
-  font: 900 10px/1 var(--font);
-  letter-spacing: .18em;
+  font: 600 11.5px/1 var(--font-display);
+  letter-spacing: .24em;
   cursor: pointer;
   transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
 }
+/* Every button lights the same way the game's do: it BECOMES the bar. */
 .ui-btn:hover, .ui-btn:focus-visible {
-  --edge: var(--cyan);
-  background: rgba(57, 230, 255, .10);
-  color: var(--ink-key);
-  box-shadow: 0 0 22px rgba(57, 230, 255, .18);
+  --rim: var(--sel-rim);
+  --ring: 1.5px;
+  background: var(--sel-gloss), var(--sel-body);
+  color: var(--gold-ink);
+  text-shadow: var(--sel-ink);
   outline: none;
 }
 /* PLAY is the only thing on this screen anyone came here to press. */
@@ -465,16 +562,19 @@ html, body {
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  padding: 15px 40px;
-  background: linear-gradient(120deg, rgba(255, 46, 136, .26), rgba(139, 92, 246, .20));
-  color: var(--ink-key);
+  padding: 15px 44px;
+  /* Always lit: it is the one thing here anybody came to press. The site's
+     PLAY, exactly: violet, the pink edge, gold type with light round it. */
+  --rim: var(--sel-rim);
+  --ring: 1.5px;
+  background: var(--sel-gloss), var(--sel-body);
+  color: var(--gold-ink);
+  text-shadow: var(--sel-ink);
 }
-.ui-btn.primary b { font: 900 13px/1 var(--font); letter-spacing: .24em; }
-.ui-btn.primary span { color: var(--amber); font-size: 14px; transition: transform var(--t-fast) var(--ease); }
+.ui-btn.primary b { font: 900 14px/1 var(--font-display); letter-spacing: .3em; }
+.ui-btn.primary span { color: var(--gold); font-size: 15px; transition: transform var(--t-fast) var(--ease); }
 .ui-btn.primary:hover, .ui-btn.primary:focus-visible {
-  --edge: var(--amber);
-  background: linear-gradient(120deg, rgba(255, 46, 136, .42), rgba(139, 92, 246, .30));
-  box-shadow: 0 0 34px rgba(255, 46, 136, .34);
+  filter: brightness(1.1) saturate(1.08);
 }
 /* The arrow moves, not the button: a control that jumps under the cursor is a
    control that gets mis-clicked. */
@@ -484,15 +584,31 @@ html, body {
 #note {
   margin: 0;
   min-height: 1.2em;
-  color: var(--amber);
-  font: 700 8.5px/1.3 var(--font);
-  letter-spacing: .12em;
+  color: var(--gold);
+  font: 700 12px/1.3 var(--font);
+  letter-spacing: .06em;
 }
 #note.err { color: #ff5a78; }
 
 @media (max-width: 940px) {
   .build { display: none; }
   .val .txt { min-width: 116px; }
+}
+/* THE FOOTER IS ONE LINE OR IT COSTS THE LIST A ROW. Under about a thousand
+   pixels the key legend and five buttons no longer fit side by side, and a
+   wrapped footer takes its height out of the settings above it - at the
+   window's minimum size that left one row of them showing. The legend is the
+   part that can go: every key in it is also on a button or in the hint. */
+@media (max-width: 1060px) {
+  #legend { display: none; }
+  #foot { justify-content: flex-end; }
+}
+/* ...and on a short window the bands above the list give it what they can. */
+@media (max-height: 640px) {
+  #alert { padding: 8px 14px; }
+  #alert p { margin: 4px 0 6px; }
+  .alert-acts .ui-btn { padding: 6px 14px; }
+  #hint { min-height: 0; margin-top: 6px; padding-top: 6px; }
 }
 
 /* --------------------------------------------------------------- alert ----
@@ -513,15 +629,15 @@ html, body {
 .alert-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
 .alert-head b {
   color: #ff8ba0;
-  font: 900 10px/1.3 var(--font);
-  letter-spacing: .18em;
+  font: 700 12.5px/1.3 var(--font);
+  letter-spacing: .16em;
 }
 /* The path is the single most useful thing on this band, so it is selectable
    even though nothing else on the screen is - a player asked for their log is
    a player who needs to copy where it is. */
 #alertPath {
   color: var(--ink-mute);
-  font: 500 9px/1.3 var(--font);
+  font: 11px/1.3 var(--font-mono);
   user-select: text;
   -webkit-user-select: text;
   cursor: text;
@@ -531,10 +647,10 @@ html, body {
 #alert p {
   margin: 8px 0 10px;
   color: var(--ink-body);
-  font: 500 10px/1.5 var(--font);
+  font: 600 12.5px/1.5 var(--font);
 }
 .alert-acts { display: flex; gap: 8px; }
-.alert-acts .ui-btn { padding: 8px 16px; font-size: 8.5px; --edge: rgba(255, 90, 120, .6); }
+.alert-acts .ui-btn { padding: 8px 18px; font-size: 12px; --edge: rgba(255, 90, 120, .6); }
 
 /* The one-line machine summary under the footer. Always present, because it
    costs a line and it is the first question anyone asks about a bug report. */
@@ -542,8 +658,8 @@ html, body {
   margin: 0;
   min-height: 1.1em;
   color: var(--ink-faint);
-  font: 500 8px/1.3 var(--font);
-  letter-spacing: .06em;
+  font: 10.5px/1.3 var(--font-mono);
+  letter-spacing: .04em;
   user-select: text;
   -webkit-user-select: text;
 }
@@ -601,6 +717,7 @@ html, body {
 .boot-name {
   font-size: clamp(30px, 6vw, 52px);
   font-weight: 900;
+  font-family: var(--font-display);
   letter-spacing: .3em;
   /* The indent cancels the trailing letter-space, or a letter-spaced word
      sits visibly off-centre by half a space. */
@@ -617,11 +734,13 @@ html, body {
 }
 
 .boot-sub {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .42em;
-  text-indent: .42em;
-  color: rgba(150, 180, 222, .55);
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .56em;
+  text-indent: .56em;
+  color: rgba(186, 214, 242, .72);
+  text-shadow: 0 0 18px rgba(57, 230, 255, .45);
 }
 
 /* An indeterminate sweep, not a percentage. Nothing here knows how long the
@@ -633,13 +752,14 @@ html, body {
   height: 2px;
   margin-top: 6px;
   overflow: hidden;
-  background: rgba(139, 92, 246, .18);
+  background: rgba(122, 158, 210, .16);
 }
 .boot-bar i {
   position: absolute;
   inset: 0 auto 0 0;
   width: 38%;
-  background: linear-gradient(90deg, transparent, #39e6ff, #ff2e88, transparent);
+  background: linear-gradient(90deg, rgba(57,230,255,0), #39e6ff 25%, #b46cff 60%, #ff2e88 85%, rgba(255,46,136,0));
+  box-shadow: 0 0 12px rgba(57, 230, 255, .6);
   animation: bootSweep 1.4s ease-in-out infinite;
 }
 @keyframes bootSweep {
@@ -650,11 +770,12 @@ html, body {
 .boot-line {
   margin: 0;
   min-height: 1.2em;
-  font-size: 9px;
+  font-family: var(--font-display);
+  font-size: 9.5px;
   font-weight: 600;
-  letter-spacing: .28em;
-  text-indent: .28em;
-  color: rgba(150, 180, 222, .38);
+  letter-spacing: .24em;
+  text-indent: .24em;
+  color: rgba(130, 160, 196, .5);
 }
 
 @media (prefers-reduced-motion: reduce) {
