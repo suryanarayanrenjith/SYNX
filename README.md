@@ -42,6 +42,9 @@ underneath the arcade feel.
 - **Free Roam** to drive the whole road at your own pace, and **online
   multiplayer**.
 - **Drifting, ramps and jumps**, rival drivers, boost and a race mode.
+- **Weather that comes and goes** - every run has its own forecast, from a
+  dry night to a passing shower to a full storm, and each part of the road
+  has its own climate.
 - **Three cameras** - chase, driver's seat and drone.
 - **Instant replays** - keep the last thirty seconds and save the best bits.
 - **Keyboard, controller or touch**, with every key rebindable.

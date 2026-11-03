@@ -4926,6 +4926,32 @@ body.pointer-fallback [role="button"] { cursor: pointer !important; }
 }
 .ign-veil canvas { display: block; width: 100%; height: 100%; }
 
+/* THE GRADE, which used to be redrawn into the canvas sixty times a second:
+   a one-pixel line every three, at fifteen per cent, and a vignette from a
+   quarter of the short side to most of the long one. Neither ever changes,
+   so they are a layer the compositor rasterises once. The numbers are the
+   canvas's own - see grade() in js/ignition.js. */
+.ign-grade,
+.ign-flash {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+}
+.ign-grade {
+  background:
+    repeating-linear-gradient(180deg, rgba(0, 0, 0, .15) 0 1px, transparent 1px 3px),
+    radial-gradient(circle at 50% 50%,
+      rgba(0, 0, 0, 0) calc(min(100vw, 100vh) * .26),
+      rgba(0, 0, 0, .82) calc(max(100vw, 100vh) * .72));
+}
+/* ...and the cut: white, at an opacity script writes only while it moves. */
+.ign-flash {
+  background: #fff;
+  opacity: 0;
+  will-change: opacity;
+}
+
 /* THE HEARTBEAT.
 
    Every other pixel on this screen is drawn by script into a canvas, and
@@ -5234,10 +5260,16 @@ body.ign-on #advisory { opacity: 0; visibility: hidden; }
 .intro-ready.is-on {
   animation: introReady 320ms cubic-bezier(.2, .8, .3, 1) both;
 }
+/* It lands wide and closes up. That used to be done by animating the
+   tracking from .70em to .42em - a layout pass on every frame of it, on the
+   frame the world behind the veil is being drawn for the first time. The
+   same arrival as a horizontal scale is a compositor transform: 1.23 is what
+   .70em of tracking makes this string's width at .42em, so it starts exactly
+   as wide as it used to and closes up to the same place. */
 @keyframes introReady {
-  0%   { opacity: 0; transform: translateY(6px); letter-spacing: .70em; }
+  0%   { opacity: 0; transform: translateY(6px) scaleX(1.23); }
   60%  { opacity: 1; }
-  100% { opacity: 1; transform: translateY(0); letter-spacing: .42em; }
+  100% { opacity: 1; transform: translateY(0) scaleX(1); }
 }
 
 /* THE WORDMARK GLITCHES IN rather than simply fading up. Three slices of it

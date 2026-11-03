@@ -42,11 +42,20 @@
  *   IN THE EAR      A rain bed, the drumming on the roof in the cabin, and
  *                   spray off the tyres for the eye.
  *
- * WHERE IT RUNS. Chapter 3 - Mirage Circuit, with Nova - is set in a storm,
- * and it is pouring from the moment the chapter opens. Free Roam has showers
- * that come and go at random, on a schedule of the tour's own from a seed, on
- * the routes RAIN_ROUTES below allows. Every other chapter and every
- * multiplayer race is dry.
+ * WHERE IT RUNS, AND HOW OFTEN. Every outdoor route has a CLIMATE (below):
+ * how often it rains there, how hard it tends to, and how fast the road dries.
+ * A run - a chapter, a Free Roam tour - gets a FORECAST of its own from a
+ * seed: dry spells, passing cloud, drizzle, showers and the odd storm, each
+ * front arriving and leaving on its own clock. It is weighted so that rain is
+ * the exception: most runs are dry, some open on a road still wet from rain
+ * that has just passed, and about one race in three sees rain at some point.
+ *
+ * Chapter 3 - Mirage Circuit, with Nova - is written in the wet, so it is
+ * always a storm; but a live one, that surges and eases and never quite stops.
+ * Chapter 4 keeps its golden opening clear. The volcano never rains, Aurora
+ * Forge is under a roof and is dry ALL the way down - no rain, no standing
+ * water, no damp - and every multiplayer race, the prologue and the title
+ * screen are dry.
  *
  * WHAT IT COSTS. Nothing at all when it is dry: every pass is skipped and the
  * two shaders it touches branch on a uniform. Raining, the air is two instanced
@@ -79,34 +88,254 @@
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
   const smooth = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
 
-  /* ====================================================== the schedule ==
+  /* A sequential generator, for laying a forecast down front by front. */
+  function prng(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  /* Smooth noise in time, 0..1: the gusts inside a shower and the breathing
+     of a storm. The same seed and the same time give the same value on every
+     machine. */
+  function wave(seed, x) {
+    const i = Math.floor(x), f = x - i;
+    const a = rnd(seed, i, 5), b = rnd(seed, i + 1, 5);
+    return a + (b - a) * (f * f * (3 - 2 * f));
+  }
+  const between = (r, lo, hi) => lo + (hi - lo) * r;
+
+  /* ======================================================= the climate ==
    *
-   * The sky, as a pure function of a seed and a time. The day is cut into
-   * two-and-a-half-minute stretches; each one is dry, drizzle or a proper
-   * shower, decided by its own hash, and a shower rises and falls over a
-   * quarter of a minute at each end rather than switching. A pure function
-   * rather than a state machine because two machines running it with the same
-   * seed and the same clock must agree on every frame without talking. */
-  const SLOT = 150;
+   * WHY IT RAINED ALL THE TIME. The old schedule cut a tour into
+   * two-and-a-half-minute slots and rained in fifty-six per cent of them,
+   * forty in earnest - so more than half of all tours had a shower inside the
+   * first minute, and a tour of any length was mostly wet. Rain that is always
+   * there is not weather, it is a filter.
+   *
+   * So each outdoor route has a climate, by index into LEVELS in js/game.js:
+   *
+   *   rain    the share of the time it is raining there, over a long run.
+   *           Low, on purpose: a fifth at the wettest.
+   *   heavy   of the fronts that come, how many are storms rather than
+   *           drizzle or a shower.
+   *   scale   how hard rain falls there when it does.
+   *   dry     how fast the road dries afterwards - the desert in a few
+   *           minutes, the city at midnight slowest.
+   *   reach   on a Free Roam tour, where one sky passes over every region:
+   *           the share of fronts that reach this one. The canyon and the
+   *           mesa sit in the rain shadow and miss a good many of them.
+   *
+   * null is a route with no weather at all. ASHFALL ZERO is a lava field.
+   * AURORA FORGE is a roofed production hall, and INDOOR: nothing falls on it,
+   * nothing stands on its floor, and a road that arrives wet from outside is
+   * dry the moment the car is under the roof. */
+  const CLIMATE = [
+    /* 0 VECTOR RUN    the coast road at dusk: sea air      */
+    { rain: 0.17, heavy: 0.26, scale: 1.00, dry: 1.0, reach: 1.00 },
+    /* 1 THE SPINE     the canyon: seldom, and hard          */
+    { rain: 0.10, heavy: 0.55, scale: 1.05, dry: 1.5, reach: 0.60 },
+    /* 2 MIRAGE CIRCUIT the mesa: passing desert showers     */
+    { rain: 0.12, heavy: 0.30, scale: 0.85, dry: 1.9, reach: 0.70 },
+    /* 3 SUNSET ZERO   the city at midnight                  */
+    { rain: 0.18, heavy: 0.24, scale: 1.00, dry: 0.8, reach: 1.00 },
+    /* 4 ASHFALL ZERO  the volcano                           */
+    null,
+    /* 5 AURORA FORGE  under a roof                          */
+    null,
+    /* 6 NEON HORIZON  the expressway, open above            */
+    { rain: 0.14, heavy: 0.34, scale: 1.00, dry: 1.1, reach: 0.85 },
+  ];
+  const INDOOR = new Set([5]);
+  /* A Free Roam tour crosses all of them under one sky: fronts are laid down
+     at about the outdoor average and each region takes the ones that reach
+     it. See CLIMATE.reach. */
+  const TOUR = { rain: 0.16, heavy: 0.32, scale: 1.0, dry: 1.0, reach: 1.0 };
 
-  /* WHERE IT CAN RAIN, by index into LEVELS in js/game.js: routes 1, 2, 3, 4
-     and 7. ASHFALL ZERO (4) turns into a lava field and AURORA FORGE (5) is a
-     roofed hall, so neither ever has weather - and a shower that is under way
-     when a tour crosses into one of them is over within seconds, the road dry
-     and the sky clear. */
-  const RAIN_ROUTES = new Set([0, 1, 2, 3, 6]);
+  /* ====================================================== the forecast ==
+   *
+   * WHAT A FRONT IS. A stretch of the run's own timeline in which it rains,
+   * with a shape: the cloud comes over first, the rain builds, holds with
+   * gusts in it, and tails off, and the cloud follows it out. Three kinds,
+   * because a drizzle, a shower and a storm are different events and not one
+   * event at three volumes:
+   *
+   *   drizzle   light and long, barely gusting
+   *   shower    moderate, quick to arrive and quick to go, gusty
+   *   storm     builds slowly, falls hard, and can ease off in the middle
+   *             before it comes back - which is what a storm does
+   *
+   * Between fronts it is dry, for a spell whose length is drawn from the
+   * climate: long where it seldom rains. And now and then a bank of cloud
+   * passes over with nothing in it, so a grey sky is not a promise.
+   *
+   * WHERE THE RUN STARTS. The timeline begins half an hour BEFORE the run
+   * does, and the road is weathered through the last ten minutes of it (see
+   * Weather.preroll) - so a run starts at a fair sample of its own weather:
+   * usually dry, sometimes in the middle of a shower, and sometimes on a road
+   * still running with water from one that has just gone through.
+   *
+   * A pure function of a seed and a time, with the fronts generated lazily
+   * as the clock reaches them: two machines given the same seed agree on
+   * every frame. */
+  const KINDS = {
+    drizzle: { peak: [0.12, 0.24], len: [170, 420], up: [40, 80], down: [50, 110], gust: 0.16, gustT: 14 },
+    shower:  { peak: [0.34, 0.62], len: [80, 230], up: [16, 38], down: [28, 70], gust: 0.30, gustT: 9 },
+    storm:   { peak: [0.72, 1.00], len: [200, 430], up: [45, 90], down: [60, 120], gust: 0.34, gustT: 7 },
+  };
+  const MEAN_FRONT = 230;          // seconds, roughly, across the three kinds
+  const BACKDATE = 1800;           // how far before the run the timeline begins
 
-  function scheduled(seed, t) {
-    if (!(t >= 0)) t = 0;
-    const k = Math.floor(t / SLOT), x = t - k * SLOT;
-    const roll = rnd(seed, k, 1);
-    if (roll >= 0.56) return 0;
-    const heavy = roll < 0.40;
-    const peak = heavy ? 0.45 + 0.55 * rnd(seed, k, 2) : 0.16 + 0.14 * rnd(seed, k, 2);
-    const a = SLOT * (0.04 + 0.30 * rnd(seed, k, 3));
-    const b = Math.min(SLOT * 0.96, a + SLOT * (0.40 + 0.50 * rnd(seed, k, 4)));
-    const up = smooth((x - a) / 16), dn = 1 - smooth((x - (b - 16)) / 16);
-    return peak * Math.max(0, Math.min(up, dn));
+  class Sky {
+    constructor(seed, climate, opts) {
+      this.seed = (seed >>> 0) || 1;
+      this.C = climate || TOUR;
+      this.next = prng(this.seed ^ 0x5EED1E55);
+      this.fronts = [];
+      this.banks = [];
+      this.cursor = -BACKDATE;
+      /* No rain may fall before this time on the run's clock. Chapter 4's
+         golden hour is the reason: its opening is about the light. */
+      this.clearUntil = (opts && opts.clearUntil) || 0;
+      this.cursor += this.gap() * this.next();
+    }
+
+    /** A dry spell's length, from the climate: the share of time spent in
+        fronts is rain, so the mean gap is a front's length times (1-f)/f. */
+    gap() {
+      const f = clamp(this.C.rain, 0.02, 0.9);
+      const mean = MEAN_FRONT * (1 - f) / f;
+      const u = Math.max(1e-6, this.next());
+      return clamp(-Math.log(u) * mean, 90, mean * 4);
+    }
+
+    /** Lay the timeline down at least as far as `t`. */
+    extend(t) {
+      while (this.cursor < t + 600) {
+        const r = this.next;
+        // sometimes, a bank of cloud in the dry spell, with nothing in it
+        const dryLen = this.gap();
+        if (dryLen > 240 && r() < 0.40) {
+          const len = between(r(), 110, Math.min(320, dryLen - 60));
+          const t0 = this.cursor + between(r(), 20, dryLen - len - 20);
+          const peak = between(r(), 0.22, 0.52);
+          // ...and not over a protected opening (see clearUntil)
+          if (!(this.clearUntil > 0 && t0 < this.clearUntil && t0 + len > -60)) {
+            this.banks.push({ t0, t1: t0 + len, peak });
+          }
+        }
+        this.cursor += dryLen;
+        const roll = r();
+        const kind = roll < this.C.heavy ? 'storm'
+          : roll < this.C.heavy + (1 - this.C.heavy) * 0.40 ? 'drizzle' : 'shower';
+        const K = KINDS[kind];
+        const len = between(r(), K.len[0], K.len[1]);
+        const fr = {
+          kind,
+          t0: this.cursor,
+          t1: this.cursor + len,
+          up: between(r(), K.up[0], K.up[1]),
+          down: between(r(), K.down[0], K.down[1]),
+          peak: between(r(), K.peak[0], K.peak[1]),
+          gust: K.gust, gustT: K.gustT,
+          lead: between(r(), 50, 100),
+          trail: between(r(), 50, 95),
+          reach: r(),
+          key: (this.seed ^ Math.imul(this.fronts.length + 1, 0x9E3779B1)) >>> 0,
+          // a storm's lull: where in it, how long, how deep
+          lullAt: between(r(), 0.35, 0.65), lullW: between(r(), 18, 40),
+          lullD: kind === 'storm' && r() < 0.6 ? between(r(), 0.35, 0.6) : 0,
+        };
+        fr.up = Math.min(fr.up, len * 0.4);
+        fr.down = Math.min(fr.down, len * 0.45);
+        /* A front that would rain - or even cloud over - into the protected
+           opening is held back until it is over, cloud and all. */
+        if (this.clearUntil > 0 && fr.t0 - fr.lead < this.clearUntil && fr.t1 + fr.trail > -60) {
+          const shift = this.clearUntil + fr.lead - fr.t0;
+          fr.t0 += shift; fr.t1 += shift;
+        }
+        this.fronts.push(fr);
+        this.cursor = fr.t1;
+      }
+    }
+
+    /** The front over the run at `t`, or null. */
+    frontAt(t) {
+      this.extend(t);
+      const F = this.fronts;
+      for (let i = F.length - 1; i >= 0; i--) {
+        const f = F[i];
+        if (f.t0 - f.lead > t) continue;
+        if (f.t1 + f.trail < t) return null;
+        return f;
+      }
+      return null;
+    }
+
+    /**
+     * What is falling at `t`, and how much cloud there is, for a place whose
+     * climate is `C` (null: no weather there at all). Written into `out`.
+     */
+    at(t, C, out) {
+      out.rain = 0; out.cloud = 0; out.kind = null;
+      if (!C) return out;
+      const f = this.frontAt(t);
+      if (f) {
+        const reaches = f.reach <= (C.reach === undefined ? 1 : C.reach);
+        // the cloud: ahead of the rain and after it, and some of it even
+        // over a region the rain itself misses
+        const cin = smooth((t - (f.t0 - f.lead)) / f.lead);
+        const cout = 1 - smooth((t - f.t1) / f.trail);
+        const deck = Math.min(1, 0.5 + f.peak * 0.8);
+        out.cloud = cin * cout * deck * (reaches ? 1 : 0.45);
+        if (reaches && t > f.t0 && t < f.t1) {
+          const env = smooth((t - f.t0) / f.up) * (1 - smooth((t - (f.t1 - f.down)) / f.down));
+          const g = (wave(f.key, t / f.gustT) - 0.5) * 1.6
+            + (wave(f.key ^ 0x51ED, t / (f.gustT * 0.37)) - 0.5) * 0.6;
+          let r = f.peak * env * (1 + f.gust * g);
+          if (f.lullD > 0) {
+            const mid = f.t0 + (f.t1 - f.t0) * f.lullAt;
+            const d = (t - mid) / f.lullW;
+            r *= 1 - f.lullD * Math.exp(-d * d * 2);
+          }
+          out.rain = clamp(r * (C.scale === undefined ? 1 : C.scale), 0, 1);
+          out.kind = f.kind;
+        }
+      }
+      // the banks of cloud between the fronts
+      for (let i = this.banks.length - 1; i >= 0; i--) {
+        const b = this.banks[i];
+        if (b.t0 > t) continue;
+        if (b.t1 < t - 200) break;
+        const k = smooth((t - b.t0) / 50) * (1 - smooth((t - (b.t1 - 50)) / 50));
+        out.cloud = Math.max(out.cloud, k * b.peak);
+      }
+      return out;
+    }
+  }
+
+  /* THE STORM - Chapter 3's, which never stops.
+   *
+   * The chapter is written in the wet and the rain cannot leave it. But a
+   * constant nine-tenths is a sound effect, not a storm. This one surges and
+   * eases on three timescales - a minute, a quarter of one, a few seconds -
+   * between a heavy drizzle and a downpour, with a stretch now and then where
+   * it nearly lets up before it comes back, and it is pouring when the chapter
+   * opens, as the chapter says it is. */
+  function stormAt(seed, t, out) {
+    const n = 0.55 * wave(seed, t / 38) + 0.30 * wave(seed ^ 0x7A11, t / 13)
+      + 0.15 * wave(seed ^ 0x3C3C, t / 4.5);
+    let r = 0.30 + 0.70 * smooth((n - 0.16) / 0.66);
+    // ...pouring as it opens, settling into its own rhythm over half a minute
+    r = Math.max(r, 0.85 * (1 - smooth(t / 30)));
+    out.rain = clamp(r, 0.28, 1);
+    out.cloud = 1;
+    out.kind = 'storm';
+    return out;
   }
 
   /* ==================================================== the textures ==
@@ -659,10 +888,15 @@
   class Weather {
     constructor(game) {
       this.g = game;
-      this.mode = 'off';      // 'story', 'roam' or 'off'
-      this.storyLevel = 0;
+      this.mode = 'off';      // 'story', 'roam' or 'off' - WHO owns the sky
+      this.kind = 'off';      // 'forecast', 'storm' or 'off' - WHAT the sky is
+      this.sky = null;        // the run's forecast, when kind is 'forecast'
+      this.fixed = null;      // a route pinned by the caller, or null to follow the car
+      this.front = null;      // the kind of front over the car now, for the HUD
       this.seed = 1;
       this.clock = 0;
+      this._at = { rain: 0, cloud: 0, kind: null };
+      this.thunderIn = 0;     // seconds to the next roll, in a storm
       this.rain = 0;          // what is falling now, 0..1
       this.vis = 0;           // ...as seen from where the camera is
       this.wet = 0;           // how wet the surfaces are
@@ -683,26 +917,63 @@
 
     // ------------------------------------------------------------ control
 
-    /** Free Roam: showers on a schedule of this tour's own. */
+    /** Free Roam: one sky over the whole tour, which every region takes in
+        its own climate. See TOUR and CLIMATE.reach. */
     roam(seed) {
-      this.mode = 'roam';
-      this.seed = (seed >>> 0) || 1;
-      this.clock = 0;
-      this.settle(this.canRain() ? scheduled(this.seed, 0) : 0);
+      this.begin('roam', 'forecast', seed);
+      this.sky = new Sky(this.seed, TOUR);
+      this.fixed = null;
+      this.preroll();
     }
 
-    /** A chapter set in the rain - Chapter 3 - at a steady level: it is
-        already pouring when the chapter opens. See js/story.js. */
+    /**
+     * A race on one route - a story chapter - with a forecast of its own from
+     * its route's climate. `opts.clearFor` keeps the first that many seconds
+     * dry, cloud and all (Chapter 4's golden hour). A route with no climate is
+     * simply dry.
+     */
+    forecast(seed, levelIndex, opts) {
+      const C = CLIMATE[levelIndex] || null;
+      this.begin('story', 'forecast', seed);
+      this.fixed = levelIndex;
+      this.sky = new Sky(this.seed, C || TOUR, { clearUntil: (opts && opts.clearFor) || 0 });
+      this.preroll();
+    }
+
+    /** Chapter 3's storm: always raining, never the same. See stormAt. */
+    storm(seed) {
+      this.begin('story', 'storm', seed);
+      this.fixed = null;
+      this.sky = null;
+      stormAt(this.seed, 0, this._at);
+      this.settle(this._at.rain);
+      this.cloud = 1;
+    }
+
+    /** The old entry point, kept so nothing that still calls it breaks: a
+        level above zero is the storm, zero is a dry chapter. */
     story(level) {
-      this.mode = level > 0 ? 'story' : 'off';
-      this.storyLevel = level;
-      if (level > 0) this.settle(this.canRain() ? level : 0);
+      if (level > 0) this.storm((Math.random() * 4294967296) >>> 0);
+      else this.clear();
+    }
+
+    begin(mode, kind, seed) {
+      this.clear();
+      this.mode = mode;
+      this.kind = kind;
+      this.seed = (seed >>> 0) || 1;
+      this.clock = 0;
+      // the first roll of thunder comes a little after a storm is first heard
+      this.thunderIn = 8 + rnd(this.seed, 3, 9) * 14;
     }
 
     /** Back to a dry world, at once: a screen change is a cut. */
     clear() {
       this.mode = 'off';
-      this.storyLevel = 0;
+      this.kind = 'off';
+      this.sky = null;
+      this.fixed = null;
+      this.front = null;
       this.rain = 0; this.vis = 0; this.wet = 0; this.puddle = 0; this.cloud = 0;
       this.glass.clear();
       this.said = 0;
@@ -715,13 +986,76 @@
       this.wet = level > 0.02 ? clamp(0.35 + level * 0.75, 0, 1) : 0;
       this.puddle = level > 0.02 ? clamp(0.30 + level * 0.70, 0, 1) : 0;
       this.cloud = clamp(level * 1.8, 0, 1);
-      this.said = level > 0.1 ? 1 : 0;
+      this.said = level > 0.1 ? (level > 0.72 ? 2 : 1) : 0;
     }
 
-    /** Whether the route the car is on ever has weather. levelIndex is the
-        region the car is IN: on a tour, freeRoamRegion is only where it
-        started. */
-    canRain() { return RAIN_ROUTES.has(this.g.levelIndex); }
+    /* THE ROAD THE RUN ARRIVES ON. The forecast begins half an hour before
+       the run, so the last ten minutes of it are weathered here, at a second
+       a step: a run that opens just after a shower opens on a wet road with
+       standing water draining off it and a breaking sky, and one in the
+       middle of a shower opens in it - rather than every run starting on a
+       dry road and getting wet on cue. */
+    preroll() {
+      const idx = this.region();
+      const C = CLIMATE[idx] || null;
+      for (let t = -600; t < 0; t += 1) {
+        this.sky.at(t, C, this._at);
+        this.weatherStep(1, this._at.rain, this._at.cloud, C, INDOOR.has(idx));
+      }
+      this.said = this.rain > 0.14 ? (this.rain > 0.72 ? 2 : 1) : 0;
+    }
+
+    /** The route whose climate applies: the caller's, or the one the car is
+        in. levelIndex is the region the car is IN: on a tour, freeRoamRegion
+        is only where it started. */
+    region() {
+      return this.fixed !== null && this.fixed !== undefined ? this.fixed : this.g.levelIndex;
+    }
+
+    /** Whether the route the car is on ever has weather. */
+    canRain() { return !!CLIMATE[this.region()]; }
+
+    /** Under a roof: nothing falls and nothing stands on the floor. */
+    indoor() { return INDOOR.has(this.region()); }
+
+    /* One step of the sky and the ground, towards `want` rain and `sky`
+       cloud. Shared by the frame and the pre-roll, so a run that is weathered
+       before it starts is weathered by exactly the rules that weather it
+       after. */
+    weatherStep(step, want, sky, C, inside) {
+      const here = !!C;
+      this.rain += (want - this.rain) * (1 - Math.exp(-step / (here ? 2.5 : 1.0)));
+      if (this.rain < 1e-4) this.rain = 0;
+      const cw = clamp(Math.max(sky, want * 1.8), 0, 1);
+      this.cloud += (cw - this.cloud) * (1 - Math.exp(-step / (!here ? 3 : cw > this.cloud ? 6 : 14)));
+      /* UNDER A ROOF, NOTHING. Not drying - absent. The hall's floor is
+         concrete that has never seen the rain, and a car that drives in out
+         of a storm drives onto it dry. */
+      if (inside) {
+        this.rain = 0; this.wet = 0; this.puddle = 0;
+        this.cloud = Math.max(0, this.cloud - step * 0.5);
+        return;
+      }
+      /* Water on the ground: laid down in about ten seconds of real rain,
+         puddles over the better part of a minute, and it takes far longer to
+         go away than to arrive - how much longer is the climate's: the desert
+         drinks it, the city at midnight holds it. */
+      const r = this.rain;
+      if (r > 0.02) {
+        this.wet += (clamp(0.35 + r * 0.75, 0, 1) - this.wet) * (1 - Math.exp(-step * 0.12 * (0.4 + r)));
+        this.puddle += (clamp(0.30 + r * 0.70, 0, 1) - this.puddle) * (1 - Math.exp(-step * 0.028 * (0.4 + r)));
+      } else {
+        /* Off a rain route it goes in a few seconds; on one, it takes minutes
+           - about three and a half for the film and two and a half for the
+           standing water at an average climate. It used to be a minute and a
+           half, which left a passing shower almost no wet road behind it: the
+           look of a road under a clearing sky, still running with the
+           neon, is half of what rain is for. */
+        const dry = here ? (C.dry || 1) : 25;
+        this.wet = Math.max(0, this.wet - step * 0.0045 * dry);
+        this.puddle = Math.max(0, this.puddle - step * 0.0045 * dry * 1.45);
+      }
+    }
 
     // --------------------------------------------------------- per frame
 
@@ -731,44 +1065,36 @@
       // the sound's silence is timed in real time: a paused game is still a
       // silent one, and its idle sources should still be let go
       const wall = Math.max(0, Math.min(dt, 0.1));
-      if (this.mode === 'off') { this.vis = 0; this.soundUpdate(wall); return; }
+      if (this.mode === 'off') { this.vis = 0; this.front = null; this.soundUpdate(wall); return; }
       this.clock += step;
       this.t += step;
-      let want = 0, sky = 0;
-      const here = this.canRain();
-      if (!here) {
-        // the lava and the hall: no weather, whatever the schedule says
-      } else if (this.mode === 'story') {
-        want = sky = this.storyLevel;
+      const idx = this.region();
+      const C = CLIMATE[idx] || null;
+      const inside = INDOOR.has(idx);
+      /* WHAT THE SKY IS DOING HERE. The storm is its own; a forecast is read
+         at this moment for this place's climate - the volcano and the hall
+         get nothing, whatever is passing over the rest of the course. */
+      const A = this._at;
+      if (this.kind === 'storm') {
+        if (C) stormAt(this.seed, this.clock, A);
+        else { A.rain = 0; A.cloud = 0; A.kind = null; }
+      } else if (this.sky) {
+        this.sky.at(this.clock, C, A);
       } else {
-        want = scheduled(this.seed, this.clock);
-        /* The cloud comes over before the rain does and clears after it: the
-           sky reads the same schedule twenty-five seconds ahead and holds the
-           heavier of the two. */
-        sky = Math.max(want, scheduled(this.seed, this.clock + 25));
+        A.rain = 0; A.cloud = 0; A.kind = null;
       }
-      this.rain += (want - this.rain) * (1 - Math.exp(-step / (here ? 2.5 : 1.0)));
-      if (this.rain < 1e-4) this.rain = 0;
-      const cw = clamp(sky * 1.8, 0, 1);
-      this.cloud += (cw - this.cloud) * (1 - Math.exp(-step / (!here ? 3 : cw > this.cloud ? 6 : 14)));
-
-      /* Water on the ground: laid down in about ten seconds of real rain,
-         puddles over the better part of a minute, and it takes far longer to
-         go away than to arrive. */
+      this.front = A.rain > 0.01 ? A.kind : null;
+      this.weatherStep(step, A.rain, A.cloud, C, inside);
       const r = this.rain;
-      if (r > 0.02) {
-        this.wet += (clamp(0.35 + r * 0.75, 0, 1) - this.wet) * (1 - Math.exp(-step * 0.12 * (0.4 + r)));
-        this.puddle += (clamp(0.30 + r * 0.70, 0, 1) - this.puddle) * (1 - Math.exp(-step * 0.028 * (0.4 + r)));
-      } else {
-        // off a rain route it goes in a few seconds; on one, it takes minutes
-        const dry = here ? 1 : 25;
-        this.wet = Math.max(0, this.wet - step * 0.010 * dry);
-        this.puddle = Math.max(0, this.puddle - step * 0.0045 * dry * 2.2);
-      }
       const tunnel = clamp(g.camTunnel !== undefined ? Math.max(g.camTunnel, g.tunnel || 0) : (g.tunnel || 0), 0, 1);
       this.vis = r * (1 - tunnel);
-      const k = (this.wind[0] = 1.2 + Math.sin(this.t * 0.07 + this.seed % 7) * 1.1);
-      this.wind[1] = 0.5 + Math.cos(this.t * 0.05 + (this.seed % 11)) * 0.9 + k * 0.1;
+      /* THE WIND rides the weather: a drizzle drifts down nearly straight, a
+         storm comes in slanting and gusting. The direction wanders slowly as
+         it always did; the strength is the rain's, with a gust on top. */
+      const gust = 0.75 + 0.55 * r + 0.45 * r * (wave(this.seed ^ 0x6057, this.t / 5.5) - 0.5) * 2;
+      const k = (this.wind[0] = (1.2 + Math.sin(this.t * 0.07 + this.seed % 7) * 1.1) * gust);
+      this.wind[1] = (0.5 + Math.cos(this.t * 0.05 + (this.seed % 11)) * 0.9) * gust + k * 0.1;
+      this.thunder(step, r, g);
 
       // the camera's own velocity, which is what stretches the streaks
       const e = g.eye;
@@ -799,13 +1125,53 @@
       if (!this.canRain()) { if (this.rain < 0.03) this.said = 0; return; }
       const g = this.g;
       if (g.state !== 'racing' || !g.hud || !g.hud.toast) return;
-      if (this.said === 0 && this.rain > 0.14) {
+      /* Three levels now - nothing, rain, a storm - each said once on the way
+         up and the all-clear said once on the way down, so a gusting shower
+         that crosses a threshold six times says it once. */
+      if (this.said < 1 && this.rain > 0.14) {
         this.said = 1;
         g.hud.toast(this.rain > 0.4 ? 'RAIN  //  ROAD SURFACE WET' : 'LIGHT RAIN', '#7fd4ff');
-      } else if (this.said === 1 && this.rain < 0.03) {
+      } else if (this.said < 2 && this.rain > 0.72 && this.front === 'storm') {
+        this.said = 2;
+        g.hud.toast('STORM  //  STANDING WATER', '#7fa8ff');
+      } else if (this.said >= 1 && this.rain < 0.03) {
         this.said = 0;
-        g.hud.toast('RAIN EASING  //  ROAD STILL WET', '#9fb6d8');
+        g.hud.toast(this.wet > 0.2 ? 'RAIN EASING  //  ROAD STILL WET' : 'SKIES CLEARING', '#9fb6d8');
       }
+    }
+
+    /* THUNDER, a long way off, and only in a storm.
+     *
+     * Heard, never seen. A storm is where lightning would be, and this game
+     * opens on a photosensitivity notice for a reason: a flash that lights the
+     * whole frame at random is the one effect it must not have, so there is
+     * no flash - only the roll, low and late, as from a strike a few miles
+     * away. Spaced at random a quarter of a minute to forty seconds apart, a
+     * little closer the harder it is raining, and never under a roof, in a
+     * menu or behind a pause. */
+    thunder(step, r, g) {
+      if (!(step > 0)) return;
+      const storming = (this.kind === 'storm' || this.front === 'storm') && r > 0.55;
+      if (!storming || this.indoor()) return;
+      if (g.state !== 'racing' && g.state !== 'countdown' && g.state !== 'story') return;
+      this.thunderIn -= step;
+      if (this.thunderIn > 0) return;
+      this.thunderIn = 14 + Math.random() * 26 * (1.3 - r * 0.5);
+      const S = this.ensureSound();
+      if (!S || !S.thBuf) return;
+      try {
+        const src = S.ctx.createBufferSource();
+        src.buffer = S.thBuf;
+        // further away is lower and slower
+        src.playbackRate.value = 0.72 + Math.random() * 0.38;
+        const gain = S.ctx.createGain();
+        gain.gain.value = (0.30 + Math.random() * 0.35) * (0.6 + 0.4 * r)
+          * (1 - clamp(g.tunnel || 0, 0, 1) * 0.6);
+        src.connect(gain);
+        gain.connect(S.thIn);
+        src.onended = () => { try { src.disconnect(); gain.disconnect(); } catch (e) { /* gone */ } };
+        src.start();
+      } catch (e) { /* no audio to give it to */ }
     }
 
     /* Spray off the tyres: a wet road at speed throws a mist behind every
@@ -890,8 +1256,42 @@
         const pbp = ctx.createBiquadFilter(); pbp.type = 'bandpass'; pbp.frequency.value = 2600; pbp.Q.value = 0.6;
         const patG = ctx.createGain(); patG.gain.value = 0;
         pbp.connect(patG); patG.connect(A.sfx);
+        /* THUNDER, far off: brown noise - which is where a distant roll's
+           energy is - shaped into two or three rolls that each take a second
+           or two to die, the way the sound of one strike arrives off
+           different stretches of the same bolt. Built once; each roll is the
+           buffer played at its own pitch and level. See thunder(). */
+        const thLen = Math.floor(sr * 6.5);
+        const thBuf = ctx.createBuffer(1, thLen, sr);
+        {
+          const d = thBuf.getChannelData(0);
+          const rolls = [[0, 1.0, 1.4], [0.55 + Math.random() * 0.7, 0.7, 1.7],
+            [1.6 + Math.random() * 1.0, 0.45, 2.2]];
+          let b = 0, peak = 1e-6;
+          for (let i = 0; i < thLen; i++) {
+            b = (b + 0.02 * (Math.random() * 2 - 1)) / 1.02;
+            const tt = i / sr;
+            let env = 0;
+            for (const [at, amp, decay] of rolls) {
+              if (tt < at) continue;
+              const u = tt - at;
+              env += amp * (1 - Math.exp(-u / 0.09)) * Math.exp(-u / decay);
+            }
+            const v = b * env * (0.75 + 0.25 * Math.sin(tt * 4.1 + Math.sin(tt * 1.3) * 2));
+            d[i] = v;
+            if (Math.abs(v) > peak) peak = Math.abs(v);
+          }
+          // a short fade at the tail, and normalised: nothing here may click
+          for (let i = 0; i < thLen; i++) {
+            const tail = Math.min(1, (thLen - i) / (sr * 0.4));
+            d[i] = (d[i] / peak) * 0.9 * tail;
+          }
+        }
+        const thLp = ctx.createBiquadFilter(); thLp.type = 'lowpass'; thLp.frequency.value = 340;
+        thLp.connect(A.sfx);
         this.sound = {
           ctx, bedG, patG, lp, A, bedBuf, patBuf, bedIn: hp, patIn: pbp,
+          thBuf, thIn: thLp, thLp,
           bedSrc: null, patSrc: null, playing: false, quiet: 0, bed: 0, pat: 0, cut: 7000,
         };
         this.soundStart(this.sound);
@@ -950,6 +1350,12 @@
       }
       // inside, the roof takes the high end off the bed and adds its own drumming
       this.soundLevels(bed, pat, inside ? 2600 : 7000);
+      // ...and the roof takes even more off a roll of thunder
+      const thCut = inside ? 190 : 340;
+      if (S.thLp && S.thCut !== thCut) {
+        S.thCut = thCut;
+        S.thLp.frequency.setTargetAtTime(thCut, S.ctx.currentTime, 0.3);
+      }
     }
 
     soundStart(S) {
@@ -1281,5 +1687,9 @@
   }
 
   NR.Weather = Weather;
-  NR.rainScheduled = scheduled;   // for the harness, and nothing else
+  /* For the harness, and nothing else: the forecast and the climates, so a
+     check can sample a thousand runs' skies without running a frame. */
+  NR.WeatherSky = Sky;
+  NR.WeatherClimate = CLIMATE;
+  NR.weatherStorm = stormAt;
 })(window);

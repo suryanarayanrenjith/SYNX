@@ -88,16 +88,43 @@
   -webkit-text-stroke:.5px rgba(255,255,255,.55);
   filter:drop-shadow(0 0 22px rgba(255,46,136,.40)) drop-shadow(0 0 60px rgba(120,70,255,.34)) drop-shadow(0 2px 0 rgba(0,0,0,.8));
   position:relative}
-/* The specular sweep across it. A single translated bar, clipped to the same
-   glyphs, once every four and a half seconds - a highlight catching a badge
-   rather than an animation looping on it. */
-#preload .pl-mark::after{content:attr(data-text);position:absolute;inset:0;
-  background:linear-gradient(105deg,transparent 38%,rgba(255,255,255,.92) 50%,transparent 62%);
-  background-size:260% 100%;
-  -webkit-background-clip:text;background-clip:text;color:transparent;
-  -webkit-text-fill-color:transparent;
-  animation:plSheen 4.5s cubic-bezier(.5,0,.4,1) infinite;will-change:background-position}
-@keyframes plSheen{0%,62%{background-position:180% 0}100%{background-position:-80% 0}}
+/* The specular sweep across it, once every four and a half seconds - a
+   highlight catching a badge rather than an animation looping on it.
+
+   IT USED TO BE THE ONE THING ON THIS SCREEN THAT WAS NOT COMPOSITED. It
+   was a pseudo-element moving `background-position` through glyph-clipped
+   text, inside the name's three stacked drop-shadows: every frame of the
+   sweep was a main-thread repaint of the name AND a re-run of a sixty-pixel
+   blur over it - during the archive inflate, which is the one moment the
+   main thread cannot spare either.
+
+   Now it is a WINDOW and the TEXT, both moved by transform. A soft-edged
+   window slides right across the name while a white copy of the name slides
+   left inside it by exactly the same amount, so the copy stands still on
+   screen and only the window moves: the same highlight, with no repaint and
+   no filter work at all - it is a sibling of the name, outside its shadows.
+   The two run the same keyframes on the same clock, so the compositor's
+   product of the two transforms is the identity at every instant.
+
+   The window is 64% of the name wide, so the band it shows is about as wide
+   as the old gradient's; it travels from one window-width left of the name to
+   just past its right end, and the copy travels the same distance the other
+   way in its own units (the copy is as wide as the name: 156.25% of 64%). */
+#preload .pl-markbox{position:relative}
+#preload .pl-gleam{position:absolute;top:0;bottom:0;left:0;width:64%;overflow:hidden;
+  pointer-events:none;
+  -webkit-mask-image:linear-gradient(105deg,transparent 8%,#000 50%,transparent 92%);
+  mask-image:linear-gradient(105deg,transparent 8%,#000 50%,transparent 92%);
+  transform:translate3d(-100%,0,0);
+  animation:plGleamWin 4.5s cubic-bezier(.5,0,.4,1) 1250ms infinite;will-change:transform}
+#preload .pl-gleam b{position:absolute;top:0;left:0;display:block;width:156.25%;
+  margin:0;font-weight:900;line-height:.92;font-size:clamp(56px,13vw,168px);
+  letter-spacing:.06em;white-space:nowrap;text-align:center;
+  color:rgba(255,255,255,.92);-webkit-text-fill-color:rgba(255,255,255,.92);
+  transform:translate3d(64%,0,0);
+  animation:plGleamTxt 4.5s cubic-bezier(.5,0,.4,1) 1250ms infinite;will-change:transform}
+@keyframes plGleamWin{0%,62%{transform:translate3d(-100%,0,0)}100%{transform:translate3d(160%,0,0)}}
+@keyframes plGleamTxt{0%,62%{transform:translate3d(64%,0,0)}100%{transform:translate3d(-102.4%,0,0)}}
 
 /* THE WORDS ARE THE SITE'S BOOT SCREEN'S. synx-landing opens on this same
    screen, rebuilt, and sets every line of it in the display face at its
@@ -238,8 +265,7 @@
 
 /* The specular sweep across the name waits until the name has stopped
    moving. Two things happening to the same glyphs at once is two things
-   nobody sees. */
-#preload .pl-mark::after{animation-delay:1250ms}
+   nobody sees. (The 1250 ms delay is on .pl-gleam and its copy, above.) */
 
 /* ----------------------------------------------------------- the film ----
  *
@@ -268,7 +294,10 @@
   pointer-events:none;opacity:0;
   background:linear-gradient(74deg,transparent,rgba(255,196,120,.16) 38%,
     rgba(255,110,180,.20) 56%,transparent);
-  filter:blur(24px);
+  /* No blur. It had a 24 px one, re-run by the compositor on every frame of
+     the pass over a layer half the screen wide and a screen and a half
+     tall - and the gradient already fades to nothing at both ends and runs
+     off the frame at the other two, so there was no edge for it to soften. */
   animation:plLeak 11s var(--e-soft) 900ms infinite;will-change:transform,opacity}
 @keyframes plLeak{
   0%{opacity:0;transform:translate3d(0,0,0)}
@@ -296,10 +325,10 @@
    be shown. Everything lands in its final state on the first frame, which is
    the screen this file used to draw anyway. */
 @media (prefers-reduced-motion:reduce){
-  #preload .pl-grid,#preload .pl-sun,#preload .pl-mark::after,#preload .pl-scan,
+  #preload .pl-grid,#preload .pl-sun,#preload .pl-gleam,#preload .pl-gleam b,#preload .pl-scan,
   #preload .pl-leak,#preload .pl-grain{
     animation:none}
-  #preload .pl-scan,#preload .pl-leak{opacity:0}
+  #preload .pl-scan,#preload .pl-leak,#preload .pl-gleam{opacity:0}
   #preload .pl-sky,#preload .pl-mark,#preload .pl-sub,#preload .pl-rail,
   #preload .pl-read,#preload .pl-note,#preload .pl-frame i,#preload .pl-bars,
   #preload .pl-bars::before,#preload .pl-bars::after{
@@ -342,7 +371,10 @@
 <div id="preload" aria-hidden="true">
   <i class="pl-sky" aria-hidden="true"><i class="pl-grid"></i><i class="pl-sun"></i></i>
   <div class="pl-mid">
-    <h1 class="pl-mark" data-text="SYNX">SYNX</h1>
+    <div class="pl-markbox">
+      <h1 class="pl-mark">SYNX</h1>
+      <i class="pl-gleam" aria-hidden="true"><b>SYNX</b></i>
+    </div>
     <p class="pl-sub">SYNTHWAVE eXTREME RACING</p>
     <div class="pl-rail"><i class="pl-fill" id="plFill"></i><i class="pl-scan"></i></div>
     <div class="pl-read"><span id="plLabel">STARTING UP</span><span class="pl-pct" id="plPct">0%</span></div>

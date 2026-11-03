@@ -2238,11 +2238,26 @@
       const arrival = !!opts.fromPrologue;
       const arrivalS = opts.arrivalS || this.g.car.sTrack;
       this.g.applyLevel();
-      /* MIRAGE CIRCUIT IS SET IN A STORM, and the storm is in the world:
+      /* THE SKY FOR THIS RACE. See js/weather.js.
+
+         MIRAGE CIRCUIT IS SET IN A STORM, and the storm is in the world:
          streaks lit by the lamps, splashes, standing water with rings on it,
-         and water on the glass from the seat. It is already pouring when the chapter
-         opens. The one chapter with weather - see js/weather.js. */
-      if (this.g.weather) this.g.weather.story(id === 3 ? 0.9 : 0);
+         and water on the glass from the seat. It is already pouring when the
+         chapter opens, and it never stops - but it surges and eases rather
+         than holding one level, because the chapter is written in the wet and
+         a storm is not a constant.
+
+         Every other chapter gets a forecast from its route's climate and a
+         seed of this attempt's own: usually dry, sometimes a road still wet
+         from rain that has just passed, now and then a shower that comes
+         through mid-race. A retry is a new sky. THE GOLDEN RUN keeps its
+         opening clear - the golden hour is the point of its first minutes -
+         and the volcano and the hall have no weather at all. */
+      if (this.g.weather) {
+        const seed = (Math.random() * 4294967296) >>> 0;
+        if (id === 3) this.g.weather.storm(seed);
+        else this.g.weather.forecast(seed, c.levelIndex, { clearFor: id === 4 ? 150 : 0 });
+      }
       if (id === 3) {
         /* The gloss every outdoor surface takes, at the ceiling the weather
            itself raises a route to; the standing water, the darkened asphalt
@@ -2257,7 +2272,10 @@
       } else if (id === 6) {
         this.g.scene.sunColor = [.34, .48, .58];
         this.g.scene.ambInt = .74;
-        this.g.levelWet = .20;
+        /* DRY. Aurora Forge is a production hall with a roof on it, and its
+           floor never had any business looking rained on - see `indoor` on
+           the route in js/game.js, which also takes the damp patches off it. */
+        this.g.levelWet = 0;
       }
       if (arrival) {
         this.g.startAt = clamp(arrivalS, this.g.level.from + 30, this.g.level.to - 1000);

@@ -228,6 +228,33 @@ const SPIN_RECOVER: f64 = 1.15;
 const WALL_RESTITUTION: f64 = 0.34;
 const WALL_FRICTION: f64 = 0.55;
 const WALL_STUN: f64 = 0.55;
+/* A GLANCE IS NOT A CRASH.
+ *
+ * The barrier response used to be one rigid-body impulse at the leading
+ * corner whatever the angle, and measured on the real course that made a
+ * brush the most expensive thing in the game: at 80 units a second, meeting
+ * the barrier at eight degrees left the car spun 46 degrees off the road at
+ * the yaw-rate clamp, a third slower a second later, and had it stop time,
+ * crack the windscreen and dent the panel as if it had gone in square. The
+ * corner impulse is right for a square hit and wrong for a shallow one,
+ * because a car that meets a wall at a shallow angle meets it along its
+ * flank, not on its nose.
+ *
+ * So the response is graded by how square the hit is - the angle the car's
+ * own velocity makes with the barrier, from GLANCE_FROM (a pure scrape) to
+ * GLANCE_TO (a crash, answered exactly as before). In between, and in
+ * proportion: the impulse is given less of the corner's leverage, so a
+ * glance moves the car rather than spinning it; the barrier drags less along
+ * its length (GLANCE_DRAG); the driven wheels are knocked less and the tyres
+ * stunned less; the car is turned to run along the barrier rather than into
+ * it (WALL_ALIGN, a fraction of the angle it came in at); and what the rest
+ * of the game reads as an IMPACT is scaled down (GLANCE_FEEL). A brush is a
+ * scrape and sparks, and a crash is still a crash. */
+const GLANCE_FROM: f64 = 5.0 * core::f64::consts::PI / 180.0;
+const GLANCE_TO: f64 = 35.0 * core::f64::consts::PI / 180.0;
+const GLANCE_DRAG: f64 = 0.35;
+const GLANCE_FEEL: f64 = 0.25;
+const WALL_ALIGN: f64 = 1.0;
 
 const FIXED_DT: f64 = 1.0 / 240.0;
 const MAX_STEPS: usize = 24;
@@ -1473,13 +1500,47 @@ impl Vehicle {
         let n_l = rel.cos();
         let n_w = rel.sin();
 
+        /* HOW SQUARE THE HIT IS: the angle the car's own velocity makes with
+           the barrier, mapped to 0 for a scrape and 1 for a crash. See
+           GLANCE_FROM. A car barely moving is treated as square, so pushing
+           against the wall at walking pace is answered as it always was. */
+        let speed_cg = self.v_long.hypot(self.v_lat);
+        let vn_cg = self.v_long * n_l + self.v_lat * n_w;
+        let approach = if speed_cg > 2.0 {
+            clamp(-vn_cg / speed_cg, 0.0, 1.0).asin()
+        } else {
+            core::f64::consts::FRAC_PI_2
+        };
+        /* NOT IN THE AIR. A car that meets the barrier in flight is not
+           running along it on its tyres, and straightening it there would hand
+           a crooked jump a straight landing for free - which is the one thing
+           the landing trials exist to refuse. Square, as it always was. */
+        let steep = if self.airborne {
+            1.0
+        } else {
+            clamp((approach - GLANCE_FROM) / (GLANCE_TO - GLANCE_FROM), 0.0, 1.0)
+        };
+        let glance = 1.0 - steep;
+
         // The corner of the car furthest into the wall. Which end touches
         // first decides whether the car is spun or stopped, so it comes from
         // the geometry rather than from a constant.
         let cw = -sgn * reach;
         let cl = if self.v_long >= 0.0 { HALF_LENGTH * 0.85 } else { -HALF_LENGTH * 0.85 };
-        let vp_l = self.v_long - self.yaw_rate * cw;
-        let vp_w = self.v_lat + self.yaw_rate * cl;
+        /* How much of the corner's leverage the impulse is given. A square
+           hit lands on the corner and spins the car exactly as it always has;
+           a glance lands along the flank, close to the centre of mass, and
+           mostly just moves it. Squared, because the impulse that stops a
+           car's flank is large enough that even a little leverage is a spin -
+           shortening the arm instead was measured and changed almost nothing,
+           because a shorter arm raises the effective mass and with it the
+           impulse. To the fourth power, because the square still left a
+           fourteen-degree brush at 80 u/s with 1.6 rad/s of yaw, and this car
+           at speed keeps a yaw rate it is given - hands off, that was a spin.
+           Still exactly 1 for a square hit. */
+        let lever = steep * steep * steep * steep;
+        let vp_l = self.v_long - self.yaw_rate * cw * lever;
+        let vp_w = self.v_lat + self.yaw_rate * cl * lever;
         let vn = vp_l * n_l + vp_w * n_w;
         if vn >= 0.0 {
             self.v_lat *= 0.6;
@@ -1492,28 +1553,57 @@ impl Vehicle {
             return;
         }
 
-        let rxn = cl * n_w - cw * n_l;
+        let rxn = (cl * n_w - cw * n_l) * lever;
         let inv_mass = 1.0 / MASS + (rxn * rxn) / YAW_I;
         let jn = -(1.0 + WALL_RESTITUTION) * vn / inv_mass;
 
         let t_l = -n_w;
         let t_w = n_l;
         let vt = vp_l * t_l + vp_w * t_w;
-        let rxt = cl * t_w - cw * t_l;
+        let rxt = (cl * t_w - cw * t_l) * lever;
         let inv_mass_t = 1.0 / MASS + (rxt * rxt) / YAW_I;
-        let max_t = WALL_FRICTION * jn.abs();
+        let max_t = WALL_FRICTION * (GLANCE_DRAG + (1.0 - GLANCE_DRAG) * steep) * jn.abs();
         let jt = clamp(-vt / inv_mass_t, -max_t, max_t);
 
         self.v_long += (jn * n_l + jt * t_l) / MASS;
         self.v_lat += (jn * n_w + jt * t_w) / MASS;
         self.yaw_rate = clamp(self.yaw_rate + (jn * rxn + jt * rxt) / YAW_I, -3.6, 3.6);
+        /* ...and on a glance, the car is turned to run ALONG the barrier: what
+           a driver does with the wheel in the instant after a brush. `into`
+           is how far the nose points into this barrier (the road's heading
+           less the car's, on this side of the road). Rotation still carrying
+           the nose into the barrier is taken away first; then the nose is
+           turned to parallel on the frame of the contact, with the car's
+           velocity held where it is in the world while the body turns under
+           it. All of it at once and none of it as a yaw rate: this car at
+           speed keeps whatever yaw rate it is handed, and a turn given as
+           one was measured carrying the nose thirteen degrees PAST parallel
+           and off the other way. A square hit gets none of this. */
+        let into = -skew * sgn;
+        if glance > 0.0 {
+            if self.yaw_rate * sgn > 0.0 {
+                self.yaw_rate *= 1.0 - glance;
+            }
+            if into > 0.0 {
+                let turn = into * WALL_ALIGN * glance;
+                let (s0, c0) = self.yaw.sin_cos();
+                let vx = s0 * self.v_long + c0 * self.v_lat;
+                let vz = c0 * self.v_long - s0 * self.v_lat;
+                self.yaw -= sgn * turn;
+                let (s1, c1) = self.yaw.sin_cos();
+                self.v_long = s1 * vx + c1 * vz;
+                self.v_lat = c1 * vx - s1 * vz;
+            }
+        }
 
         let hit = vn.abs();
-        self.roll_v += -sgn * hit * 0.10;
-        self.pitch_v += hit * 0.045;
-        self.heave_v -= (1.4f64).min(hit * 0.05);
+        let body = 0.5 + 0.5 * steep;
+        self.roll_v += -sgn * hit * 0.10 * body;
+        self.pitch_v += hit * 0.045 * body;
+        self.heave_v -= (1.4f64).min(hit * 0.05 * body);
+        let knock = (0.5f64).min(hit * 0.03) * (0.3 + 0.7 * steep);
         for w in self.w.iter_mut() {
-            w.omega *= 1.0 - (0.5f64).min(hit * 0.03);
+            w.omega *= 1.0 - knock;
         }
 
         self.contact_timer = self.contact_timer.max(0.55);
@@ -1530,8 +1620,10 @@ impl Vehicle {
             self.last_hit = true;
             self.last_hit_kind = HitKind::Wall;
             self.impact_speed = hit;
-            self.impact = (1.0f64).min(hit / 11.0);
-            self.stun = WALL_STUN * (1.0f64).min(hit / 8.0);
+            /* What the game reads as an IMPACT - the hit-stop, the screen
+               crack, the dent - is how hard AND how square. See GLANCE_FEEL. */
+            self.impact = (1.0f64).min(hit / 11.0) * (GLANCE_FEEL + (1.0 - GLANCE_FEEL) * steep);
+            self.stun = WALL_STUN * (1.0f64).min(hit / 8.0) * (0.35 + 0.65 * steep);
         }
         if self.s_track < self.min_s {
             self.hold_start_line(proj);
@@ -2320,6 +2412,65 @@ mod tests {
             t.outer_half
         );
         assert!(car.speed > 1.0, "the wall swallowed the car");
+    }
+
+    /// A brush is a scrape and a square hit is a crash. See GLANCE_FROM.
+    ///
+    /// The car is brought up to racing speed in a lane near the barrier and
+    /// turned into it in one go, so the angle it meets the barrier at is the
+    /// one set here; the throttle stays down. Measured one second after the
+    /// first contact, against the same car driven on without touching it.
+    #[test]
+    fn a_glance_costs_little_and_a_crash_costs_a_lot() {
+        let t = straight_track(20_000);
+        let run = |deg: f64, touch: bool| -> (f64, f64, f64) {
+            let mut car = Vehicle::new(&t, 0.0);
+            car.reset(&t, 100.0, 9.0);
+            let mut n = 0;
+            while car.speed < 80.0 && n < 60 * 40 {
+                car.update(&t, 1.0 / 60.0, Input { throttle: 1.0, ..Default::default() }, true);
+                n += 1;
+            }
+            // which side of the road +yaw heads for decides which barrier
+            car.yaw += if touch { deg.to_radians() } else { 0.0 };
+            let mut first = None;
+            let mut impact: f64 = 0.0;
+            let mut worst_head: f64 = 0.0;
+            for k in 0..60 * 6 {
+                car.update(&t, 1.0 / 60.0, Input { throttle: 1.0, ..Default::default() }, true);
+                if car.last_hit {
+                    impact = impact.max(car.impact);
+                    car.last_hit = false;
+                }
+                if first.is_none() && (car.contact_timer > 0.0 || !touch && k == 30) {
+                    first = Some(k);
+                }
+                if let Some(f) = first {
+                    worst_head = worst_head.max(car.yaw.abs());
+                    if k - f == 60 {
+                        break;
+                    }
+                }
+            }
+            assert!(first.is_some(), "the car never reached the barrier at {deg} degrees");
+            (car.speed, impact, worst_head.to_degrees())
+        };
+        let (free, _, _) = run(0.0, false);
+        let (brush, brush_hit, brush_head) = run(8.0, true);
+        let (crash, crash_hit, _) = run(60.0, true);
+        assert!(
+            brush > free * 0.82,
+            "an eight-degree brush at 80 u/s kept only {:.0}% of its speed",
+            100.0 * brush / free
+        );
+        assert!(brush_head < 30.0, "a brush turned the car {brush_head:.0} degrees off the road");
+        assert!(brush_hit < 0.5, "a brush read as an impact of {brush_hit:.2} - hard enough to stop time");
+        assert!(
+            crash < free * 0.55,
+            "a sixty-degree crash at 80 u/s kept {:.0}% of its speed",
+            100.0 * crash / free
+        );
+        assert!(crash_hit > 0.8, "a square crash read as an impact of only {crash_hit:.2}");
     }
 
     /// A spin must recover. The guard is always on, so however far the car is

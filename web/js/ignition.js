@@ -176,6 +176,33 @@
      clock so the slide is the same speed at any frame rate. */
   let gearPos = null, gearWas = -1, shiftAt = 0, lastFrame = 0;
   let audio = null;
+  /* THE NEEDLE'S VELOCITY, in revs a second. The needle is a damped spring
+     now rather than a follower - see moveNeedle - and a spring has a speed. */
+  let needleV = 0;
+  /* THE REVS THE ENGINE IS GIVEN, which is not the needle. A needle that
+     swings past a shift is a gauge; an engine that does is a fault. This is a
+     first-order follower of the script - exactly what the needle used to be -
+     and it is what the audio thread hears. */
+  let engRpm = 0;
+  /* The peak-hold mark: the highest revs lately, and when they were reached. */
+  let peakRpm = 0, peakAt = 0;
+  /* The beats the cluster reacts to, by when they happened (0 is never): the
+     punch the whole instrument takes on a shift, the ring of light that
+     leaves the bezel, the shift lamps going white, and the backfire. */
+  let punchAt = 0, punchAmp = 0, waveAt = 0, waveWarm = false;
+  let ledFlashAt = 0, backfireAt = 0, wasLive = false;
+  /* The two full-screen layers that are CSS rather than canvas: the
+     scanlines and vignette, which never change, and the white of the cut,
+     which is one opacity. See begin. */
+  let gradeEl = null, flashEl = null, flashShown = -1;
+  /* Device pixels per CSS pixel for this screen - chosen once from what the
+     player has told the game about this machine, and dropped to one if the
+     first second proves even that is too many. See pickDpr. */
+  let ignDpr = 1, slowFrames = 0, timedFrames = 0, dprSettled = false;
+  /* What the frame hands to the cluster beyond its arguments - where the
+     needle was drawn last frame (for its smear), the peak-hold revs and the
+     backfire's strength. One object, reused, so the frame allocates nothing. */
+  const FX = { prevA: null, peak: 0, backfire: 0 };
 
   /* ------------------------------------------------------------- audio --
    *
@@ -546,8 +573,38 @@
    * between this screen running at the display's rate and not.
    */
 
-  /** Device pixels per CSS pixel, capped - a 4K loading screen is not worth it. */
-  function dpr() { return Math.min(2, global.devicePixelRatio || 1); }
+  /** Device pixels per CSS pixel for this screen. See pickDpr. */
+  function dpr() { return ignDpr; }
+
+  /* HOW MANY DEVICE PIXELS THIS SCREEN IS WORTH.
+   *
+   * It is a full-window 2D canvas, and on a high-density laptop panel at a
+   * device ratio of two that is four times the pixels of the same window at
+   * one - each of them blended by a 2D context, on what may be the weakest
+   * machine the game runs on. The player has already said what kind of
+   * machine this is: LOW, or a scaler that has had to give pixels back, is
+   * a body marked `data-gfx="lean"` (see Game.syncGfxClass), and gets one
+   * device pixel per CSS pixel. MEDIUM gets one and a half. Anything else
+   * gets the display's own, capped at two as it always was.
+   *
+   * Whatever is chosen here, the first second on screen is a measurement:
+   * see the frame loop, which drops a screen that cannot hold its rate to
+   * one device pixel and rebuilds its layers once. */
+  function pickDpr() {
+    const native = Math.min(2, global.devicePixelRatio || 1);
+    let cap = 2;
+    try {
+      const body = doc.body;
+      if (body && body.getAttribute('data-gfx') === 'lean') cap = 1;
+      else {
+        const st = NR.game && NR.game.settings;
+        const q = st && typeof st.quality === 'number' ? st.quality : 2;
+        if (q <= 0) cap = 1;
+        else if (q === 1) cap = 1.5;
+      }
+    } catch (e) { /* no game to ask: the display's own */ }
+    return Math.min(native, cap);
+  }
 
   function resize() {
     const d = dpr();
@@ -580,15 +637,20 @@
     const markY = cy + R * 1.52 + size * 0.5;
     const capY = markY + size * 0.5 + Math.max(16, R * 0.11);
     const lift = Math.max(0, capY + 14 - h * 0.965);
+    const cyL = cy - lift * 0.5;
     return {
       w, h, R,
       r: R,                       // the old name, for anything that reads it
       cx: w * 0.5,
-      cy: cy - lift * 0.5,
+      cy: cyL,
       markSize: size,
       markY: markY - lift,
       capY: capY - lift,
       stampY: capY - lift,
+      /* The shift lamps, over the top of the ring: clear of its bloom's
+         brightest part, and never closer to the top of the frame than the
+         corner ticks are. */
+      ledY: Math.max(Math.max(18, Math.min(w, h) * 0.045) + R * 0.06, cyL - R * 1.42),
     };
   }
 
@@ -612,9 +674,16 @@
   /* Orbitron's figures are proportional - a '1' is under half an '8' - so a
      readout that changes is set in cells as wide as the widest figure, each
      figure centred in its own: the tabular setting the face does not have. */
+  /* The widest figure, per font. Ten measureText calls a frame for a number
+     that only changes when the window does. */
+  const CELL = Object.create(null);
   function fillTabular(c, txt, cx, cy) {
-    let cell = 0;
-    for (let d = 0; d <= 9; d++) cell = Math.max(cell, c.measureText(String(d)).width);
+    let cell = CELL[c.font];
+    if (cell === undefined) {
+      cell = 0;
+      for (let d = 0; d <= 9; d++) cell = Math.max(cell, c.measureText(String(d)).width);
+      CELL[c.font] = cell;
+    }
     const align = c.textAlign;
     c.textAlign = 'center';
     const x0 = cx - (cell * txt.length) / 2 + cell / 2;
@@ -661,7 +730,56 @@
     cache.needle = buildNeedle(L);
     cache.flare = buildFlare(L, 'warm');
     cache.glint = buildFlare(L, 'cool');
+    /* The hub's fill, which was a new gradient object every frame. */
+    const R = L.R;
+    const hub = cx.createRadialGradient(L.cx, L.cy - R * 0.03, 0, L.cx, L.cy, R * 0.10);
+    hub.addColorStop(0, '#4a5cff');
+    hub.addColorStop(1, '#0b0828');
+    cache.hub = hub;
+    /* THE REV BAR'S COLOUR, by angle round the dial: cyan off the bottom of
+       the scale, paling through the middle, pink into the shift lamps' range
+       and the redline's red at the top. Every stop is LIGHTER than the dial
+       face it is drawn on - a mid-blue stop in the middle of the ramp made
+       the bar disappear into the glass from two to four thousand, so it
+       looked as if it stopped short of the needle. A conic gradient that
+       starts where the scale starts, so a fraction of the circle is a
+       fraction of the revs (the scale is three quarters of a turn). */
+    if (cx.createConicGradient) {
+      const g = cx.createConicGradient(A0, L.cx, L.cy);
+      const at = (v) => 0.75 * (v / RPM_MAX);
+      g.addColorStop(0, '#3ff0ff');
+      g.addColorStop(at(3000), '#8ffaff');
+      g.addColorStop(at(5000), '#ff8ae0');
+      g.addColorStop(at(6500), '#ff3fb0');
+      g.addColorStop(at(REDLINE), '#ff2a3c');
+      g.addColorStop(0.75, '#ff2a3c');
+      g.addColorStop(1, '#3ff0ff');
+      cache.rpmGrad = g;
+    } else {
+      cache.rpmGrad = '#7fdcff';
+    }
+    // the dashes of the ring the rev bar lights, in the same phase
+    cache.dash = [R * 0.040, R * 0.026];
+    // one soft glow per lamp colour, for the shift lamps
+    cache.ledGlow = Object.create(null);
+    for (const col of LED_TINTS) cache.ledGlow[col] = buildGlow(R * 0.34, col);
     return cache;
+  }
+
+  /* A round, soft spot of one colour - the light a small lamp throws on the
+     glass in front of it. Drawn additively. */
+  function buildGlow(size, col) {
+    const S = surface(size, size);
+    if (!S) return null;
+    const c = S.c, m = size / 2;
+    const g = c.createRadialGradient(m, m, 0, m, m, m);
+    g.addColorStop(0, col);
+    g.addColorStop(0.35, col);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.globalAlpha = 0.55;
+    c.fillStyle = g;
+    c.fillRect(0, 0, size, size);
+    return S;
   }
 
   /* THE ROOM - the preloader's, so the dissolve from it is one continuous
@@ -1095,34 +1213,59 @@
     return markCv;
   }
 
-  function wordmark(c, L, k) {
-    const rise = k === undefined ? 1 : k;
-    if (rise <= 0.002) return;
-    const size = L.markSize;
-    const im = buildMark(size);
-    c.save();
-    /* THE HALO, AND ONLY THE HALO. The shadow of a copy drawn off the edge of
-       the canvas lands under the chrome with no solid glyphs of its own, so
-       the airbrush cuts show the dark room through them - as they do on every
-       other chrome headline - rather than a second, pink copy of the name. */
+  /* THE HALO, AND ONLY THE HALO. The shadow of a copy drawn off the edge of
+     the canvas lands under the chrome with no solid glyphs of its own, so
+     the airbrush cuts show the dark room through them - as they do on every
+     other chrome headline - rather than a second, pink copy of the name.
+
+     BAKED, once per size. It was drawn live: a shadow blur seven tenths of
+     the name's height wide, on every frame of the screen whose own notes say
+     there is no blur on its live path. It never changes except in opacity,
+     so it is a sprite now and the frame pays one drawImage for it. */
+  let haloCv = null, haloKey = '', haloW = 0, haloH = 0;
+  function buildHalo(size) {
+    const d = dpr();
+    const key = size.toFixed(2) + '|' + d;
+    if (haloCv && haloKey === key) return haloCv;
+    if (!buildMark(size)) return null;
+    // the blur reaches about one and a half of its own radius past the glyphs
+    const pad = size * 1.15;
+    haloW = markW + pad * 2;
+    haloH = markH + pad * 2;
+    if (!haloCv) haloCv = doc.createElement('canvas');
+    haloCv.width = Math.max(1, Math.ceil(haloW * d));
+    haloCv.height = Math.max(1, Math.ceil(haloH * d));
+    const c = haloCv.getContext('2d');
+    if (!c) return null;
+    c.setTransform(d, 0, 0, d, 0, 0);
+    c.clearRect(0, 0, haloW, haloH);
     c.font = font(size, 900);
     track(c, size * 0.06);
     c.textAlign = 'center';
     c.textBaseline = 'middle';
     const OFF = 10000;
-    /* A shadow's offset is in DEVICE pixels - the transform does not apply
-       to it - while the text is placed through the pixel-ratio scale, so the
-       offset has to be scaled by the same amount or on a HiDPI screen the
-       halo lands off the canvas with its text. */
-    const T = c.getTransform ? c.getTransform() : null;
-    c.shadowOffsetX = OFF * (T ? Math.hypot(T.a, T.b) : dpr());
+    /* A shadow's offset and its blur are in DEVICE pixels - the transform
+       does not apply to either - while the text is placed through the
+       pixel-ratio scale. The offset is scaled so the halo lands under its
+       text; the blur is left as it was drawn live, so it is the same halo. */
+    c.shadowOffsetX = OFF * d;
     c.shadowColor = 'rgba(255,46,136,0.55)';
     c.shadowBlur = size * 0.7;
     c.fillStyle = '#000';
-    c.globalAlpha = rise;
-    c.fillText(tracked(c, 'SYNX'), L.cx - OFF, L.markY);
-    c.shadowOffsetX = 0;
-    c.shadowBlur = 0;
+    c.fillText(tracked(c, 'SYNX'), haloW / 2 - OFF, haloH / 2);
+    haloKey = key;
+    return haloCv;
+  }
+
+  function wordmark(c, L, k) {
+    const rise = k === undefined ? 1 : k;
+    if (rise <= 0.002) return;
+    const size = L.markSize;
+    const halo = buildHalo(size);
+    const im = buildMark(size);
+    c.save();
+    c.globalAlpha *= rise;
+    if (halo) c.drawImage(halo, L.cx - haloW / 2, L.markY - haloH / 2, haloW, haloH);
     if (im) c.drawImage(im, L.cx - markW / 2, L.markY - markH / 2, markW, markH);
     c.restore();
   }
@@ -1244,6 +1387,36 @@
       }
     }
 
+    /* THE REV BAR. The dashed ring inside the figures lights up from the
+       bottom of the scale to the needle, dash by dash - the same dashes, in
+       the same phase, so it reads as that ring's own lamps coming on rather
+       than as a second instrument laid over the first. Its colour runs with
+       the revs (see the conic ramp in ensureCache), and a soft wide pass
+       under it is the light those lamps throw on the glass. It follows the
+       needle through the self-test as well, which is most of what makes the
+       sweep read as a system check rather than a needle moving. */
+    {
+      const aV = aOf(value);
+      const lit = Math.min(1, intro * 1.4);
+      if (aV > A0 + 0.02 && lit > 0.01) {
+        c.save();
+        c.strokeStyle = K.rpmGrad;
+        c.lineCap = 'butt';
+        c.globalAlpha = 0.22 * lit;
+        c.lineWidth = R * 0.085;
+        c.beginPath();
+        c.arc(L.cx, L.cy, R * 0.585, A0, aV);
+        c.stroke();
+        c.globalAlpha = lit;
+        c.lineWidth = Math.max(2, R * 0.03);
+        c.setLineDash(K.dash);
+        c.beginPath();
+        c.arc(L.cx, L.cy, R * 0.585, A0, aV);
+        c.stroke();
+        c.restore();
+      }
+    }
+
     /* THE BOOST COLUMN: sixteen cells along the left arc, cyan into magenta,
        and the last two the warning colour. */
     {
@@ -1335,19 +1508,61 @@
     lamp(-R * 0.30, !live && t > 0.95, AMBER);
     lamp(R * 0.30, value >= REDLINE, RED);
 
-    // the needle, then the hub over its tail
+    /* THE PEAK-HOLD MARK: a short bright bar on the scale where the needle
+       last topped out, which holds for a moment and then falls back to meet
+       it. It is what makes each blip leave something behind - the eye reads
+       how high that one went - and it is a real instrument's feature, not
+       decoration. */
+    if (FX.peak > value + 120) {
+      const pa = aOf(FX.peak);
+      c.save();
+      c.strokeStyle = FX.peak >= REDLINE ? '#ffc4cc' : '#e9fdff';
+      c.globalAlpha = Math.min(1, (FX.peak - value) / 500) * 0.9 * Math.min(1, intro * 1.4);
+      c.lineWidth = Math.max(2, R * 0.024);
+      c.lineCap = 'round';
+      c.beginPath();
+      c.moveTo(L.cx + Math.cos(pa) * R * 0.90, L.cy + Math.sin(pa) * R * 0.90);
+      c.lineTo(L.cx + Math.cos(pa) * R * 1.045, L.cy + Math.sin(pa) * R * 1.045);
+      c.stroke();
+      c.restore();
+    }
+
+    /* The needle, then the hub over its tail.
+     *
+     * A FAST NEEDLE SMEARS. The sweep crosses two hundred and forty degrees
+     * in under half a second - nine degrees a frame at sixty - and a needle
+     * drawn sharp at each of those positions reads as a series of needles,
+     * not as one moving. So when it moves more than a couple of degrees in a
+     * frame, a few faint copies are laid along the arc it just swept,
+     * brighter towards where it is now: motion blur over the frame interval,
+     * which is what the eye expects of a thing that fast. Additive, and only
+     * as many as the distance needs, so a steady needle costs nothing. */
     if (K.needle) {
+      const a = aOf(value);
+      const da = FX.prevA === null ? 0 : a - FX.prevA;
+      const n = Math.min(5, Math.floor(Math.abs(da) / 0.03));
+      if (n > 0) {
+        c.save();
+        c.globalCompositeOperation = 'lighter';
+        for (let i = 1; i <= n; i++) {
+          const f = i / (n + 1);
+          c.save();
+          c.globalAlpha = 0.06 + 0.22 * f;
+          c.translate(L.cx, L.cy);
+          c.rotate(FX.prevA + da * f);
+          c.drawImage(K.needle.cv, -K.needle.pivot, -K.needle.h / 2, K.needle.w, K.needle.h);
+          c.restore();
+        }
+        c.restore();
+      }
       c.save();
       c.translate(L.cx, L.cy);
-      c.rotate(aOf(value));
+      c.rotate(a);
       c.drawImage(K.needle.cv, -K.needle.pivot, -K.needle.h / 2, K.needle.w, K.needle.h);
       c.restore();
     }
     c.save();
-    const hub = c.createRadialGradient(L.cx, L.cy - R * 0.03, 0, L.cx, L.cy, R * 0.10);
-    hub.addColorStop(0, '#4a5cff');
-    hub.addColorStop(1, '#0b0828');
-    c.fillStyle = hub;
+    c.fillStyle = K.hub;
     c.beginPath();
     c.arc(L.cx, L.cy, R * 0.085, 0, Math.PI * 2);
     c.fill();
@@ -1363,9 +1578,95 @@
     c.save();
     c.globalCompositeOperation = 'lighter';
     const fa = Math.PI * (36 / 180);
-    blit(c, K.flare, L.cx + Math.cos(fa) * R * RING_R, L.cy + Math.sin(fa) * R * RING_R,
-      Math.min(1, ring) * (0.30 + 0.70 * heat));
+    const fx = L.cx + Math.cos(fa) * R * RING_R, fy = L.cy + Math.sin(fa) * R * RING_R;
+    blit(c, K.flare, fx, fy, Math.min(1, ring) * (0.30 + 0.70 * heat));
+    /* ...and on every upshift, a BACKFIRE: the same flare again, half as big
+       again and gone in a tenth of a second - the pop on the overrun that
+       every car in this game's genre makes between gears. */
+    if (FX.backfire > 0.01 && K.flare) {
+      const S = K.flare, k = 1.55;
+      c.globalAlpha = Math.min(1, FX.backfire);
+      c.drawImage(S.cv, fx - S.w * k / 2, fy - S.h * k / 2, S.w * k, S.h * k);
+      c.globalAlpha = 1;
+    }
     blit(c, K.glint, L.cx - R * 0.56, L.cy - R * 0.66, 0.40 + 0.10 * Math.sin(t * 2.3));
+    c.restore();
+  }
+
+  /* ------------------------------------------------------ the shift lamps --
+   *
+   * A row of ten lamps over the top of the ring, which is the one thing every
+   * racing cluster has and this one did not. They light left to right from
+   * five thousand to the redline - cyan, then magenta, then red - so each
+   * pull is legible as a pull TOWARDS something, and on every upshift the
+   * whole row goes white for the instant of the shift, which is when a
+   * driver's eyes leave the road for them.
+   *
+   * THEY DO NOT BLINK. A real set flashes at the limiter; this screen comes
+   * BEFORE the photosensitivity notice, so nothing on it may flicker, and at
+   * the limiter the row simply holds fully lit and hot. The white on a shift
+   * is three single beats in a second and a half, on ten small lamps.
+   */
+  const LED_N = 10, LED_FROM = 5000, LED_TO = REDLINE;
+  const LED_COL = ['#3ff0ff', '#3ff0ff', '#3ff0ff', '#3ff0ff',
+    '#ff4fb8', '#ff4fb8', '#ff4fb8', '#ff2a3c', '#ff2a3c', '#ff2a3c'];
+  const LED_TINTS = ['#3ff0ff', '#ff4fb8', '#ff2a3c', '#f4fdff'];
+
+  function shiftLamps(c, L, value, live, intro, now) {
+    const K = cache;
+    if (!K) return;
+    const lit = Math.min(1, intro * 1.4);
+    if (lit <= 0.01) return;
+    const R = L.R;
+    const W = R * 1.30, pitch = W / LED_N, lw = pitch * 0.68, lh = Math.max(4, R * 0.05);
+    const x0 = L.cx - W / 2 + (pitch - lw) / 2, y0 = L.ledY - lh / 2;
+    const n = live ? Math.max(0, Math.min(LED_N, ((value - LED_FROM) / (LED_TO - LED_FROM)) * LED_N)) : 0;
+    const pinned = live && value >= LED_TO;
+    const white = ledFlashAt ? Math.max(0, 1 - (now - ledFlashAt) / 110) : 0;
+    c.save();
+    // the sockets, which are always there
+    c.globalAlpha = 0.15 * lit;
+    for (let i = 0; i < LED_N; i++) {
+      c.fillStyle = LED_COL[i];
+      c.fillRect(x0 + i * pitch, y0, lw, lh);
+    }
+    // ...and the lamps that are on
+    for (let i = 0; i < LED_N; i++) {
+      const on = Math.max(Math.min(1, Math.max(0, n - i)), pinned ? 1 : 0, white);
+      if (on <= 0.01) continue;
+      const col = white > 0.5 ? '#f4fdff' : LED_COL[i];
+      const x = x0 + i * pitch;
+      c.globalCompositeOperation = 'source-over';
+      c.globalAlpha = lit * (0.35 + 0.65 * on);
+      c.fillStyle = col;
+      c.fillRect(x, y0, lw, lh);
+      const glow = K.ledGlow && K.ledGlow[col];
+      if (glow) {
+        c.globalCompositeOperation = 'lighter';
+        c.globalAlpha = lit * on * (pinned ? 0.95 : 0.7);
+        c.drawImage(glow.cv, x + lw / 2 - glow.w / 2, y0 + lh / 2 - glow.h / 2, glow.w, glow.h);
+      }
+    }
+    c.restore();
+  }
+
+  /* THE RING OF LIGHT that leaves the bezel when something happens - the
+     engine catching (warm) and every upshift (cool). It expands from the ring
+     and fades as it goes, which is the cheapest way there is of saying that
+     the instrument just felt something. One stroke. */
+  function shockwave(c, L, now) {
+    if (!waveAt) return;
+    const k = (now - waveAt) / 460;
+    if (k >= 1 || k < 0) return;
+    const e = 1 - Math.pow(1 - k, 3);
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    c.strokeStyle = waveWarm ? '#ffb070' : '#9ff6ff';
+    c.globalAlpha = 0.55 * (1 - k) * (1 - k);
+    c.lineWidth = Math.max(1, L.R * (0.04 * (1 - k) + 0.004));
+    c.beginPath();
+    c.arc(L.cx, L.cy, L.R * (RING_R + 0.52 * e), 0, Math.PI * 2);
+    c.stroke();
     c.restore();
   }
 
@@ -1442,38 +1743,101 @@
     c.restore();
   }
 
-  /** Scanlines, a vignette and the cut. */
+  /* SCANLINES, A VIGNETTE AND THE CUT.
+   *
+   * These were drawn into the canvas on every frame: three hundred and sixty
+   * one-pixel fills for the scanlines on a 1080-line window, a full-screen
+   * radial gradient constructed and filled for the vignette, and then the
+   * white. None of the first two ever changes. They are two static layers
+   * over the canvas now (.ign-grade, in css/style.css) - the same lines at the
+   * same pitch and the same falloff - which the compositor rasterises once
+   * and blends for free, and the cut is one opacity on a white layer above
+   * them, written only when it moves. On the canvas fallback (no layer could
+   * be made) the white is still drawn here, so the cut is never lost. */
   function grade(c, L, level) {
-    const w = L.w, h = L.h;
-    c.save();
-    c.globalAlpha = 0.15;
-    c.fillStyle = '#000';
-    for (let y = 0; y < h; y += 3) c.fillRect(0, y, w, 1);
-    c.restore();
-
-    const v = c.createRadialGradient(w * 0.5, h * 0.5, Math.min(w, h) * 0.26,
-      w * 0.5, h * 0.5, Math.max(w, h) * 0.72);
-    v.addColorStop(0, 'rgba(0,0,0,0)');
-    v.addColorStop(1, 'rgba(0,0,0,0.82)');
-    c.fillStyle = v;
-    c.fillRect(0, 0, w, h);
-
-    if (level > 0.002) {
+    const k = Math.max(0, Math.min(1, level));
+    if (flashEl) {
+      const q = Math.round(k * 200) / 200;
+      if (q !== flashShown) {
+        flashShown = q;
+        flashEl.style.opacity = String(q);
+      }
+      return;
+    }
+    if (k > 0.002) {
       c.save();
-      c.globalAlpha = Math.min(1, level);
+      c.globalAlpha = k;
       c.fillStyle = '#ffffff';
-      c.fillRect(0, 0, w, h);
+      c.fillRect(0, 0, L.w, L.h);
       c.restore();
     }
   }
 
   /* ----------------------------------------------------------- the loop -- */
 
+  /* THE NEEDLE HAS MASS, and now it actually does.
+   *
+   * It was a first-order follower - `shown += (target - shown) * k` - and a
+   * follower cannot overshoot anything: it only ever arrives late. The
+   * things that make a real tachometer needle look ALIVE are exactly the
+   * things a follower cannot do. It swings past a sudden drop and comes back.
+   * It shivers on the limiter. And on the self-test it slams into the stop
+   * pin at the top of the scale and bounces off it.
+   *
+   * So it is a light arm on a spring with damping: about six hertz and a
+   * little under half critical, which is one visible overshoot on a shift and
+   * none on a steady pull. It is integrated in fixed sub-steps of a two
+   * hundred and fortieth of a second, so it moves the same at thirty frames a
+   * second as at a hundred and forty-four, and it is stopped by the two pins
+   * a dial has - the rest pin at zero and the stop at the top - each of which
+   * hands back a third of the speed it was hit at. */
+  const NEEDLE_W = 2 * Math.PI * 6.2;
+  const NEEDLE_Z = 0.5;
+  const PIN_BOUNCE = 0.33;
+  function moveNeedle(target, dt) {
+    const n = Math.max(1, Math.min(24, Math.ceil(dt * 240)));
+    const h = dt / n;
+    for (let i = 0; i < n; i++) {
+      const a = NEEDLE_W * NEEDLE_W * (target - shownRpm) - 2 * NEEDLE_Z * NEEDLE_W * needleV;
+      needleV += a * h;
+      shownRpm += needleV * h;
+      if (shownRpm > RPM_MAX) {
+        shownRpm = RPM_MAX;
+        if (needleV > 0) needleV = -needleV * PIN_BOUNCE;
+      } else if (shownRpm < 0) {
+        shownRpm = 0;
+        if (needleV < 0) needleV = -needleV * PIN_BOUNCE;
+      }
+    }
+  }
+
   function frame() {
     if (finished) return;
     raf = global.requestAnimationFrame(frame);
     const now = global.performance ? global.performance.now() : Date.now();
     const t = (now - t0) / 1000;
+    /* THE REAL INTERVAL, for everything on this screen that integrates - the
+       needle, the selector, the decays. Several of them used to assume a
+       sixtieth of a second, so on a 144 Hz panel the needle was more than
+       twice as stiff as it was tuned and on a machine holding thirty it
+       dragged. Clamped, so a frame the machine lost cannot fling anything. */
+    const dtRaw = lastFrame ? (now - lastFrame) / 1000 : 1 / 60;
+    const dtF = Math.min(0.05, Math.max(0, dtRaw));
+    lastFrame = now;
+    /* THE FIRST SECOND IS A MEASUREMENT. See pickDpr. The first three frames
+       are always slow - the canvas and its layers are being allocated - so
+       they are not counted; after that, eight frames that missed thirty-five
+       a second within the first sixty mean this screen has more pixels than
+       the machine can fill, and it drops to one device pixel once. */
+    if (!dprSettled) {
+      timedFrames++;
+      if (ignDpr <= 1 || timedFrames > 60) dprSettled = true;
+      else if (timedFrames > 3 && dtRaw > 0.028 && ++slowFrames >= 8) {
+        dprSettled = true;
+        ignDpr = 1;
+        resize();
+      }
+    }
     const vw = parseFloat(cv.style.width), vh = parseFloat(cv.style.height);
     const L = layout(vw, vh);
 
@@ -1505,13 +1869,16 @@
       s = script(t);
     }
     rpm = s.rpm;
-    /* The needle has mass. Not much - a tachometer needle is deliberately
-       light - but enough that it overshoots a step and settles, which is the
-       difference between a gauge and a graph. Driven towards the script rather
-       than set to it, and the strength is high enough that a frame the loader
-       stole does not leave the needle behind. */
-    const lag = 1 - Math.exp(-18 * Math.min(0.05, 1 / 60));
-    shownRpm += (rpm - shownRpm) * lag;
+    /* THE ENGINE follows the script with the lag the needle used to have -
+       per second now, rather than per frame - and the audio thread hears
+       this. THE NEEDLE is a spring with mass: see moveNeedle. */
+    engRpm += (rpm - engRpm) * (1 - Math.exp(-18 * dtF));
+    moveNeedle(rpm, dtF);
+
+    /* The peak-hold mark: it follows the needle up at once, holds for most
+       of a second, then falls back to meet it. */
+    if (shownRpm >= peakRpm) { peakRpm = shownRpm; peakAt = now; }
+    else if (now - peakAt > 650) peakRpm = Math.max(shownRpm, peakRpm - 9000 * dtF);
 
     /* The whole screen shakes with the engine, and harder at the limiter -
        half what it was: a cluster this detailed reads as an instrument when
@@ -1533,7 +1900,12 @@
       const since = outroAt ? 9 : t - catchAt;
       const ignite = since < 0.5 ? Math.max(0, 1 - since / 0.5) * 0.55 : 0;
       ringLvl = 0.55 + 0.45 * heat + ignite;
-      if (s.live && !outroAt && shownRpm >= LIMITER - 400) ringLvl *= 0.86 + 0.14 * Math.abs(Math.sin(t * 61));
+      /* The fuel cut's flicker, held under a tenth either way. This screen
+         is the first thing on the glass and the photosensitivity notice comes
+         AFTER it, so nothing here may cross the line that notice is about -
+         and a change in brightness of more than a tenth, many times a second,
+         on the largest bright shape on the screen, is that line. */
+      if (s.live && !outroAt && shownRpm >= LIMITER - 400) ringLvl *= 0.92 + 0.08 * Math.abs(Math.sin(t * 61));
     }
     /* BOOST arms across the crank and the catch - the job the progress ring
        used to do - and once armed it reads the throttle, so a blip pushes it
@@ -1546,9 +1918,29 @@
        moment of the change, so a shift reads as a movement of the lever that
        the needle's drop is the result of. */
     const gear = s.gear === undefined ? G_N : s.gear;
-    const dtF = lastFrame ? Math.min(0.05, (now - lastFrame) / 1000) : 1 / 60;
-    lastFrame = now;
-    if (gear !== gearWas) { gearWas = gear; shiftAt = now; }
+    /* THE BEATS. Every upshift lands on the whole instrument: it takes a
+       punch (a two-per-cent jolt in scale that is gone in a tenth of a
+       second), a ring of cool light leaves the bezel, the shift lamps go
+       white and the exhaust pops. Going into Drive and into first is a
+       smaller punch and nothing else - the clunk of the box taking up. And
+       the moment the engine CATCHES is the warm ring: the first sign of life
+       is the one that should be felt. */
+    if (gear !== gearWas) {
+      const up = gearWas >= G_1 && gear > gearWas;
+      if (up) {
+        punchAt = now; punchAmp = 0.032;
+        waveAt = now; waveWarm = false;
+        ledFlashAt = now; backfireAt = now;
+      } else if (gearWas >= G_N && (gear === G_D || gear === G_1)) {
+        punchAt = now; punchAmp = 0.014;
+      }
+      gearWas = gear; shiftAt = now;
+    }
+    if (s.live && !wasLive) {
+      punchAt = now; punchAmp = 0.022;
+      waveAt = now; waveWarm = true;
+    }
+    wasLive = !!s.live;
     gearPos = gearPos === null ? gear : gearPos + (gear - gearPos) * (1 - Math.exp(-30 * dtF));
     const kick = Math.max(0, 1 - (now - shiftAt) / 220);
     // the instruments either side draw themselves on across the self-test
@@ -1577,9 +1969,40 @@
       : s.holding ? 'SYSTEMS NOMINAL'
       : 'GEAR ' + GEARS[gear] + '  //  PULLING';
 
+    /* THE CAMERA. Two moves, both about the dial's own centre.
+     *
+     * A PUSH-IN across the whole performance - three and a half per cent over
+     * the first three seconds, eased out - which is the difference between
+     * a camera that is locked off on an instrument and one that is LOOKING
+     * at it. It starts a little over one so the room always covers the
+     * frame, shake included.
+     *
+     * And THE DIVE: in the second half of the outro the camera goes into the
+     * dial, accelerating, and the white takes it before it arrives. The cut
+     * is now a movement towards the game rather than a picture being
+     * switched off. */
+    let zoom = 1.012 + 0.035 * (1 - Math.pow(1 - Math.min(1, t / 3.2), 3));
+    if (outroAt) {
+      const k = Math.min(1, (now - outroAt) / OUTRO_MS);
+      const d = Math.max(0, (k - 0.45) / 0.55);
+      zoom += 0.11 * d * d;
+    }
+    /* THE PUNCH, on the instrument alone: rises over a few frames rather than
+       snapping (a one-frame jump in scale reads as a glitch) and is gone in
+       about a tenth of a second. */
+    const tp = now - punchAt;
+    const punch = punchAt && tp < 600
+      ? punchAmp * (1 - Math.exp(-tp / 16)) * Math.exp(-tp / 105) : 0;
+    FX.backfire = backfireAt ? Math.max(0, 1 - (now - backfireAt) / 130) * 0.9 : 0;
+    FX.peak = peakRpm;
+
     cx.save();
     cx.clearRect(0, 0, vw, vh);
+    cx.save();
     cx.translate(sx, sy);
+    cx.translate(L.cx, L.cy);
+    cx.scale(zoom, zoom);
+    cx.translate(-L.cx, -L.cy);
     /* THE ORDER IS THE DEPTH. The ground, then the floor running away from
        it, then the instrument standing on both, then everything the
        instrument is saying, then the name under it and the frame around the
@@ -1587,7 +2010,17 @@
     const K = ensureCache(L);
     blit(cx, K.room, L.w / 2, L.h / 2);
     floorLines(cx, L, t);
+    cx.save();
+    if (punch > 0.0005) {
+      cx.translate(L.cx, L.cy);
+      cx.scale(1 + punch, 1 + punch);
+      cx.translate(-L.cx, -L.cy);
+    }
     cluster(cx, L, shownRpm, s.live, t, ringLvl, boostLvl, gear, intro, gearPos, kick);
+    shiftLamps(cx, L, shownRpm, !!s.live, intro, now);
+    shockwave(cx, L, now);
+    cx.restore();
+    FX.prevA = aOf(shownRpm);
     /* ================= THE HANDOVER OFF THE PRELOADER ==================
      *
      * This screen and the preloader say the SAME FOUR THINGS - a SYNX
@@ -1619,13 +2052,18 @@
     void p;
     status(cx, L, capLine, rise * (1 - Math.min(1, stamp * 1.6)));
     wordmark(cx, L, rise);
-    edging(cx, L, rise);
     stampOut(cx, L, stamp);
+    cx.restore();
+    /* The corner ticks belong to the LENS, not the scene: they stay where
+       they are while the camera pushes in and the engine shakes it. */
+    edging(cx, L, rise);
     cx.restore();
 
     /* The cut. A frame of white over everything, which is the oldest trick
-       there is for hiding a transition and still the best one. */
-    if (flash > 0) flash = Math.max(0, flash - 0.055);
+       there is for hiding a transition and still the best one. It fades at
+       a rate per second - it was a twentieth per frame, so it lasted twice
+       as long at thirty frames a second as at sixty. */
+    if (flash > 0) flash = Math.max(0, flash - 3.3 * dtF);
     grade(cx, L, flash);
 
     /* THE WINDOW MAY OPEN NOW.
@@ -1643,9 +2081,10 @@
       /* THE REVS THEMSELVES, not a frequency derived from them. The engine
          keeps its own crank angle on the audio thread and works out where
          its eight cylinders are from it - see js/engine-worklet.js - so what
-         crosses the boundary is what the needle is showing, voiced: see
-         voice() for the one liberty it takes. */
-      audio.set(voice(s, shownRpm, !!outroAt));
+         crosses the boundary is the engine's revs, voiced: see voice() for
+         the one liberty it takes. Not the needle's: the needle is a spring
+         and swings past a shift, and an engine that did would be a fault. */
+      audio.set(voice(s, engRpm, !!outroAt));
     }
 
     /* WHEN IT IS ALLOWED TO END, which is now a property of the performance
@@ -1737,6 +2176,16 @@
       veil.setAttribute('aria-hidden', 'true');
       cv = doc.createElement('canvas');
       veil.appendChild(cv);
+      /* The scanlines and the vignette, and over them the white of the cut:
+         static CSS layers rather than canvas work. See grade. */
+      gradeEl = doc.createElement('i');
+      gradeEl.className = 'ign-grade';
+      veil.appendChild(gradeEl);
+      flashEl = doc.createElement('i');
+      flashEl.className = 'ign-flash';
+      veil.appendChild(flashEl);
+      flashShown = -1;
+      ignDpr = pickDpr();
       /* THE HEARTBEAT, and it is the one thing on this screen that is not
          drawn by script.
 
@@ -1752,7 +2201,12 @@
       veil.appendChild(beat);
       doc.body.appendChild(veil);
       doc.body.classList.add('ign-on');
-      cx = cv.getContext('2d');
+      /* OPAQUE. Every frame starts with the room drawn over the whole canvas
+         (the camera never zooms below 1.012, which covers the shake), so
+         there is never anything behind it to show through - and an opaque
+         layer is one the compositor does not have to blend against the page
+         under it on every frame. */
+      cx = cv.getContext('2d', { alpha: false });
       if (!cx) throw new Error('no 2d context');
       resize();
       global.addEventListener('resize', resize);

@@ -416,6 +416,14 @@
          structure. A route with open sky leaves this undefined and gets the
          full height. */
       droneCeiling: 13.6,
+      /* ...AND IT IS DRY UNDER IT. The road on this route used to take the
+         same night-time wetness as an open road: a share of wet gloss on every
+         surface, the damp patches the dew leaves on asphalt, and more of both
+         wherever the course is flagged as a bore - so a factory floor under a
+         roof read as a road that had just been rained on. The palette's
+         `roof` turns all three off (see the road-wetness block in
+         Game.update), its `wet` and `damp` are zero, and js/weather.js keeps
+         rain and standing water off it whatever the sky outside is doing. */
       palette: {
         edge: [0.04, 0.46, 0.72], cap: [0.06, 0.22, 0.38],
         barrier: [0.032, 0.042, 0.050], barrierGlow: [0.002, 0.010, 0.015],
@@ -423,7 +431,7 @@
         ground: [0.13, 0.15, 0.18], grid: [0.04, 0.36, 0.56],
         arch: [0.16, 0.74, 0.92], tower: [0.12, 0.30, 0.40],
         fogTint: [0.72, 0.86, 0.94], sky: 0.05, ambient: 0.74,
-        sun: [0.34, 0.48, 0.58], fogRange: 1350, wet: 0.20,
+        sun: [0.34, 0.48, 0.58], fogRange: 1350, wet: 0, damp: 0, roof: 1,
       },
     },
     {
@@ -1036,6 +1044,13 @@
   const PALETTE_VECTORS = ['edge', 'cap', 'post', 'sign', 'ground', 'grid', 'arch',
     'tower', 'fogTint', 'sun', 'barrier', 'barrierGlow', 'volcano', 'lava'];
   const PALETTE_SCALARS = ['sky', 'ambient', 'fogRange', 'wet'];
+  /* Scalars a route may leave out, and what leaving them out means. Blended
+     against the default rather than stepping to whichever side has one, so
+     the damp on the road and the roof over it fade across a Free Roam
+     handover instead of switching at its first frame:
+       damp  how much of the road is dew-damp, glossy asphalt (Scene.damp)
+       roof  1 under a roof: no wet gloss, no damp, no wetter bores */
+  const PALETTE_DEFAULTED = { damp: 0.85, roof: 0 };
   /* The default crash barrier, named rather than implied. Routes 6 and 7
      override it with powder-coated steel and the other five leave it out, in
      which case Scene.setPalette falls back to exactly these numbers - so
@@ -1071,6 +1086,11 @@
       if (va !== undefined && vb !== undefined) out[k] = M.lerp(va, vb, t);
       else if (va !== undefined) out[k] = va;
       else if (vb !== undefined) out[k] = vb;
+    }
+    for (const k in PALETTE_DEFAULTED) {
+      if (a[k] === undefined && b[k] === undefined) continue;
+      const d = PALETTE_DEFAULTED[k];
+      out[k] = M.lerp(a[k] === undefined ? d : a[k], b[k] === undefined ? d : b[k], t);
     }
     return out;
   }
@@ -1173,6 +1193,19 @@
      extra rungs are only ever reached from above native. */
   const DYN_STEPS = [1.0, 0.94, 0.88, 0.82, 0.76, 0.70, 0.645, 0.59, 0.54, 0.495, 0.45,
     0.41, 0.375, 0.345, 0.315, 0.29, 0.265, 0.24, 0.225];
+  /* How many frames of a freshly loaded world are drawn before an opaque
+     opening screen may stop it being drawn. See Game.worldHidden. */
+  const WARM_FRAMES = 6;
+  /* ...and how often the loop runs while it is hidden: the simulation still
+     steps, but nobody needs it sixty times a second behind a solid screen,
+     and the thread is better spent on the screen that IS visible. */
+  const HIDDEN_HZ = 30;
+  /* A lead change is announced only once the new leader is this far clear
+     (world units: about half a car), and never in the first moments after
+     the start, when the two cars are side by side. See the lead-change note
+     in Game.update. */
+  const LEAD_MARGIN = 3.0;
+  const LEAD_SETTLE = 1.6;
   /* Everything the CONTROLS screen shows that is a setting rather than a key
      binding: the gamepad rows on tab 1 and the mouse rows on tab 2. The
      keyboard's own rows are bindings and are built from ACTIONS below. */
@@ -5708,6 +5741,56 @@
       return false;
     }
 
+    /* =================== IS ANYTHING OF THE WORLD VISIBLE AT ALL? ========
+     *
+     * worldCovered is about panels the world shows THROUGH. This is about the
+     * three screens it cannot show through at all: the preloader, the cold
+     * open and the photosensitivity notice. Each is a full-frame, fully
+     * opaque layer over the canvas, and for the whole of the opening the
+     * renderer was drawing the attract reel at full quality underneath them -
+     * cascades, probe, SSR, occlusion, volumetrics - on the same thread as the
+     * tachometer's canvas. On a weak machine that is two whole frames' work
+     * per frame, and the cold open stuttered because of the one nobody could
+     * see.
+     *
+     * So while one of them is up the world is not drawn at all. The
+     * simulation still steps (it is cheap, and the attract drive and the
+     * audio clock both live there), and the world comes back the frame the
+     * notice is dismissed - underneath the intro's veil, which is opaque until
+     * its wipe, so several real frames are drawn before any of them is seen.
+     *
+     * WARM-UP FIRST. The first few frames of a freshly built world are where
+     * a driver does its lazy work - the first draw with each program and
+     * state is when ANGLE builds its pipeline objects - and those frames used
+     * to fall inside the preloader's smoothness gate (see NR.Preload). They
+     * still do: the world is drawn for WARM_FRAMES frames before it is ever
+     * hidden, so that work is paid behind the loader, where a slow frame
+     * reads as loading, and never inside the opening or the intro.
+     *
+     * The benchmark is never hidden. It measures the frame the game renders,
+     * and it dismisses the opening itself. */
+    worldHidden() {
+      if (this.benchActive) return false;
+      if (this.state === 'loading' || !this.scene || !this.scene.ready) return false;
+      /* The cold open is never shared, warm or not. On a machine slow enough
+         that the warm-up outlasts the preloader's gate, what is left of it
+         is drawn after the notice instead - behind the intro's veil, which is
+         opaque until its wipe - rather than inside the one sequence this
+         exists to keep smooth. */
+      if (NR.Ignition && NR.Ignition.running) return true;
+      /* Under the preloader, the warm-up comes first: that is the one cover
+         whose wait a slow frame can hide in. (The notice is in the document
+         from the first paint, underneath the preloader, so it cannot be the
+         test here.) */
+      const P = NR.Preload;
+      if (P && !P.gone) return (this._warmFrames | 0) >= WARM_FRAMES;
+      const doc = global.document;
+      if (this._advEl === undefined) this._advEl = doc ? doc.getElementById('advisory') : null;
+      const adv = this._advEl;
+      if (adv && adv.isConnected && !adv.classList.contains('gone')) return true;
+      return false;
+    }
+
     /* ------------------------------------------------- POINTER OWNERSHIP --
      *
      * WHO IS ASKING FOR CLICKS, BY NAME.
@@ -5815,6 +5898,15 @@
       this.fogDensity = 1 / p.fogRange;
       this.levelFog = p.fogTint;
       this.levelWet = p.wet;
+      this.levelDamp = p.damp === undefined ? PALETTE_DEFAULTED.damp : p.damp;
+      this.levelRoof = p.roof === undefined ? PALETTE_DEFAULTED.roof : p.roof;
+      /* A route being applied is a cut, so its road arrives as it is rather
+         than drying off in front of the player over the first two seconds -
+         the per-frame easing in Game.update is for driving between routes. */
+      if (this.scene) {
+        this.scene.damp = this.levelDamp * (1 - this.levelRoof);
+        this.scene.wet = (this.levelWet || 0) * (1 - this.levelRoof);
+      }
       this.startAt = L.from;
       this.finishAt = L.to;
       this.track.halfWidth = L.driveHalf || global.NR.DRIVE_HALF;
@@ -5993,9 +6085,10 @@
     beginFreeRoamRun() {
       this.freeRoamClock = 0;
       this.freeRoamRegionShown = -1;
-      /* THE SKY ON THIS TOUR. Showers come and go on a schedule of the tour's
-         own, on routes 1, 2, 3, 4 and 7 - see RAIN_ROUTES in js/weather.js.
-         (The one other place it rains is Chapter 3, which is set in a storm.) */
+      /* THE SKY ON THIS TOUR. One forecast for the whole tour, from a seed of
+         its own: long dry spells, passing cloud, and now and then a drizzle, a
+         shower or a storm, which each region takes in its own climate - the
+         volcano and the hall never. See CLIMATE in js/weather.js. */
       if (this.weather) this.weather.roam((Math.random() * 4294967296) >>> 0);
       /* Where this tour got on, which is what decides whether the ascension
          gate has anything to announce. Recorded here rather than read from
@@ -6506,6 +6599,8 @@
       this.fogDensity = this.freeRoamFog;
       this.levelFog = p.fogTint;
       this.levelWet = p.wet;
+      this.levelDamp = p.damp === undefined ? PALETTE_DEFAULTED.damp : p.damp;
+      this.levelRoof = p.roof === undefined ? PALETTE_DEFAULTED.roof : p.roof;
       /* Neon Horizon is a sixty-four-unit deck and everything before it is a
          forty-unit road, so the corridor the barriers resolve against opens
          up across the handover instead of stepping. */
@@ -7321,7 +7416,6 @@
         }
         if (this.rival.lastHit) this.rival.lastHit = false;
         this.rivalGap = this.car.sTrack - this.rival.sTrack;
-        const wasPlace = this.place;
         this.place = this.rivalGap >= 0 ? 1 : 2;
         /* ================= THE ONE THING THIS GAME IS ABOUT ==============
          *
@@ -7347,8 +7441,27 @@
          * Nova all have something to say about being passed - see rivalBanter
          * in js/story.js - and a toast on top of a line of dialogue is two
          * things saying the same thing in two registers. The punch and the
-         * rumble still fire, because those are the car and not the script. */
-        if (active && !this.raceOver && wasPlace && wasPlace !== this.place) {
+         * rumble still fire, because those are the car and not the script.
+         *
+         * AND IT HAS HYSTERESIS. `place` flips the instant the gap crosses
+         * zero, which is right for the number on the HUD and wrong for an
+         * announcement: off the line the two cars launch side by side and
+         * the gap changed sign within the first second - "LEAD LOST" before
+         * anybody had led anything - and in a door-to-door fight it flips for
+         * as long as the fight lasts, every flip a punch, a rumble and a
+         * word. So the announcement keeps its own idea of who leads. It
+         * follows the race silently for the first LEAD_SETTLE seconds and
+         * whenever nothing is live, and after that it changes its mind only
+         * once the new leader is LEAD_MARGIN clear - about half a car. */
+        this._liveFor = active ? (this._liveFor || 0) + dt : 0;
+        let leadChanged = false;
+        if (!active || this.raceOver || this._liveFor < LEAD_SETTLE || !this.leadSaid) {
+          this.leadSaid = this.place;
+        } else if (this.place !== this.leadSaid && Math.abs(this.rivalGap) > LEAD_MARGIN) {
+          this.leadSaid = this.place;
+          leadChanged = true;
+        }
+        if (leadChanged) {
           const took = this.place === 1;
           this.impact({ punch: took ? 0.85 : 0.4, shake: took ? 0.22 : 0.14 });
           if (this.pad) this.pad.vibrate(took ? 0.45 : 0.3, took ? 140 : 90);
@@ -7703,7 +7816,13 @@
       if (this.weather && this.weather.wet > 0) {
         baseWet += Math.max(0, 0.70 - baseWet) * this.weather.wet * (1 - this.tunnel);
       }
-      this.scene.wet = M.damp(this.scene.wet, baseWet + this.tunnel * 0.34, 2, dt);
+      /* ...and none of it under a roof. The bores' extra wetness is a tunnel
+         dripping on a night road; a production hall is a dry concrete floor,
+         and so is everything else in it. See `roof` in the route palettes. */
+      const roof = M.clamp(this.levelRoof || 0, 0, 1);
+      this.scene.wet = M.damp(this.scene.wet, (baseWet + this.tunnel * 0.34) * (1 - roof), 2, dt);
+      this.scene.damp = M.damp(this.scene.damp === undefined ? 0.85 : this.scene.damp,
+        (this.levelDamp === undefined ? PALETTE_DEFAULTED.damp : this.levelDamp) * (1 - roof), 2, dt);
       this.scene.brakeLight = lampOf(this.car);
       /* The boost button follows the pedal over about a tenth of a second in
          and a fifth back out - a thumb pushes faster than a spring returns. */
@@ -11074,7 +11193,12 @@
           return;
         }
         let gap = this.frameInterval || 0;
-        if (this.worldCovered()) gap = Math.max(gap, 1000 / 36);
+        /* NOTHING OF THE WORLD IS VISIBLE: the preloader, the cold open or
+           the notice is over all of it. See worldHidden. */
+        const hidden = this.worldHidden();
+        this._hidden = hidden;
+        if (hidden) gap = Math.max(gap, 1000 / HIDDEN_HZ);
+        else if (this.worldCovered()) gap = Math.max(gap, 1000 / 36);
         if (gap > 0 && now - last < gap - 0.5) {
           /* A SKIPPED FRAME IS EVIDENCE. It means the machine offered a frame
              the limiter did not want, which is the only reliable way to know
@@ -11161,7 +11285,12 @@
           const tDraw = performance.now();
           // ...and the interface animates on the wall clock, because a menu
           // that eases in at quarter speed reads as the game having hung
-          this.draw(dt);
+          if (!hidden) {
+            this.draw(dt);
+            if (this.scene && this.scene.ready && this.state !== 'loading') {
+              this._warmFrames = (this._warmFrames | 0) + 1;
+            }
+          }
           const tEnd = performance.now();
           const P = this.phase || (this.phase = { sim: 0, sub: 0 });
           P.sim = tDraw - tSim;
@@ -11276,8 +11405,10 @@
         good: 0, bad: 0, upNeed: 6, cool: 0, sinceUp: 99,
         probe: 0, probeFrom: 0, standDown: 0,
       });
+      /* ...and a frame with no world in it is no evidence about what the
+         world costs. See worldHidden. */
       if (!mode || A.off || this.benchActive || this.state === 'loading'
-          || !this.scene || !this.scene.ready) {
+          || this._hidden || !this.scene || !this.scene.ready) {
         /* Reset the evidence rather than carrying a stale window across a
            load, a benchmark or a settings change. */
         A.n = 0; A.sum = 0; A.min = 1e9; A.t = 0; A.good = 0; A.bad = 0;

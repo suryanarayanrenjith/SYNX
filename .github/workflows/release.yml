@@ -285,6 +285,15 @@ jobs:
     needs: [version, desktop, linux]
     runs-on: ubuntu-24.04
     steps:
+      # The one file from the tree this job reads: the hand-written notes for
+      # a release, if there are any (see "Write the release notes"). Checked
+      # out FIRST, because a checkout cleans the workspace and would take the
+      # downloaded dist/ with it.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: RELEASE_NOTES.md
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -310,6 +319,20 @@ jobs:
           {
             echo "Open beta build ${VERSION}, from \`${GITHUB_SHA}\`."
             echo
+            # WHAT IS NEW, when somebody wrote it down. RELEASE_NOTES.md opens
+            # with a heading naming the release it was written for, and it is
+            # used only when that is THIS release - so the notes for 1.0.6 are
+            # never pasted onto 1.0.7 because nobody got round to editing
+            # them. Carriage returns are dropped so a file saved on Windows
+            # still matches.
+            if [ -f RELEASE_NOTES.md ] \
+               && head -n 1 RELEASE_NOTES.md | tr -d '\r' | grep -qx "## ${VERSION}"; then
+              echo "## What's new"
+              tail -n +2 RELEASE_NOTES.md | tr -d '\r'
+              echo
+              echo "## Downloads"
+              echo
+            fi
             echo "| Platform | Download |"
             echo "| --- | --- |"
             echo "| Windows | \`-setup.exe\` to install, \`-portable.zip\` to just run it |"
